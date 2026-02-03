@@ -1,0 +1,116 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { MapPin } from "lucide-react";
+import Image from "next/image";
+import { db } from "@/lib/firebase";
+import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import type { Lead } from "@/types";
+
+export default function LeadInboxPage() {
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchLeads = async () => {
+      try {
+        const leadsRef = collection(db, "leads");
+        const q = query(leadsRef, orderBy("createdAt", "desc"));
+        const querySnapshot = await getDocs(q);
+        
+        const leadsData: Lead[] = [];
+        querySnapshot.forEach((doc) => {
+          leadsData.push({
+            id: doc.id,
+            ...doc.data(),
+            createdAt: doc.data().createdAt?.toDate() || new Date(),
+          } as Lead);
+        });
+        
+        setLeads(leadsData);
+      } catch (error) {
+        console.error("Erreur lors de la récupération des leads:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchLeads();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-muted-foreground">Chargement...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen p-6">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-3xl font-bold mb-6">Lead Inbox</h1>
+        
+        <div className="space-y-4">
+          {leads.length === 0 ? (
+            <Card>
+              <CardContent className="py-12 text-center text-muted-foreground">
+                Aucun lead pour le moment
+              </CardContent>
+            </Card>
+          ) : (
+            leads.map((lead) => (
+              <Card key={lead.id} className="hover:shadow-md transition-shadow">
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-6">
+                    {/* Colonne Property avec thumbnail */}
+                    <div className="w-32 h-32 flex-shrink-0 rounded-lg overflow-hidden bg-muted flex items-center justify-center">
+                      {lead.thumbnailUrl ? (
+                        <Image
+                          src={lead.thumbnailUrl}
+                          alt={lead.name}
+                          width={128}
+                          height={128}
+                          className="object-cover w-full h-full"
+                        />
+                      ) : (
+                        <MapPin className="h-8 w-8 text-muted-foreground" />
+                      )}
+                    </div>
+
+                    {/* Informations du lead */}
+                    <div className="flex-1 grid grid-cols-3 gap-6">
+                      <div>
+                        <div className="text-sm text-muted-foreground mb-1">
+                          Nom du Lead
+                        </div>
+                        <div className="font-semibold">{lead.name}</div>
+                      </div>
+
+                      <div>
+                        <div className="text-sm text-muted-foreground mb-1">
+                          Quality Score
+                        </div>
+                        <div className="font-semibold">{lead.qualityScore}/100</div>
+                      </div>
+
+                      <div>
+                        <div className="text-sm text-muted-foreground mb-1">
+                          Contact
+                        </div>
+                        <div className="font-semibold">
+                          {lead.contactName || "N/A"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
