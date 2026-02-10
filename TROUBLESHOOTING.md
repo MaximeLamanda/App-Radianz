@@ -29,16 +29,25 @@ NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=votre_cle_api_ici
 **a) APIs activées :**
 - ✅ Maps JavaScript API
 - ✅ Maps Drawing API (pour le dessin de polygones)
+- ✅ **Maps Static API** (pour les images satellites) ⚠️ IMPORTANT
+- ✅ Places API (pour la recherche d'adresses)
+- ✅ Geocoding API (pour la conversion d'adresses)
 
 **b) Restrictions d'application :**
 - Si vous avez des restrictions HTTP, ajoutez :
-  - `http://localhost:3000`
-  - `http://127.0.0.1:3000`
+  - `http://localhost:3000/*`
+  - `http://127.0.0.1:3000/*`
+  - `localhost:3000/*` (sans http://)
+- **Pour l'API Static Maps**, les restrictions HTTP sont critiques. Si les images satellites ne se chargent pas, vérifiez que ces domaines sont bien autorisés.
 - Ou temporairement, supprimez les restrictions pour tester
 
 **c) Restrictions d'API :**
-- Assurez-vous que "Maps JavaScript API" est dans la liste des APIs autorisées
-- Ou supprimez temporairement les restrictions pour tester
+- Assurez-vous que toutes ces APIs sont dans la liste des APIs autorisées :
+  - Maps JavaScript API
+  - **Maps Static API** ⚠️ Nécessaire pour les images satellites
+  - Places API
+  - Geocoding API
+- Ou temporairement, sélectionnez "Don't restrict key" pour tester
 
 ### 3. Tester la clé API directement
 
@@ -84,6 +93,77 @@ npm run dev
 ### 6. Vérifier la console du navigateur
 
 Ouvrez la console du navigateur (F12) et regardez les erreurs. Google Maps affiche souvent des messages d'erreur détaillés qui vous aideront à identifier le problème.
+
+## Problème avec les images satellites (API Static Maps)
+
+Si les images satellites ne se chargent pas dans le composant `SatelliteImage` :
+
+### Symptômes
+- L'image satellite ne s'affiche pas
+- Message d'erreur dans la console du navigateur
+- Erreur 403 Forbidden lors du chargement de l'image
+
+### Solutions
+
+1. **Vérifier que l'API Static Maps est activée**
+   - Allez dans Google Cloud Console → APIs & Services → Library
+   - Recherchez "Maps Static API"
+   - Cliquez sur "Enable" si ce n'est pas déjà fait
+
+2. **Vérifier les restrictions HTTP de la clé API**
+   - Allez dans Google Cloud Console → APIs & Services → Credentials
+   - Cliquez sur votre clé API
+   - Dans "Application restrictions", sélectionnez "HTTP referrers (web sites)"
+   - Ajoutez ces domaines :
+     - `localhost:3000/*`
+     - `127.0.0.1:3000/*`
+     - `http://localhost:3000/*`
+     - `http://127.0.0.1:3000/*`
+   - Cliquez sur "Save"
+
+3. **Tester l'URL directement dans le navigateur**
+   - Ouvrez la console du navigateur (F12)
+   - Regardez les logs `[SatelliteImage]` qui affichent l'URL complète
+   - Copiez l'URL et collez-la directement dans la barre d'adresse du navigateur
+   - Si l'image s'affiche dans le navigateur mais pas dans l'application, c'est un problème de restrictions de domaine
+   - Si l'image ne s'affiche pas non plus dans le navigateur, vérifiez que l'API Static Maps est bien activée
+
+4. **Vérifier les restrictions d'API**
+   - Dans Google Cloud Console → Votre clé API
+   - Dans "API restrictions", assurez-vous que "Maps Static API" est dans la liste
+   - Ou sélectionnez temporairement "Don't restrict key" pour tester
+
+5. **Vérifier la clé API dans .env.local**
+   - Assurez-vous que `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` est bien définie
+   - Redémarrez le serveur après modification (`npm run dev`)
+
+### Erreurs courantes pour l'API Static Maps
+
+#### Erreur 403 Forbidden
+- **Cause** : Restrictions de domaine HTTP qui bloquent localhost
+- **Solution** : Ajoutez `localhost:3000/*` aux restrictions HTTP de la clé API
+
+#### L'image ne se charge pas mais l'URL fonctionne dans le navigateur
+- **Cause** : Problème avec Next.js Image ou restrictions CORS
+- **Solution** : Le code utilise maintenant une balise `<img>` native par défaut. Si le problème persiste, vérifiez les restrictions de domaine.
+
+#### "This API key is not authorized"
+- **Cause** : L'API Static Maps n'est pas activée dans Google Cloud Console
+- **Solution** : Activez l'API Static Maps dans Google Cloud Console → APIs & Services → Library
+
+#### Erreur 403 : "Your request cannot be served because satellite and hybrid imagery is not available for this location"
+- **Cause** : **Restriction géographique EEA (European Economic Area)** - Google bloque les images satellite/hybrid pour certaines zones géographiques en Europe
+- **Message d'erreur typique** : `Your request cannot be served because satellite and hybrid imagery is not available for this location. Please see https://developers.google.com/maps/comms/eea/maps-static.`
+- **Pourquoi cela arrive** : Google Maps a des restrictions légales sur les images satellite dans certaines zones de l'EEE (Espace Économique Européen) pour des raisons de sécurité nationale ou de réglementation
+- **Solutions possibles** :
+  1. **Solution automatique (déjà implémentée)** : L'application bascule automatiquement en mode `roadmap` lorsque cette restriction est détectée
+  2. **Utiliser une autre source d'images satellites** :
+     - **Mapbox** : Offre des images satellite avec moins de restrictions géographiques
+     - **Bing Maps** : Alternative à Google Maps avec des images satellite
+     - **OpenStreetMap + services tiers** : Solutions open-source
+  3. **Utiliser l'API JavaScript Maps au lieu de Static Maps** : L'API JavaScript peut parfois contourner certaines restrictions, mais nécessite un chargement différent
+  4. **Accepter la limitation** : Utiliser le mode `roadmap` pour les zones concernées (solution actuelle)
+- **Note** : Cette restriction est **géographique** et ne peut pas être contournée en modifiant la clé API ou les restrictions de domaine. C'est une limitation imposée par Google pour certaines zones spécifiques.
 
 ## Obtenir une nouvelle clé API
 

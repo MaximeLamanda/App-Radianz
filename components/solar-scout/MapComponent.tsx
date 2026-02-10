@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exposure } from "@/types";
+import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exposure, PlaceSearchResult } from "@/types";
 import { convertPlaceType, extractContact } from "@/lib/places";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
 
@@ -14,6 +14,9 @@ interface MapComponentProps {
   currentProspect?: Prospect | null;
   shouldValidateDrawing?: boolean;
   onValidationComplete?: () => void;
+  searchResults?: PlaceSearchResult[];
+  onSearchResultClick?: (result: PlaceSearchResult) => void;
+  onGetMapCenter?: (getCenterFunc: () => AddressCoordinates | null) => void;
 }
 
 export function MapComponent({
@@ -25,11 +28,22 @@ export function MapComponent({
   currentProspect,
   shouldValidateDrawing = false,
   onValidationComplete,
+  searchResults = [],
+  onSearchResultClick,
+  onGetMapCenter,
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
   const polygonRef = useRef<google.maps.Polygon | null>(null);
+  const searchMarkersRef = useRef<google.maps.Marker[]>([]);
+  const isFocusingOnResultRef = useRef<boolean>(false);
+  
+  // Fonction pour obtenir le centre de la carte - toujours disponible via ref
+  const getMapCenterFunc = useRef<(() => AddressCoordinates | null) | null>(null);
+  
+  // Stocker le dernier centre connu comme fallback
+  const lastKnownCenterRef = useRef<AddressCoordinates | null>(null);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -50,7 +64,7 @@ export function MapComponent({
       const map = new maps.Map(mapRef.current, {
         center: centerCoordinates || { lat: 48.5311, lng: 2.0508 }, // Roinville par défaut
         zoom: 16,
-        mapTypeId: maps.MapTypeId.ROADMAP,
+        mapTypeId: maps.MapTypeId.HYBRID, // Satellite + POI et libellés (EEA : JS API uniquement)
         disableDefaultUI: false,
         zoomControl: true,
         mapTypeControl: true,
@@ -65,6 +79,98 @@ export function MapComponent({
       });
 
       mapInstanceRef.current = map;
+
+      // Stocker le centre initial de la carte comme fallback
+      const initialCenter = centerCoordinates || { lat: 48.5311, lng: 2.0508 };
+      lastKnownCenterRef.current = initialCenter;
+      
+      // Créer et stocker la fonction pour obtenir le centre de la carte
+      // Cette fonction essaie d'abord getCenter(), puis utilise le dernier centre connu comme fallback
+      const getCenter = () => {
+        if (!mapInstanceRef.current) {
+          const fallback = lastKnownCenterRef.current || initialCenter;
+          return fallback;
+        }
+        
+        try {
+          // TOUJOURS essayer d'obtenir le centre actuel de la carte en premier
+          const center = mapInstanceRef.current.getCenter();
+          
+          if (center) {
+            const lat = center.lat();
+            const lng = center.lng();
+            
+            // Vérifier que les coordonnées sont valides (pas NaN)
+            if (!isNaN(lat) && !isNaN(lng)) {
+              const coordinates = { lat, lng };
+              // Mettre à jour le dernier centre connu avec le centre ACTUEL
+              lastKnownCenterRef.current = coordinates;
+              return coordinates;
+            } else {
+              const fallback = lastKnownCenterRef.current || initialCenter;
+              return fallback;
+            }
+          } else {
+            // Si getCenter() retourne null, utiliser le dernier centre connu
+            const fallback = lastKnownCenterRef.current || initialCenter;
+            return fallback;
+          }
+        } catch (error) {
+          console.error("[MapComponent] Erreur lors de l'appel à getCenter():", error);
+          const fallback = lastKnownCenterRef.current || initialCenter;
+          return fallback;
+        }
+      };
+      
+      getMapCenterFunc.current = getCenter;
+      
+      // Exposer la fonction au parent
+      if (onGetMapCenter) {
+        if (typeof getCenter === 'function') {
+          onGetMapCenter(getCenter);
+        } else {
+          console.error("[MapComponent] ERREUR: getCenter n'est pas une fonction!", typeof getCenter);
+        }
+      }
+      
+      // Fonction helper pour mettre à jour le dernier centre connu
+      const updateLastKnownCenter = () => {
+        if (mapInstanceRef.current) {
+          try {
+            const center = mapInstanceRef.current.getCenter();
+            if (center) {
+              const lat = center.lat();
+              const lng = center.lng();
+              if (!isNaN(lat) && !isNaN(lng)) {
+                const newCenter = { lat, lng };
+                // Ne mettre à jour que si le centre a vraiment changé (éviter les micro-mouvements)
+                if (!lastKnownCenterRef.current || 
+                    Math.abs(lastKnownCenterRef.current.lat - lat) > 0.00001 ||
+                    Math.abs(lastKnownCenterRef.current.lng - lng) > 0.00001) {
+                  lastKnownCenterRef.current = newCenter;
+                }
+              }
+            }
+          } catch (error) {
+            console.error("[MapCenter] Erreur lors de la mise à jour du centre:", error);
+          }
+        }
+      };
+      
+      // Écouter les changements de centre pour mettre à jour le dernier centre connu
+      maps.event.addListener(map, "center_changed", () => {
+        updateLastKnownCenter();
+      });
+      
+      // Écouter l'événement "idle" (carte prête après mouvement) pour s'assurer que le centre est à jour
+      maps.event.addListener(map, "idle", () => {
+        updateLastKnownCenter();
+      });
+      
+      // Écouter une première fois "idle" pour l'initialisation
+      maps.event.addListenerOnce(map, "idle", () => {
+        updateLastKnownCenter();
+      });
 
       // Google Maps affiche déjà nativement les établissements (restaurants, magasins, etc.)
       // sur la carte en mode roadmap - pas besoin de marqueurs custom
@@ -82,14 +188,15 @@ export function MapComponent({
         // Essayer d'abord la nouvelle API Places
         getPlaceDetailsNew(placeId)
           .then((newPlaceDetails) => {
-            if (newPlaceDetails?.primaryTypeDisplayName) {
+            if (newPlaceDetails?.primaryTypeDisplayName || newPlaceDetails?.primaryType) {
+              const placeType = (newPlaceDetails.primaryType ?? newPlaceDetails.types?.find((t) => !["establishment", "point_of_interest"].includes(t))) ?? "other";
               const prospect: Prospect = {
                 name: newPlaceDetails.displayName || undefined,
                 address: newPlaceDetails.formattedAddress || address,
                 coordinates: coordinates,
                 roofSurface: { area: 0, polygon: [] },
-                placeType: newPlaceDetails.primaryTypeDisplayName,
-                qualityScore: calculateQualityScore(0, newPlaceDetails.primaryType || "other"),
+                placeType,
+                qualityScore: calculateQualityScore(0, placeType),
                 contact: {
                   websiteUri: newPlaceDetails.websiteURI || undefined,
                   nationalPhoneNumber: newPlaceDetails.nationalPhoneNumber || undefined,
@@ -234,6 +341,17 @@ export function MapComponent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Ne s'exécute qu'une seule fois au montage
 
+  // Exposer la fonction pour obtenir le centre de la carte quand onGetMapCenter change
+  useEffect(() => {
+    if (onGetMapCenter && getMapCenterFunc.current) {
+      if (typeof getMapCenterFunc.current === 'function') {
+        onGetMapCenter(getMapCenterFunc.current);
+      } else {
+        console.error("[MapComponent] ERREUR: getMapCenterFunc.current n'est pas une fonction!", typeof getMapCenterFunc.current);
+      }
+    }
+  }, [onGetMapCenter]);
+
   // Gérer le mode dessin
   useEffect(() => {
     if (!mapInstanceRef.current) return;
@@ -242,10 +360,8 @@ export function MapComponent({
     const maps = window.google.maps;
 
     if (isDrawing) {
-      console.log("[Surface] Mode dessin activé");
       // Activer le mode dessin
       if (!drawingManagerRef.current && maps.drawing && maps.drawing.DrawingManager) {
-        console.log("[Surface] Création du DrawingManager");
         const drawingManager = new maps.drawing.DrawingManager({
           drawingMode: maps.drawing.OverlayType.POLYGON,
           drawingControl: false,
@@ -265,10 +381,8 @@ export function MapComponent({
 
         // Écouter la fin du dessin d'un polygone
         maps.event.addListener(drawingManager, "polygoncomplete", (polygon: google.maps.Polygon) => {
-          console.log("[Surface] Polygone dessiné - récupération des coordonnées");
           // Supprimer l'ancien polygone s'il existe
           if (polygonRef.current) {
-            console.log("[Surface] Suppression de l'ancien polygone");
             polygonRef.current.setMap(null);
           }
 
@@ -276,22 +390,56 @@ export function MapComponent({
           polygon.setEditable(true);
           polygon.setDraggable(false);
 
-          // Extraire les coordonnées pour log
+          // Extraire les coordonnées pour log détaillé
           const path = polygon.getPath();
           const pointCount = path.getLength();
-          console.log(`[Surface] Polygone créé avec ${pointCount} points`);
-          console.log("[Surface] Polygone rendu éditable - attente de validation");
+          const coordinates: Array<{ lat: number; lng: number }> = [];
+          
+          path.forEach((latLng, index) => {
+            const coord = {
+              lat: latLng.lat(),
+              lng: latLng.lng(),
+            };
+            coordinates.push(coord);
+          });
+          
+          // Calculer l'aire pour prévisualisation
+          const previewArea = calculatePolygonArea(coordinates);
+          
+          // Écouter les modifications du polygone pendant l'édition
+          maps.event.addListener(path, "insert_at", () => {
+            // Point ajouté - pas besoin de log
+          });
+          
+          maps.event.addListener(path, "remove_at", () => {
+            // Point supprimé - pas besoin de log
+          });
+          
+          maps.event.addListener(path, "set_at", () => {
+            // Point modifié - pas besoin de log
+          });
 
           // Désactiver le mode dessin après création
           drawingManager.setDrawingMode(null);
         });
+        
+        // Écouter le début du dessin
+        maps.event.addListener(drawingManager, "overlaycomplete", (event: any) => {
+          console.log("[Surface] 🎨 Début du dessin d'un overlay:", event.type);
+        });
+        
+        // Écouter les modifications du polygone pendant le dessin
+        if (drawingManagerRef.current) {
+          maps.event.addListener(drawingManager, "drawingmode_changed", () => {
+            const currentMode = drawingManager.getDrawingMode();
+            console.log("[Surface] 🖊️ Mode de dessin changé:", currentMode);
+          });
+        }
       } else if (drawingManagerRef.current) {
-        console.log("[Surface] Réactivation du mode dessin (DrawingManager existant)");
         // Réactiver le mode dessin si le manager existe déjà
         drawingManagerRef.current.setDrawingMode(maps.drawing.OverlayType.POLYGON);
       }
     } else {
-      console.log("[Surface] Mode dessin désactivé");
       // Désactiver le mode dessin
       if (drawingManagerRef.current) {
         drawingManagerRef.current.setDrawingMode(null);
@@ -303,7 +451,6 @@ export function MapComponent({
   useEffect(() => {
     if (!isDrawing && polygonRef.current) {
       if (shouldValidateDrawing && onSurfaceUpdate) {
-        console.log("[Surface] Validation du dessin en cours");
         const polygon = polygonRef.current;
         const path = polygon.getPath();
         const coordinates: Array<{ lat: number; lng: number }> = [];
@@ -315,12 +462,23 @@ export function MapComponent({
           });
         });
 
-        console.log(`[Surface] Coordonnées extraites: ${coordinates.length} points`);
+        console.log(`[Surface] 📍 Coordonnées extraites: ${coordinates.length} points`);
+        console.log(`[Surface] 📐 Détail des coordonnées du polygone:`, coordinates.map((c, i) => 
+          `Point ${i + 1}: [${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}]`
+        ).join(', '));
+        
         const area = calculatePolygonArea(coordinates);
-        console.log(`[Surface] Surface calculée: ${area.toFixed(2)} m²`);
+        console.log(`[Surface] 📏 Surface calculée: ${area.toFixed(2)} m²`);
 
         if (area > 0) {
-          console.log("[Surface] Mise à jour du prospect avec la nouvelle surface");
+          console.log("[Surface] ✅ Mise à jour du prospect avec la nouvelle surface");
+          console.log(`[Surface] 📊 Données de la surface:`, {
+            area: area.toFixed(2) + " m²",
+            pointCount: coordinates.length,
+            firstPoint: coordinates[0],
+            lastPoint: coordinates[coordinates.length - 1]
+          });
+          
           onSurfaceUpdate({
             area,
             polygon: coordinates,
@@ -328,7 +486,6 @@ export function MapComponent({
 
           // Garder le polygone affiché mais le rendre non éditable
           polygon.setEditable(false);
-          console.log("[Surface] Polygone validé et rendu non éditable");
           
           // Réinitialiser le flag de validation
           if (onValidationComplete) {
@@ -341,14 +498,10 @@ export function MapComponent({
           }
         }
       } else if (!shouldValidateDrawing) {
-        console.log("[Surface] Annulation du dessin - suppression du polygone");
         // Annulation : supprimer le polygone en cours de dessin
         polygonRef.current.setMap(null);
         polygonRef.current = null;
-        console.log("[Surface] Polygone supprimé");
       }
-    } else if (!isDrawing && !polygonRef.current) {
-      console.log("[Surface] Pas de polygone à valider ou annuler");
     }
   }, [isDrawing, shouldValidateDrawing, onSurfaceUpdate]);
 
@@ -378,11 +531,8 @@ export function MapComponent({
       (currentProspect?.roofSurface.area > 0 ? [currentProspect.roofSurface] : []);
 
     if (surfaces.length === 0) {
-      console.log("[Surface] Pas de surface existante à afficher");
       return;
     }
-
-    console.log(`[Surface] Affichage de ${surfaces.length} polygone(s) existant(s)`);
 
     // Créer un polygone pour chaque surface
     surfaces.forEach((surface, index) => {
@@ -403,20 +553,27 @@ export function MapComponent({
 
       polygon.setMap(mapInstanceRef.current);
       polygonsRef.current.push(polygon);
-      console.log(`[Surface] Polygone ${index + 1} affiché (${surface.polygon.length} points, ${surface.area.toFixed(2)} m²)`);
     });
-
-    console.log(`[Surface] ${polygonsRef.current.length} polygone(s) affiché(s) sur la carte`);
   }, [currentProspect?.roofSurfaces, currentProspect?.roofSurface.polygon]);
 
   // Centrer la carte sur les coordonnées sélectionnées (seulement si la carte existe déjà)
   useEffect(() => {
     if (centerCoordinates && mapInstanceRef.current) {
+      // Marquer qu'on est en train de se concentrer sur un résultat spécifique
+      // Cela empêche l'ajustement automatique des bounds pendant le zoom
+      isFocusingOnResultRef.current = true;
+      
       const maps = window.google?.maps;
-      if (!maps) return;
+      if (!maps) {
+        console.error("[MapComponent] ERREUR: window.google.maps n'existe pas!");
+        return;
+      }
 
       const currentCenter = mapInstanceRef.current.getCenter();
-      if (!currentCenter) return;
+      if (!currentCenter) {
+        console.error("[MapComponent] ERREUR: currentCenter est null!");
+        return;
+      }
 
       // Ne centrer que si les coordonnées sont significativement différentes
       const latDiff = Math.abs(currentCenter.lat() - centerCoordinates.lat);
@@ -424,14 +581,121 @@ export function MapComponent({
       
       // Seuil de 0.0001 degré (environ 11 mètres) pour éviter les micro-mouvements
       if (latDiff > 0.0001 || lngDiff > 0.0001) {
-        mapInstanceRef.current.setCenter({
+        // Animation fluide vers le nouveau centre avec zoom
+        // Utiliser panTo pour une animation fluide, puis zoomer
+        mapInstanceRef.current.panTo({
           lat: centerCoordinates.lat,
           lng: centerCoordinates.lng,
         });
-        mapInstanceRef.current.setZoom(18);
+        
+        // Zoomer après un court délai pour une animation plus fluide
+        setTimeout(() => {
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.setZoom(18); // Zoom légèrement moins fort pour une meilleure vue
+          }
+        }, 300);
+        
+        // Réinitialiser le flag après un délai plus long pour permettre à l'animation de se terminer
+        setTimeout(() => {
+          isFocusingOnResultRef.current = false;
+        }, 1500);
+      } else {
+        isFocusingOnResultRef.current = false;
       }
+    } else {
+      isFocusingOnResultRef.current = false;
     }
   }, [centerCoordinates]);
+
+  // Afficher les marqueurs des résultats de recherche
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    if (!window.google?.maps) return;
+
+    const maps = window.google.maps;
+
+    // Nettoyer les marqueurs précédents
+    searchMarkersRef.current.forEach((marker) => {
+      marker.setMap(null);
+    });
+    searchMarkersRef.current = [];
+
+    // Créer un marqueur pour chaque résultat de recherche
+    searchResults.forEach((result) => {
+      const marker = new maps.Marker({
+        position: {
+          lat: result.coordinates.lat,
+          lng: result.coordinates.lng,
+        },
+        map: mapInstanceRef.current!,
+        title: result.name,
+        icon: {
+          path: maps.SymbolPath.CIRCLE,
+          scale: 8,
+          fillColor: "#4285F4",
+          fillOpacity: 1,
+          strokeColor: "#FFFFFF",
+          strokeWeight: 2,
+        },
+      });
+
+      // Ajouter un listener pour le clic sur le marqueur
+      marker.addListener("click", () => {
+        if (onSearchResultClick) {
+          onSearchResultClick(result);
+        }
+      });
+
+      searchMarkersRef.current.push(marker);
+    });
+
+    // Ajuster la vue pour afficher tous les marqueurs si on a des résultats
+    // MAIS seulement si on n'est pas en train de zoomer sur un résultat spécifique
+    // (c'est-à-dire si centerCoordinates n'est pas défini)
+    if (searchResults.length > 0 && mapInstanceRef.current && !centerCoordinates && !isFocusingOnResultRef.current) {
+      const bounds = new maps.LatLngBounds();
+      searchResults.forEach((result) => {
+        bounds.extend({
+          lat: result.coordinates.lat,
+          lng: result.coordinates.lng,
+        });
+      });
+      
+      // Étendre les bounds pour ajouter un padding (en degrés approximatifs)
+      // Cela crée un effet de marge autour des marqueurs
+      const ne = bounds.getNorthEast();
+      const sw = bounds.getSouthWest();
+      
+      // Calculer la différence de latitude et longitude
+      const latDiff = ne.lat() - sw.lat();
+      const lngDiff = ne.lng() - sw.lng();
+      
+      // Ajouter 10% de padding de chaque côté
+      const paddingFactor = 0.1;
+      const paddedNe = new maps.LatLng(
+        ne.lat() + latDiff * paddingFactor,
+        ne.lng() + lngDiff * paddingFactor
+      );
+      const paddedSw = new maps.LatLng(
+        sw.lat() - latDiff * paddingFactor,
+        sw.lng() - lngDiff * paddingFactor
+      );
+      
+      // Créer de nouveaux bounds avec padding
+      const paddedBounds = new maps.LatLngBounds(paddedSw, paddedNe);
+      
+      // Ajuster la vue avec les bounds étendus
+      mapInstanceRef.current.fitBounds(paddedBounds);
+    }
+
+    return () => {
+      // Nettoyage : supprimer les marqueurs
+      searchMarkersRef.current.forEach((marker) => {
+        marker.setMap(null);
+      });
+      searchMarkersRef.current = [];
+    };
+  }, [searchResults, onSearchResultClick, centerCoordinates]);
 
   return (
     <div className="h-full w-full">
@@ -460,8 +724,6 @@ function calculatePolygonArea(
   const centerLat = coordinates[0].lat;
   const centerLng = coordinates[0].lng;
   
-  console.log(`[Surface] Point de référence (centre): lat=${centerLat.toFixed(6)}, lng=${centerLng.toFixed(6)}`);
-  
   // Convertir les coordonnées en mètres (projection locale)
   const projectedCoords = coordinates.map(coord => {
     const dLat = (coord.lat - centerLat) * Math.PI / 180;
@@ -484,8 +746,6 @@ function calculatePolygonArea(
   }
   
   const finalArea = Math.abs(area) / 2; // Diviser par 2 pour obtenir l'aire
-  console.log(`[Surface] Surface calculée: ${finalArea.toFixed(2)} m²`);
-  console.log(`[Surface] Coordonnées projetées (premiers points):`, projectedCoords.slice(0, 3));
   
   return finalArea;
 }

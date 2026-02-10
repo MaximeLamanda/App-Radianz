@@ -46,19 +46,23 @@ export function GoogleMapsLoader({ children }: GoogleMapsLoaderProps) {
       return () => clearInterval(checkLoaded);
     }
 
+    // Origine actuelle (ex. localhost:3001) pour les restrictions de clé API
+    const origin = typeof window !== "undefined" ? `${window.location.hostname}${window.location.port ? `:${window.location.port}` : ""}` : "localhost:3000";
+    const originPattern = `${window.location.protocol}//${origin}/*`;
+
     // Ajouter un callback d'erreur global pour Google Maps
     (window as any).gm_authFailure = () => {
-      const detailedError = 
+      const detailedError =
         "Erreur ApiTargetBlockedMapError détectée.\n\n" +
         "Causes possibles :\n" +
         "1. Restrictions d'API trop strictes dans Google Cloud Console\n" +
-        "2. Restrictions de domaine HTTP (ajoutez localhost:3000)\n" +
+        `2. Restrictions de domaine HTTP (ajoutez ${origin})\n` +
         "3. API Maps JavaScript non activée\n\n" +
         "SOLUTION RAPIDE :\n" +
         "Dans Google Cloud Console → Votre clé API →\n" +
         "- API restrictions : Sélectionnez 'Don't restrict key' temporairement\n" +
         "OU ajoutez 'Maps JavaScript API' à la liste\n" +
-        "- Application restrictions : Ajoutez 'localhost:3000/*'\n\n" +
+        `- Application restrictions (HTTP) : Ajoutez ${originPattern}\n\n` +
         "Vérifiez la console du navigateur (F12) pour plus de détails.";
       setError(detailedError);
       console.error("Google Maps Auth Failure - ApiTargetBlockedMapError - Vérifiez les restrictions d'API dans Google Cloud Console");
@@ -86,7 +90,7 @@ export function GoogleMapsLoader({ children }: GoogleMapsLoaderProps) {
     // Charger le script Google Maps avec callback d'erreur
     // Inclure les bibliothèques places et drawing
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,drawing&callback=initGoogleMaps`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,drawing&callback=initGoogleMaps&loading=async`;
     script.async = true;
     script.defer = true;
     

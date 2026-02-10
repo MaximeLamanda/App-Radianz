@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Base de données de consommation énergétique par type de bâtiment
+    // Lecture : nécessaire pour les calculs solaires
+    // Écriture : nécessaire pour l'init (admin/init-energy-data ou script)
+    match /building_energy_consumption/{docId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Pipeline prospects (Solar Scout)
+    match /prospects/{prospectId} {
+      allow read, write: if true;
+    }
+
+    // Leads (boîte de réception)
+    match /leads/{leadId} {
+      allow read, write: if true;
+    }
+
+    // Bloquer tout le reste par défaut
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
