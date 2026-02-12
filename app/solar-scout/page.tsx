@@ -163,6 +163,9 @@ export default function SolarScoutPage() {
             onValidationComplete={() => {
               setShouldValidateDrawing(false);
             }}
+            onValidateDrawing={() => {
+              setShouldValidateDrawing(true);
+            }}
             onSurfaceUpdate={(surface) => {
               setProspect((currentProspect) => {
                 if (!currentProspect) {

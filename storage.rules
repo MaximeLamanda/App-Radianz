@@ -1,0 +1,19 @@
+rules_version = '2';
+
+// Firebase Storage : images des références de panneaux et autres fichiers
+// À publier dans la console Firebase : Storage → Règles
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Dossier des photos des références de panneaux (upload depuis l'app)
+    match /panel_references/{fileName} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Bloquer tout le reste par défaut (optionnel : autoriser d'autres dossiers plus tard)
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

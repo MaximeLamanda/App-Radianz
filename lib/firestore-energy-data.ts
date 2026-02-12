@@ -19,6 +19,7 @@ import { db } from "./firebase";
 import {
   BUILDING_ENERGY_CONSUMPTION_DATA,
   annualToMonthlyBreakdown,
+  annualToHourlyBreakdown,
   type BuildingEnergyConsumption,
 } from "./building-energy-consumption";
 
@@ -49,7 +50,7 @@ export async function initializeEnergyConsumptionData(): Promise<void> {
   }
 }
 
-/** Dérive consommation moyenne et par mois si absentes (rétrocompatibilité). */
+/** Dérive consommation moyenne, par mois et par heure si absentes (rétrocompatibilité). */
 function withMonthlyConsumption(data: Record<string, unknown>): BuildingEnergyConsumption {
   const annual = (data.consumptionKwhPerM2 as number) ?? 150;
   const monthly =
@@ -60,11 +61,16 @@ function withMonthlyConsumption(data: Record<string, unknown>): BuildingEnergyCo
   if (!Array.isArray(byMonth) || byMonth.length !== 12) {
     byMonth = annualToMonthlyBreakdown(annual);
   }
+  let perHours = data.consumptionKwhPerM2PerHours as number[] | undefined;
+  if (!Array.isArray(perHours) || perHours.length !== 24) {
+    perHours = annualToHourlyBreakdown(annual);
+  }
   return {
     ...data,
     consumptionKwhPerM2: annual,
     consumptionKwhPerM2PerMonth: monthly,
     consumptionKwhPerM2ByMonth: byMonth,
+    consumptionKwhPerM2PerHours: perHours,
   } as BuildingEnergyConsumption;
 }
 
@@ -106,6 +112,32 @@ export async function getEnergyConsumptionForMonthFromFirebase(
     return byMonth[monthIndex] ?? data.consumptionKwhPerM2PerMonth;
   }
   return data.consumptionKwhPerM2PerMonth;
+}
+
+/**
+ * Récupère le profil de consommation horaire depuis Firebase (24 valeurs, kWh/m² par heure).
+ * Index 0 = 0h-1h, 23 = 23h-24h.
+ */
+export async function getHourlyConsumptionProfileFromFirebase(
+  googlePlaceType: string
+): Promise<number[]> {
+  const data = await getEnergyConsumptionFromFirebase(googlePlaceType);
+  if (!data?.consumptionKwhPerM2PerHours?.length) return annualToHourlyBreakdown(150);
+  return data.consumptionKwhPerM2PerHours;
+}
+
+/**
+ * Récupère la consommation pour une heure donnée depuis Firebase (kWh/m² pour cette heure).
+ * @param googlePlaceType - Type de bâtiment
+ * @param hour0to23 - Heure (0-23)
+ */
+export async function getEnergyConsumptionForHourFromFirebase(
+  googlePlaceType: string,
+  hour0to23: number
+): Promise<number> {
+  const profile = await getHourlyConsumptionProfileFromFirebase(googlePlaceType);
+  const h = Math.max(0, Math.min(23, Math.floor(hour0to23)));
+  return profile[h] ?? profile[0] ?? 0;
 }
 
 /**
@@ -172,6 +204,7 @@ async function getEnergyConsumptionByCategory(
       consumptionKwhPerM2: average,
       consumptionKwhPerM2PerMonth: monthlyAverage,
       consumptionKwhPerM2ByMonth: annualToMonthlyBreakdown(average),
+      consumptionKwhPerM2PerHours: annualToHourlyBreakdown(average),
       source: "Calculé depuis Firebase",
       notes: `Moyenne de ${count} types dans la catégorie ${category}`,
     };

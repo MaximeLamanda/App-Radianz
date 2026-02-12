@@ -18,6 +18,8 @@ export interface BuildingEnergyConsumption {
   consumptionKwhPerM2PerMonth: number; // Consommation mensuelle moyenne en kWh/m² (annuel / 12)
   /** Consommation par mois en kWh/m² [jan, fév, ..., déc] — profil saisonnier */
   consumptionKwhPerM2ByMonth: number[];
+  /** Consommation par heure en kWh/m² [0h-1h, 1h-2h, ..., 23h-24h] — profil horaire type */
+  consumptionKwhPerM2PerHours: number[];
   source: string; // Source des données
   notes?: string; // Notes additionnelles
 }
@@ -48,10 +50,64 @@ export function annualToMonthlyBreakdown(annualKwhPerM2: number): number[] {
 }
 
 /**
+ * Répartit la consommation annuelle en 24 heures (profil type tertiaire).
+ * @returns [0h-1h, 1h-2h, ..., 23h-24h] en kWh/m² par heure
+ */
+export function annualToHourlyBreakdown(annualKwhPerM2: number): number[] {
+  const dailyPerM2 = annualKwhPerM2 / 365;
+  return HOURLY_CONSUMPTION_PROFILE.map((f) =>
+    Math.round((dailyPerM2 * f) * 1000) / 1000
+  );
+}
+
+/**
+ * Profil horaire type bâtiment tertiaire (journée type) : fraction de la consommation journalière par heure.
+ * Index 0 = 0h-1h, 23 = 23h-24h. Somme = 1.
+ * Faible la nuit (0-6), montée 7-9, plateau 9-18, descente 18-20, faible 20-24.
+ */
+const HOURLY_PROFILE_RAW = [
+  0.015, 0.012, 0.012, 0.012, 0.014, 0.018, 0.025, 0.04, 0.055, 0.06, 0.058, 0.055,
+  0.048, 0.052, 0.058, 0.06, 0.058, 0.052, 0.042, 0.032, 0.025, 0.022, 0.018, 0.016,
+];
+const HOURLY_PROFILE_SUM = HOURLY_PROFILE_RAW.reduce((a, b) => a + b, 0);
+export const HOURLY_CONSUMPTION_PROFILE: number[] = HOURLY_PROFILE_RAW.map(
+  (f) => Math.round((f / HOURLY_PROFILE_SUM) * 1000) / 1000
+);
+
+/**
+ * Consommation horaire typique (kWh/m²) pour un type de bâtiment, heure 0-23.
+ * Basé sur la consommation annuelle répartie en jour type via HOURLY_CONSUMPTION_PROFILE.
+ */
+export function getEnergyConsumptionForHour(
+  googlePlaceType: string,
+  hour0to23: number
+): number {
+  const data = getBuildingEnergyData(googlePlaceType);
+  const annualPerM2 = data?.consumptionKwhPerM2 ?? 150;
+  const dailyPerM2 = annualPerM2 / 365;
+  const h = Math.max(0, Math.min(23, Math.floor(hour0to23)));
+  const fraction = HOURLY_CONSUMPTION_PROFILE[h] ?? 1 / 24;
+  return Math.round((dailyPerM2 * fraction) * 1000) / 1000;
+}
+
+/**
+ * Profil de consommation horaire pour un type (24 valeurs, kWh/m² par heure).
+ */
+export function getHourlyConsumptionProfileKwhPerM2(googlePlaceType: string): number[] {
+  const data = getBuildingEnergyData(googlePlaceType);
+  if (data?.consumptionKwhPerM2PerHours?.length === 24) return data.consumptionKwhPerM2PerHours;
+  const annualPerM2 = data?.consumptionKwhPerM2 ?? 150;
+  return annualToHourlyBreakdown(annualPerM2);
+}
+
+/**
  * Tableau de référence des consommations énergétiques par type de bâtiment Google
  * (sans détail mensuel ; le détail par mois est ajouté via annualToMonthlyBreakdown).
  */
-const RAW_BUILDING_ENERGY_DATA: Omit<BuildingEnergyConsumption, "consumptionKwhPerM2ByMonth">[] = [
+const RAW_BUILDING_ENERGY_DATA: Omit<
+  BuildingEnergyConsumption,
+  "consumptionKwhPerM2ByMonth" | "consumptionKwhPerM2PerHours"
+>[] = [
   // === RETAIL / COMMERCE ===
   {
     googlePlaceType: "store",
@@ -304,11 +360,12 @@ const RAW_BUILDING_ENERGY_DATA: Omit<BuildingEnergyConsumption, "consumptionKwhP
   }
 ];
 
-/** Données complètes avec répartition mensuelle (jan–déc) pour Firebase et app. */
+/** Données complètes avec répartition mensuelle (jan–déc) et horaire (24h) pour Firebase et app. */
 export const BUILDING_ENERGY_CONSUMPTION_DATA: BuildingEnergyConsumption[] =
   RAW_BUILDING_ENERGY_DATA.map((d) => ({
     ...d,
     consumptionKwhPerM2ByMonth: annualToMonthlyBreakdown(d.consumptionKwhPerM2),
+    consumptionKwhPerM2PerHours: annualToHourlyBreakdown(d.consumptionKwhPerM2),
   }));
 
 /**

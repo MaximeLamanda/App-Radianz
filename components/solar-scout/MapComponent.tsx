@@ -2,6 +2,61 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exposure, PlaceSearchResult } from "@/types";
+
+/** Overlay Google Maps : bouton "Valider" ancré à une position lat/lng sur la carte */
+function createValidationButtonOverlay() {
+  if (typeof window === "undefined" || !window.google?.maps) {
+    return null;
+  }
+
+  class ValidationButtonOverlay extends window.google.maps.OverlayView {
+    private position: google.maps.LatLng;
+    private onClick: () => void;
+    private div: HTMLDivElement | null = null;
+
+    constructor(position: google.maps.LatLng, onClick: () => void) {
+      super();
+      this.position = position;
+      this.onClick = onClick;
+    }
+
+    onAdd() {
+      this.div = document.createElement("div");
+      this.div.style.cssText =
+        "position:absolute;z-index:100;transform:translate(-50%,-50%);pointer-events:auto;";
+      const btn = document.createElement("button");
+      btn.textContent = "Valider";
+      btn.type = "button";
+      btn.style.cssText =
+        "padding:8px 14px;font-size:13px;font-weight:600;color:#fff;background:#4285F4;border:none;border-radius:8px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.2);white-space:nowrap;";
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        this.onClick();
+      };
+      this.div.appendChild(btn);
+      const panes = this.getPanes();
+      if (panes) panes.overlayMouseTarget.appendChild(this.div);
+    }
+
+    draw() {
+      if (!this.div || !this.position) return;
+      const proj = this.getProjection();
+      if (!proj) return;
+      const point = proj.fromLatLngToDivPixel(this.position);
+      if (point) {
+        this.div.style.left = String(point.x) + "px";
+        this.div.style.top = String(point.y) + "px";
+      }
+    }
+
+    onRemove() {
+      if (this.div && this.div.parentNode) this.div.parentNode.removeChild(this.div);
+      this.div = null;
+    }
+  }
+
+  return ValidationButtonOverlay;
+}
 import { convertPlaceType, extractContact } from "@/lib/places";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
 
@@ -14,6 +69,7 @@ interface MapComponentProps {
   currentProspect?: Prospect | null;
   shouldValidateDrawing?: boolean;
   onValidationComplete?: () => void;
+  onValidateDrawing?: () => void;
   searchResults?: PlaceSearchResult[];
   onSearchResultClick?: (result: PlaceSearchResult) => void;
   onGetMapCenter?: (getCenterFunc: () => AddressCoordinates | null) => void;
@@ -28,6 +84,7 @@ export function MapComponent({
   currentProspect,
   shouldValidateDrawing = false,
   onValidationComplete,
+  onValidateDrawing,
   searchResults = [],
   onSearchResultClick,
   onGetMapCenter,
@@ -38,6 +95,8 @@ export function MapComponent({
   const polygonRef = useRef<google.maps.Polygon | null>(null);
   const searchMarkersRef = useRef<google.maps.Marker[]>([]);
   const isFocusingOnResultRef = useRef<boolean>(false);
+  const [validationButtonPosition, setValidationButtonPosition] = useState<{ lat: number; lng: number } | null>(null);
+  const validationOverlayRef = useRef<google.maps.OverlayView | null>(null);
   
   // Fonction pour obtenir le centre de la carte - toujours disponible via ref
   const getMapCenterFunc = useRef<(() => AddressCoordinates | null) | null>(null);
@@ -65,9 +124,7 @@ export function MapComponent({
         center: centerCoordinates || { lat: 48.5311, lng: 2.0508 }, // Roinville par défaut
         zoom: 16,
         mapTypeId: maps.MapTypeId.HYBRID, // Satellite + POI et libellés (EEA : JS API uniquement)
-        disableDefaultUI: false,
-        zoomControl: true,
-        mapTypeControl: true,
+        disableDefaultUI: true, // Désactive tous les contrôles par défaut (zoom, type de carte, etc.)
         // Activer l'affichage des établissements (POI) nativement
         clickableIcons: true, // Permet de cliquer sur les établissements natifs
         styles: [], // Styles par défaut pour voir les POI natifs
@@ -360,6 +417,8 @@ export function MapComponent({
     const maps = window.google.maps;
 
     if (isDrawing) {
+      // Masquer le bouton Valider quand on réactive le mode dessin
+      setValidationButtonPosition(null);
       // Activer le mode dessin
       if (!drawingManagerRef.current && maps.drawing && maps.drawing.DrawingManager) {
         const drawingManager = new maps.drawing.DrawingManager({
@@ -421,6 +480,12 @@ export function MapComponent({
 
           // Désactiver le mode dessin après création
           drawingManager.setDrawingMode(null);
+
+          // Afficher le bouton Valider à côté du premier point (dernier point posé quand on ferme le polygone)
+          if (path.getLength() > 0) {
+            const firstPoint = path.getAt(0);
+            setValidationButtonPosition({ lat: firstPoint.lat(), lng: firstPoint.lng() });
+          }
         });
         
         // Écouter le début du dessin
@@ -487,23 +552,60 @@ export function MapComponent({
           // Garder le polygone affiché mais le rendre non éditable
           polygon.setEditable(false);
           
-          // Réinitialiser le flag de validation
+          // Réinitialiser le flag de validation et masquer le bouton Valider sur la carte
+          setValidationButtonPosition(null);
           if (onValidationComplete) {
             onValidationComplete();
           }
         } else {
           console.warn("[Surface] Surface calculée = 0, validation annulée");
+          setValidationButtonPosition(null);
           if (onValidationComplete) {
             onValidationComplete();
           }
         }
       } else if (!shouldValidateDrawing) {
-        // Annulation : supprimer le polygone en cours de dessin
+        // Annulation : supprimer le polygone en cours de dessin et le bouton Valider
+        setValidationButtonPosition(null);
         polygonRef.current.setMap(null);
         polygonRef.current = null;
       }
     }
   }, [isDrawing, shouldValidateDrawing, onSurfaceUpdate]);
+
+  // Afficher le bouton "Valider" sur la carte à côté du dernier point du polygone
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return;
+
+    const ValidationButtonOverlayClass = createValidationButtonOverlay();
+    if (!ValidationButtonOverlayClass) return;
+
+    if (validationButtonPosition && onValidateDrawing && onDrawingChange) {
+      const latLng = new window.google.maps.LatLng(
+        validationButtonPosition.lat,
+        validationButtonPosition.lng
+      );
+      const overlay = new ValidationButtonOverlayClass(latLng, () => {
+        onValidateDrawing!();
+        onDrawingChange(false);
+      });
+      overlay.setMap(map);
+      validationOverlayRef.current = overlay;
+    } else {
+      if (validationOverlayRef.current) {
+        validationOverlayRef.current.setMap(null);
+        validationOverlayRef.current = null;
+      }
+    }
+
+    return () => {
+      if (validationOverlayRef.current) {
+        validationOverlayRef.current.setMap(null);
+        validationOverlayRef.current = null;
+      }
+    };
+  }, [validationButtonPosition, onValidateDrawing, onDrawingChange]);
 
   // Référence pour stocker tous les polygones affichés
   const polygonsRef = useRef<google.maps.Polygon[]>([]);

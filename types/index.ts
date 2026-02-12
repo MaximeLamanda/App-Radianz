@@ -7,6 +7,8 @@ export interface RoofSurface {
   id?: string; // Identifiant unique pour la surface
   area: number; // en m²
   polygon: Array<{ lat: number; lng: number }>;
+  /** Pourcentage de surface disponible pour l'installation solaire (0-100). Défaut: 100% */
+  availablePercentage?: number;
 }
 
 export interface Exposure {
@@ -125,6 +127,28 @@ export type InverterType =
   | "string_inverter" // Onduleur string
   | "micro_inverter" // Micro-onduleur
   | "power_optimizer"; // Optimiseur de puissance
+
+/**
+ * Référence de panneau (marque/modèle) pour les paramètres
+ * Stockée en localStorage pour l'instant ; migration Firestore prévue
+ */
+export interface PanelReference {
+  id: string;
+  name: string;
+  panelType: SolarPanelType;
+  powerW: number;
+  efficiencyPercent: number;
+  countryOfOrigin: string;
+  /** Code pays ISO 3166-1 alpha-2 (ex. "cn") pour afficher le drapeau via API */
+  countryCode?: string;
+  costEur: number; // coût en € par panneau
+  /** URL ou chemin de la photo du panneau (ex. /DM450M10RT-B54HBB.jpeg) */
+  imageUrl?: string;
+  /** Garantie en années (ex. 25) */
+  warrantyYears?: number;
+  /** Badge "Recommandé" */
+  recommended?: boolean;
+}
 
 /**
  * Configuration des équipements solaires

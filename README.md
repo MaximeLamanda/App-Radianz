@@ -86,6 +86,11 @@ NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=votre_cle_api_google_maps
 NEXT_PUBLIC_FIREBASE_API_KEY=votre_cle_firebase
 NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=votre_domaine.firebaseapp.com
 NEXT_PUBLIC_FIREBASE_PROJECT_ID=votre_project_id
+
+# Image du panneau par défaut (optionnel)
+# Bucket Storage : solarview-8aec9.firebasestorage.app
+# Dans Firebase Console → Storage → clic sur l'image → "Obtenir le lien" → coller l'URL ici
+# NEXT_PUBLIC_DEFAULT_PANEL_IMAGE_URL=https://firebasestorage.googleapis.com/v0/b/solarview-8aec9.firebasestorage.app/o/...
 ```
 
 ### Configuration Google Cloud Console

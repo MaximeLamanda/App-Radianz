@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -11,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Layers, Trash2, Check, X, Loader2, AlertCircle } from "lucide-react";
+import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck } from "lucide-react";
 import { addProspectToPipeline, createLeadFromProspect } from "@/lib/firestore";
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { SatelliteImage } from "./SatelliteImage";
@@ -20,11 +22,15 @@ import { surfaceToKwp } from "@/lib/surface-to-kwp";
 import {
   BUILDING_ENERGY_CONSUMPTION_DATA,
   getEnergyConsumptionForMonth,
+  getHourlyConsumptionProfileKwhPerM2,
   isKnownPlaceType,
   normalizePlaceTypeForConsumption,
   type MonthIndex,
 } from "@/lib/building-energy-consumption";
-import type { Prospect, SolarPotential } from "@/types";
+import { buildTypicalDayFromMonthly } from "@/lib/pvgis";
+import { getPanelReferences, getCountryFlagUrl } from "@/lib/solar-settings";
+import { getPanelReferencesFromFirebase } from "@/lib/firestore-panel-references";
+import type { Prospect, SolarPotential, PanelReference } from "@/types";
 
 /** Options du select : types canoniques (sans doublons) + type actuel si inconnu */
 function getPlaceTypeOptions(currentValue: string): { value: string; label: string }[] {
@@ -49,10 +55,12 @@ function PlaceTypeSelect({
   value,
   onValueChange,
   disabled,
+  variant = "default",
 }: {
   value: string;
   onValueChange: (value: string) => void;
   disabled?: boolean;
+  variant?: "default" | "dark";
 }) {
   const options = useMemo(() => getPlaceTypeOptions(value), [value]);
   const displayValue =
@@ -62,7 +70,13 @@ function PlaceTypeSelect({
           ?.value ?? value ?? "other";
   return (
     <Select value={displayValue} onValueChange={onValueChange} disabled={disabled}>
-      <SelectTrigger className="bg-white">
+      <SelectTrigger
+        className={
+          variant === "dark"
+            ? "bg-white/10 border-white/20 text-white hover:bg-white/15 focus:ring-white/30 focus:ring-offset-0 focus:ring-offset-black [&>span]:text-white [&_svg]:text-white [&_svg]:opacity-80 placeholder:text-white/60"
+            : "bg-white"
+        }
+      >
         <SelectValue placeholder="Choisir un type" />
       </SelectTrigger>
       <SelectContent>
@@ -105,6 +119,18 @@ export function ProspectDrawer({
   const [address, setAddress] = useState(prospect?.address || "");
   const [isLoadingPVGIS, setIsLoadingPVGIS] = useState(false);
   const [pvgisError, setPvgisError] = useState<string | null>(null);
+  const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
+  const [usedPanelRef, setUsedPanelRef] = useState<PanelReference | null>(null);
+
+  useEffect(() => {
+    getPanelReferencesFromFirebase()
+      .then((refs) => setUsedPanelRef(refs[0] ?? null))
+      .catch(() => {
+        const local = getPanelReferences();
+        setUsedPanelRef(local[0] ?? null);
+      });
+  }, []);
+
   // Mettre à jour l'adresse quand le prospect change
   useEffect(() => {
     if (prospect?.address) {
@@ -301,50 +327,56 @@ export function ProspectDrawer({
                 </div>
               </div>
 
-              {/* Aperçu satellite du lieu (Mapbox ou Google plan) */}
-              {prospect.address && (
-                <div className="bg-gray-100 rounded-md py-3 px-4">
-                  <div className="text-sm font-semibold text-gray-700 mb-2">Aperçu satellite du lieu</div>
-                  <SatelliteImage
-                    key={`sat-${prospect.coordinates.lat.toFixed(4)}-${prospect.coordinates.lng.toFixed(4)}`}
-                    coordinates={prospect.coordinates}
-                    address={prospect.address}
-                    zoom={16}
-                  />
-                </div>
-              )}
-
-              {prospect.name && (
-                <div className="bg-gray-100 rounded-md py-3 px-4">
-                  <div className="text-sm font-medium">{prospect.name}</div>
-                </div>
-              )}
-              {prospect.address && (
-                <div className="bg-gray-100 rounded-md py-3 px-4">
-                  <div className="text-sm font-medium">{prospect.address}</div>
-                </div>
-              )}
-              <div className="bg-gray-100 rounded-md py-3 px-4">
-                <div className="text-xs font-medium text-gray-600 mb-1.5">Type de lieu (base consommation)</div>
-                <PlaceTypeSelect
-                  value={prospect.placeType}
-                  onValueChange={(value) => {
-                    if (onProspectUpdate) {
-                      onProspectUpdate({ ...prospect, placeType: value });
-                    }
-                  }}
-                  disabled={!onProspectUpdate}
-                />
-              </div>
-
-              <div className="flex gap-2">
-                <div className="flex-1 bg-gray-100 rounded-md py-3 px-4 text-sm text-muted-foreground">
-                  Lat: {prospect.coordinates.lat.toFixed(6)}
-                </div>
-                <div className="flex-1 bg-gray-100 rounded-md py-3 px-4 text-sm text-muted-foreground">
-                  Lng: {prospect.coordinates.lng.toFixed(6)}
-                </div>
-              </div>
+              {/* Bloc prospect : photo, nom, adresse, type, lat/lon */}
+              <Card className="bg-black border-0 text-white overflow-hidden">
+                <CardContent className="p-0">
+                  {/* Photo : aperçu satellite avec padding */}
+                  {prospect.coordinates && (
+                    <div className="p-3 pt-3 pb-0">
+                      <div className="w-full overflow-hidden rounded-lg">
+                        <SatelliteImage
+                          key={`sat-${prospect.coordinates.lat.toFixed(4)}-${prospect.coordinates.lng.toFixed(4)}`}
+                          coordinates={prospect.coordinates}
+                          address={prospect.address}
+                          zoom={17}
+                          width={400}
+                          height={160}
+                          className="!h-40 rounded-lg border-0"
+                          showOverlays={false}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <div className="p-3 space-y-2">
+                    {prospect.name && (
+                      <p className="text-sm font-medium truncate" title={prospect.name}>
+                        {prospect.name}
+                      </p>
+                    )}
+                    {prospect.address && (
+                      <p className="text-xs text-white/80 truncate" title={prospect.address}>
+                        {prospect.address}
+                      </p>
+                    )}
+                    <div className="pt-1">
+                      <PlaceTypeSelect
+                        variant="dark"
+                        value={prospect.placeType}
+                        onValueChange={(value) => {
+                          if (onProspectUpdate) {
+                            onProspectUpdate({ ...prospect, placeType: value });
+                          }
+                        }}
+                        disabled={!onProspectUpdate}
+                      />
+                    </div>
+                    <div className="flex gap-3 pt-1 text-[11px] text-white/60">
+                      <span>Lat {prospect.coordinates.lat.toFixed(5)}</span>
+                      <span>Lon {prospect.coordinates.lng.toFixed(5)}</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
 
               {/* Section des surfaces */}
               <div className="bg-gray-100 rounded-md py-3 px-4">
@@ -389,30 +421,30 @@ export function ProspectDrawer({
                       return (
                         <div
                           key={surfaceId}
-                          className="bg-gray-50 rounded-md py-2 px-3 border border-gray-200 hover:border-gray-300 transition-colors"
+                          className="rounded-xl border border-border bg-white p-3 shadow-sm flex items-stretch gap-3"
                         >
-                          <div className="flex items-center gap-3">
-                            {/* Icône de surface */}
-                            <div className="flex-shrink-0">
-                              <div className="w-10 h-10 rounded-md bg-blue-50 flex items-center justify-center">
-                                <Layers className="h-5 w-5 text-blue-600" />
-                              </div>
+                          <div className="flex-shrink-0 flex items-center">
+                            <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
+                          </div>
+                          <div className="flex-1 min-w-0 flex flex-col justify-center">
+                            <div className="font-semibold text-xs text-foreground">
+                              Surface {index + 1}
                             </div>
-                            
-                            {/* Informations de la surface : m², points, kWp */}
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium">
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                                 {surface.area.toFixed(2)} m²
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                {surface.polygon.length} points
-                              </div>
-                              <div className="text-sm font-semibold text-amber-800 mt-0.5">
+                              </span>
+                              <span className="text-muted-foreground/40 text-xs">|</span>
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-600">
                                 {surfaceKwp.toFixed(2)} kWp
-                              </div>
+                              </span>
+                              <span className="text-muted-foreground/40 text-xs">|</span>
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                {(surface.availablePercentage ?? 100)}%
+                              </span>
                             </div>
-                            
-                            {/* Bouton de suppression */}
+                          </div>
+                          {/* Bouton de suppression */}
                             {!isDrawing && (
                               <Button
                                 variant="ghost"
@@ -446,7 +478,6 @@ export function ProspectDrawer({
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             )}
-                          </div>
                         </div>
                       );
                     });
@@ -454,49 +485,6 @@ export function ProspectDrawer({
                 </div>
               </div>
 
-              {isDrawing && (
-                <div className="bg-yellow-50 border-2 border-yellow-300 rounded-md py-3 px-4">
-                  <div className="text-sm font-medium text-yellow-800 mb-2">
-                    Mode dessin activé
-                  </div>
-                  <p className="text-xs text-yellow-700 mb-3">
-                    Cliquez sur la carte pour dessiner un polygone représentant la surface du toit.
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={() => {
-                        // Signaler qu'on veut valider avant de désactiver le mode dessin
-                        if (onValidateDrawing) {
-                          onValidateDrawing();
-                        }
-                        if (onDrawingChange) {
-                          onDrawingChange(false);
-                        }
-                      }}
-                      className="flex-1"
-                    >
-                      <Check className="h-3 w-3 mr-1" />
-                      Valider
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        // Annulation : ne pas valider, juste désactiver le mode dessin
-                        if (onDrawingChange) {
-                          onDrawingChange(false);
-                        }
-                      }}
-                      className="flex-1"
-                    >
-                      <X className="h-3 w-3 mr-1" />
-                      Annuler
-                    </Button>
-                  </div>
-                </div>
-              )}
 
               {prospect.exposure && (
                 <div className="bg-gray-100 rounded-md py-3 px-4">
@@ -528,23 +516,172 @@ export function ProspectDrawer({
                prospect.solarPotential.monthlyProduction.length > 0 &&
                !isLoadingPVGIS &&
                ((prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0) && (
-                <div className="bg-gray-100 rounded-md py-3 px-4">
-                  <div className="text-sm font-semibold text-gray-700 mb-3">Production mensuelle</div>
-                  <div>
-                    <MonthlyProductionChart
-                      data={(() => {
-                        const raw = prospect.solarPotential!.monthlyProduction!;
-                        const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
-                        const placeType = prospect.placeType || "other";
-                        return raw.map((m) => ({
-                          month: m.month,
-                          production: m.production,
-                          consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
-                        }));
-                      })()}
-                    />
+                <>
+                  <div className="bg-gray-100 rounded-md py-3 px-4">
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <div className="text-sm font-semibold text-gray-700">Production</div>
+                      <div
+                        role="tablist"
+                        className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 flex-shrink-0"
+                        aria-label="Vue du graphique"
+                      >
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={chartViewMode === "monthly"}
+                          onClick={() => setChartViewMode("monthly")}
+                          className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                            chartViewMode === "monthly"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          Mensuel
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={chartViewMode === "daily"}
+                          onClick={() => setChartViewMode("daily")}
+                          className={`rounded px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                            chartViewMode === "daily"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          Journalier
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <MonthlyProductionChart
+                        viewMode={chartViewMode}
+                        onViewModeChange={setChartViewMode}
+                        data={(() => {
+                          const raw = prospect.solarPotential!.monthlyProduction!;
+                          const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
+                          const placeType = prospect.placeType || "other";
+                          return raw.map((m) => ({
+                            month: m.month,
+                            production: m.production,
+                            consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
+                          }));
+                        })()}
+                        dailyData={(() => {
+                          const raw = prospect.solarPotential!.monthlyProduction!;
+                          const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
+                          if (surfaceM2 <= 0) return undefined;
+                          const placeType = prospect.placeType || "other";
+                          // raw est déjà en kWh total (déjà × kWp côté PVGIS), donc peakpower=1 pour ne pas re-multiplier
+                          const hourlyProduction = buildTypicalDayFromMonthly(raw, 1);
+                          const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
+                          return Array.from({ length: 24 }, (_, hour) => ({
+                            hour,
+                            production: hourlyProduction[hour] ?? 0,
+                            consumption: Math.round((hourlyConsumptionPerM2[hour] ?? 0) * surfaceM2),
+                          }));
+                        })()}
+                      />
+                    </div>
                   </div>
-                </div>
+                  {/* KPIs sous le graphique, dans des blocs séparés */}
+                  {(() => {
+                    const raw = prospect.solarPotential!.monthlyProduction!;
+                    const totalKwh = raw.reduce((s, m) => s + (m.production ?? 0), 0);
+                    const productionGwh = totalKwh / 1_000_000;
+                    const surfaceM2 =
+                      prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
+                      prospect.roofSurface?.area ??
+                      0;
+                    const placeType = prospect.placeType || "other";
+                    const totalConsumptionKwh = raw.reduce((sum, m) => {
+                      const perM2Month = getEnergyConsumptionForMonth(
+                        placeType,
+                        (m.month - 1) as MonthIndex,
+                      );
+                      return sum + perM2Month * surfaceM2;
+                    }, 0);
+                    const consumptionGwh = totalConsumptionKwh / 1_000_000;
+                    return (
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="bg-gray-100 rounded py-2 px-3 text-center">
+                            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              Production totale
+                            </div>
+                            <div className="text-sm font-semibold text-gray-900 flex items-center justify-center gap-1.5">
+                              <div className="w-2 h-2 rounded-full bg-blue-500" />
+                              {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
+                            </div>
+                          </div>
+                          <div className="bg-gray-100 rounded py-2 px-3 text-center">
+                            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              Consommation totale
+                            </div>
+                            <div className="text-sm font-semibold text-gray-900 flex items-center justify-center gap-1.5">
+                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: "hsl(0, 0%, 50%)" }} />
+                              {consumptionGwh >= 0.001 ? consumptionGwh.toFixed(3) : consumptionGwh.toFixed(6)} GWh
+                            </div>
+                          </div>
+                        </div>
+                        {usedPanelRef && (
+                          <div className="mt-2">
+                            <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Panneau utilisé</div>
+                            <div className="rounded-xl border border-border bg-white p-3 shadow-sm flex items-stretch gap-3">
+                            <div className="flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
+                              {usedPanelRef.imageUrl ? (
+                                <Image
+                                  src={usedPanelRef.imageUrl}
+                                  alt={usedPanelRef.name}
+                                  width={48}
+                                  height={48}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0 flex flex-col justify-center">
+                              <div className="font-semibold text-xs text-foreground truncate">{usedPanelRef.name}</div>
+                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{usedPanelRef.costEur}</span>
+                                <span className="text-muted-foreground/40 text-xs">|</span>
+                                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                  <Zap className="h-3 w-3 text-muted-foreground/80" />
+                                  {usedPanelRef.powerW}W
+                                </span>
+                                {usedPanelRef.warrantyYears != null && (
+                                  <>
+                                    <span className="text-muted-foreground/40 text-xs">|</span>
+                                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                      <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                                      {usedPanelRef.warrantyYears}y
+                                    </span>
+                                  </>
+                                )}
+                                {usedPanelRef.countryCode && (
+                                  <>
+                                    <span className="text-muted-foreground/40 text-xs">|</span>
+                                    <span className="inline-flex items-center shrink-0" title={usedPanelRef.countryOfOrigin}>
+                                      <img
+                                        src={getCountryFlagUrl(usedPanelRef.countryCode)}
+                                        alt=""
+                                        className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                        width={12}
+                                        height={12}
+                                      />
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </>
               )}
             </>
           ) : (

@@ -40,7 +40,7 @@ Après l'initialisation, vous pouvez vérifier dans Firebase Console :
 
 ## Structure des données dans Firebase
 
-Chaque document dans `building_energy_consumption` contient **par type de bâtiment** la consommation annuelle, la moyenne mensuelle et le **détail par mois** (janvier à décembre) :
+Chaque document dans `building_energy_consumption` contient **par type de bâtiment** la consommation annuelle, la moyenne mensuelle, le **détail par mois** (janvier à décembre) et le **profil horaire** (24 h) :
 
 ```json
 {
@@ -49,6 +49,7 @@ Chaque document dans `building_energy_consumption` contient **par type de bâtim
   "consumptionKwhPerM2": 350,
   "consumptionKwhPerM2PerMonth": 29.2,
   "consumptionKwhPerM2ByMonth": [33.6, 30.6, 29.2, 26.9, 25.7, 26.3, 27.7, 27.7, 28.6, 29.8, 32.1, 33.6],
+  "consumptionKwhPerM2PerHours": [0.014, 0.011, ...],
   "source": "US EIA - Food sales parmi les plus énergivores",
   "notes": "Réfrigération intensive",
   "createdAt": "<Timestamp>",
@@ -57,6 +58,7 @@ Chaque document dans `building_energy_consumption` contient **par type de bâtim
 ```
 
 - `consumptionKwhPerM2ByMonth` : tableau de 12 valeurs en kWh/m² (index 0 = janvier, 11 = décembre), profil saisonnier (chauffage hiver, climatisation été).
+- `consumptionKwhPerM2PerHours` : tableau de 24 valeurs en kWh/m² par heure (index 0 = 0h-1h, 23 = 23h-24h), profil horaire type tertiaire.
 
 ## Utilisation dans le code
 
@@ -66,6 +68,8 @@ Une fois les données initialisées :
 import {
   getEnergyConsumptionFromFirebase,
   getEnergyConsumptionForMonthFromFirebase,
+  getHourlyConsumptionProfileFromFirebase,
+  getEnergyConsumptionForHourFromFirebase,
 } from "@/lib/firestore-energy-data";
 
 // Tout le type de bâtiment (annuel + détail par mois)
@@ -75,7 +79,21 @@ console.log(data?.consumptionKwhPerM2ByMonth); // [33.6, 30.6, ...]
 
 // Consommation pour un mois donné (0 = janvier, 11 = décembre)
 const jan = await getEnergyConsumptionForMonthFromFirebase("supermarket", 0);
+
+// Profil horaire (24 valeurs kWh/m² par heure) — à utiliser de préférence
+const hourlyProfile = await getHourlyConsumptionProfileFromFirebase("supermarket");
+const consumptionAt14h = await getEnergyConsumptionForHourFromFirebase("supermarket", 14);
 ```
+
+### Intégrer le profil horaire (consumptionKwhPerM2PerHours) dans Firebase
+
+Si les documents existaient avant l’ajout du champ horaire, exécutez une fois :
+
+```bash
+npm run update-hourly-consumption
+```
+
+ou `npx tsx scripts/update-hourly-consumption-firebase.ts`. Cela met à jour (merge) uniquement `consumptionKwhPerM2PerHours` pour chaque type de bâtiment.
 
 ## Notes importantes
 

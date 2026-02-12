@@ -4,9 +4,16 @@
  * pour les calculs de potentiel solaire
  */
 
-import type { SolarEquipmentSettings, SolarPanelType, InverterType } from "@/types";
+import type { SolarEquipmentSettings, SolarPanelType, InverterType, PanelReference } from "@/types";
 
 const STORAGE_KEY = "solarEquipmentSettings";
+const STORAGE_KEY_PANEL_REFERENCES = "solarPanelReferences";
+
+/** URL du drapeau (FlagCDN) pour un code pays ISO 2 lettres */
+export function getCountryFlagUrl(countryCode: string): string {
+  const code = countryCode.toLowerCase().slice(0, 2);
+  return `https://flagcdn.com/w80/${code}.png`;
+}
 
 /**
  * Valeurs par défaut des paramètres
@@ -40,6 +47,61 @@ export function getSolarEquipmentSettings(): SolarEquipmentSettings {
   }
 
   return DEFAULT_SOLAR_SETTINGS;
+}
+
+/** URL de l'image du panneau par défaut : Firebase Storage si définie, sinon image locale */
+const DEFAULT_PANEL_IMAGE_URL =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_DEFAULT_PANEL_IMAGE_URL) ||
+  "/DM450M10RT-B54HBB.jpeg";
+
+/**
+ * Références de panneau par défaut (utilisées pour l'init Firestore si vide)
+ */
+export const DEFAULT_PANEL_REFERENCES: PanelReference[] = [
+  {
+    id: "default-1",
+    name: "DM450M10RT-B54HBB",
+    panelType: "monocrystalline",
+    powerW: 450,
+    efficiencyPercent: 20.9,
+    countryOfOrigin: "Chine",
+    countryCode: "cn",
+    costEur: 150,
+    imageUrl: DEFAULT_PANEL_IMAGE_URL,
+    warrantyYears: 25,
+    recommended: true,
+  },
+];
+
+/**
+ * Récupère les références de panneau depuis localStorage
+ */
+export function getPanelReferences(): PanelReference[] {
+  if (typeof window === "undefined") {
+    return DEFAULT_PANEL_REFERENCES;
+  }
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_PANEL_REFERENCES);
+    if (saved) {
+      const list = JSON.parse(saved) as PanelReference[];
+      return Array.isArray(list) && list.length > 0 ? list : DEFAULT_PANEL_REFERENCES;
+    }
+  } catch (error) {
+    console.error("Erreur lors du chargement des références panneaux:", error);
+  }
+  return DEFAULT_PANEL_REFERENCES;
+}
+
+/**
+ * Sauvegarde les références de panneau dans localStorage
+ */
+export function savePanelReferences(references: PanelReference[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY_PANEL_REFERENCES, JSON.stringify(references));
+  } catch (error) {
+    console.error("Erreur lors de la sauvegarde des références panneaux:", error);
+  }
 }
 
 /**

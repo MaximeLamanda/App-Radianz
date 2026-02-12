@@ -14,6 +14,8 @@ interface SatelliteImageProps {
   width?: number;
   height?: number;
   onClick?: () => void;
+  /** Afficher les overlays (label "Aperçu satellite" et adresse). Défaut: true */
+  showOverlays?: boolean;
 }
 
 /**
@@ -28,6 +30,7 @@ export function SatelliteImage({
   width = 400,
   height = 300,
   onClick,
+  showOverlays = true,
 }: SatelliteImageProps) {
   const [hasError, setHasError] = useState(false);
   const [useMapbox, setUseMapbox] = useState(hasMapboxToken());
@@ -112,13 +115,17 @@ export function SatelliteImage({
         onLoad={() => setHasError(false)}
         onError={handleError}
       />
-      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-1 bg-black/70 p-2 text-xs text-white">
-        <MapPin className="h-3 w-3 shrink-0" />
-        <span className="truncate">{address}</span>
-      </div>
-      <div className="absolute top-0 left-0 right-0 bg-black/50 px-2 py-1 text-center text-[10px] text-white">
-        {isSatellite ? "Aperçu satellite (Mapbox)" : "Aperçu plan • Vue satellite sur la carte interactive"}
-      </div>
+      {showOverlays && (
+        <>
+          <div className="absolute bottom-0 left-0 right-0 flex items-center gap-1 bg-black/70 p-2 text-xs text-white">
+            <MapPin className="h-3 w-3 shrink-0" />
+            <span className="truncate">{address}</span>
+          </div>
+          <div className="absolute top-0 left-0 right-0 bg-black/50 px-2 py-1 text-center text-[10px] text-white">
+            {isSatellite ? "Aperçu satellite (Mapbox)" : "Aperçu plan • Vue satellite sur la carte interactive"}
+          </div>
+        </>
+      )}
     </div>
   );
 }

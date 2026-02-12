@@ -1,8 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -12,7 +19,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Plus, Loader2, MapPin, Table, Settings, X } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
+import Image from "next/image";
+import { Search, Plus, Loader2, MapPin, Table, Settings, X, Trash2, Zap, FileCheck, MoreVertical, Pencil, ImagePlus } from "lucide-react";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { storage } from "@/lib/firebase";
 import { searchPlacesByType } from "@/lib/places-search";
 import { SatelliteImage } from "./SatelliteImage";
 import {
@@ -24,7 +35,284 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import type { AddressCoordinates, PlaceSearchResult, PlaceSearchType, Prospect, SolarPanelType, InverterType, SolarEquipmentSettings } from "@/types";
+import type { AddressCoordinates, PlaceSearchResult, PlaceSearchType, Prospect, SolarPanelType, InverterType, SolarEquipmentSettings, PanelReference } from "@/types";
+import { getPanelReferences, savePanelReferences, PANEL_TYPE_CHARACTERISTICS, getCountryFlagUrl } from "@/lib/solar-settings";
+import {
+  getPanelReferencesFromFirebase,
+  savePanelReferenceToFirebase,
+  deletePanelReferenceFromFirebase,
+  initializePanelReferencesInFirebase,
+} from "@/lib/firestore-panel-references";
+
+function PanelReferenceForm({
+  initialRef,
+  onSave,
+  onCancel,
+}: {
+  initialRef?: PanelReference | null;
+  onSave: (ref: PanelReference) => void;
+  onCancel: () => void;
+}) {
+  const isEdit = Boolean(initialRef);
+  const [name, setName] = useState(initialRef?.name ?? "");
+  const [panelType, setPanelType] = useState<SolarPanelType>(initialRef?.panelType ?? "monocrystalline");
+  const [powerW, setPowerW] = useState(initialRef?.powerW != null ? String(initialRef.powerW) : "");
+  const [efficiencyPercent, setEfficiencyPercent] = useState(initialRef?.efficiencyPercent != null ? String(initialRef.efficiencyPercent) : "");
+  const [countryOfOrigin, setCountryOfOrigin] = useState(initialRef?.countryOfOrigin ?? "");
+  const [countryCode, setCountryCode] = useState(initialRef?.countryCode ?? "");
+  const [costEur, setCostEur] = useState(initialRef?.costEur != null ? String(initialRef.costEur) : "");
+  const [warrantyYears, setWarrantyYears] = useState(initialRef?.warrantyYears != null ? String(initialRef.warrantyYears) : "");
+  const [imageUrl, setImageUrl] = useState(initialRef?.imageUrl ?? "");
+  const [recommended, setRecommended] = useState(initialRef?.recommended ?? false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-focus sur le premier champ quand le formulaire s'ouvre
+  useEffect(() => {
+    if (nameInputRef.current) {
+      nameInputRef.current.focus();
+    }
+  }, []);
+
+  const uploadImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setUploadError("Veuillez sélectionner une image (JPEG, PNG, etc.).");
+      return;
+    }
+    setUploadError(null);
+    setIsUploading(true);
+    try {
+      const path = `panel_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
+      const storageRef = ref(storage, path);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setImageUrl(url);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Erreur lors de l’upload.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) uploadImage(file);
+    e.target.value = "";
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) uploadImage(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => e.preventDefault();
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const power = parseInt(powerW, 10);
+    const eff = parseFloat(efficiencyPercent);
+    const cost = parseFloat(costEur);
+    const warranty = warrantyYears ? parseInt(warrantyYears, 10) : undefined;
+    if (!name.trim() || Number.isNaN(power) || power <= 0 || Number.isNaN(eff) || eff <= 0 || Number.isNaN(cost) || cost < 0) return;
+    onSave({
+      id: initialRef?.id ?? `ref-${Date.now()}`,
+      name: name.trim(),
+      panelType,
+      powerW: power,
+      efficiencyPercent: eff,
+      countryOfOrigin: countryOfOrigin.trim() || "—",
+      countryCode: countryCode.trim() || undefined,
+      costEur: cost,
+      warrantyYears: warranty && warranty > 0 ? warranty : undefined,
+      imageUrl: imageUrl.trim() || undefined,
+      recommended: recommended || undefined,
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Photo */}
+      <div className="space-y-2">
+        <Label>Photo</Label>
+        <div className="flex items-start gap-3">
+          <div
+            role="button"
+            tabIndex={0}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInputRef.current?.click(); } }}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); fileInputRef.current?.click(); }}
+            className="relative flex-shrink-0 w-24 h-24 rounded-lg border-2 border-dashed border-muted-foreground/30 flex flex-col items-center justify-center gap-1 bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors overflow-hidden"
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleFileChange}
+              disabled={isUploading}
+            />
+            {isUploading ? (
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            ) : imageUrl ? (
+              <div className="absolute inset-0">
+                <Image src={imageUrl} alt="Photo du panneau" fill className="object-cover" unoptimized />
+              </div>
+            ) : (
+              <ImagePlus className="h-6 w-6 text-muted-foreground" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0 space-y-2">
+            {imageUrl && !isUploading && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setImageUrl(""); }}
+              >
+                Supprimer
+              </Button>
+            )}
+            {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+            <Input
+              placeholder="Ou coller une URL"
+              value={imageUrl}
+              onChange={(e) => { setImageUrl(e.target.value); setUploadError(null); }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Nom */}
+      <div className="space-y-2">
+        <Label htmlFor="name">Nom / modèle</Label>
+        <Input
+          ref={nameInputRef}
+          id="name"
+          placeholder="Ex. DM450M10RT-B54HBB"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+
+      {/* Type de panneau */}
+      <div className="space-y-2">
+        <Label>Type de panneau</Label>
+        <Select value={panelType} onValueChange={(v) => setPanelType(v as SolarPanelType)}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="monocrystalline">Monocristallin</SelectItem>
+            <SelectItem value="polycrystalline">Polycristallin</SelectItem>
+            <SelectItem value="thin_film">Couche mince</SelectItem>
+            <SelectItem value="bifacial">Bifacial</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Puissance et Rendement */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="power">Puissance (W)</Label>
+          <Input
+            id="power"
+            type="number"
+            placeholder="400"
+            value={powerW}
+            onChange={(e) => setPowerW(e.target.value)}
+            min={100}
+            max={1000}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="efficiency">Rendement (%)</Label>
+          <Input
+            id="efficiency"
+            type="number"
+            placeholder="20"
+            value={efficiencyPercent}
+            onChange={(e) => setEfficiencyPercent(e.target.value)}
+            min={10}
+            max={30}
+            step={0.5}
+          />
+        </div>
+      </div>
+
+      {/* Pays */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="country">Pays d'origine</Label>
+          <Input
+            id="country"
+            placeholder="Ex. Chine"
+            value={countryOfOrigin}
+            onChange={(e) => setCountryOfOrigin(e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="countryCode">Code pays</Label>
+          <Input
+            id="countryCode"
+            placeholder="Ex. cn"
+            value={countryCode}
+            onChange={(e) => setCountryCode(e.target.value)}
+            maxLength={2}
+          />
+        </div>
+      </div>
+
+      {/* Coût et Garantie */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="cost">Coût (€)</Label>
+          <Input
+            id="cost"
+            type="number"
+            placeholder="150"
+            value={costEur}
+            onChange={(e) => setCostEur(e.target.value)}
+            min={0}
+            step={1}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="warranty">Garantie (ans)</Label>
+          <Input
+            id="warranty"
+            type="number"
+            placeholder="25"
+            value={warrantyYears}
+            onChange={(e) => setWarrantyYears(e.target.value)}
+            min={0}
+            max={40}
+          />
+        </div>
+      </div>
+
+      {/* Recommandé */}
+      <div className="flex items-center space-x-2">
+        <Checkbox
+          id="recommended"
+          checked={recommended}
+          onCheckedChange={(checked) => setRecommended(checked === true)}
+        />
+        <Label htmlFor="recommended" className="cursor-pointer">Recommandé</Label>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2 pt-4">
+        <Button type="submit" className="flex-1">{isEdit ? "Enregistrer" : "Ajouter"}</Button>
+        <Button type="button" variant="outline" onClick={onCancel}>Annuler</Button>
+      </div>
+    </form>
+  );
+}
 
 interface SidebarProps {
   onAddressSelect?: (address: string, coordinates: AddressCoordinates) => void;
@@ -61,7 +349,7 @@ export function Sidebar({
   
   // États pour la recherche par type
   const [selectedPlaceType, setSelectedPlaceType] = useState<PlaceSearchType | "">("");
-  const [selectedDistance, setSelectedDistance] = useState<string>("1000");
+  const [selectedDistance, setSelectedDistance] = useState<number[]>([1000]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
@@ -71,6 +359,10 @@ export function Sidebar({
   const [inverterType, setInverterType] = useState<InverterType>("string_inverter");
   const [panelPowerW, setPanelPowerW] = useState<string>("400");
   const [panelEfficiency, setPanelEfficiency] = useState<string>("20");
+  const [panelReferences, setPanelReferences] = useState<PanelReference[]>([]);
+  const [showAddPanelRef, setShowAddPanelRef] = useState(false);
+  const [openPanelMenuId, setOpenPanelMenuId] = useState<string | null>(null);
+  const [editingRef, setEditingRef] = useState<PanelReference | null>(null);
 
   // Charger les paramètres depuis localStorage au montage
   useEffect(() => {
@@ -98,6 +390,36 @@ export function Sidebar({
     };
     localStorage.setItem("solarEquipmentSettings", JSON.stringify(settings));
   }, [panelType, inverterType, panelPowerW, panelEfficiency]);
+
+  // Charger les références de panneau (Firebase en priorité, fallback localStorage)
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    let cancelled = false;
+    getPanelReferencesFromFirebase()
+      .then(async (fromFirebase) => {
+        if (cancelled) return;
+        if (fromFirebase.length > 0) {
+          setPanelReferences(fromFirebase);
+          savePanelReferences(fromFirebase);
+        } else {
+          await initializePanelReferencesInFirebase().catch(() => {});
+          if (cancelled) return;
+          const afterInit = await getPanelReferencesFromFirebase();
+          if (afterInit.length > 0) {
+            setPanelReferences(afterInit);
+            savePanelReferences(afterInit);
+          } else {
+            const fromLocal = getPanelReferences();
+            setPanelReferences(fromLocal);
+          }
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPanelReferences(getPanelReferences());
+      });
+    return () => { cancelled = true; };
+  }, [isSettingsOpen]);
 
   // Initialiser l'adresse avec l'adresse initiale si fournie
   useEffect(() => {
@@ -212,7 +534,7 @@ export function Sidebar({
       
 
       // Rechercher les lieux
-      const radius = parseInt(selectedDistance);
+      const radius = selectedDistance[0];
       const results = await searchPlacesByType(coordinates, selectedPlaceType as PlaceSearchType, radius);
       
       if (onSearchResults) {
@@ -239,213 +561,206 @@ export function Sidebar({
     { value: "shopping_mall", label: "Centre commercial" },
   ];
 
-  // Options de distance
-  const distanceOptions = [
-    { value: "500", label: "500 m" },
-    { value: "1000", label: "1 km" },
-    { value: "2000", label: "2 km" },
-    { value: "5000", label: "5 km" },
-    { value: "10000", label: "10 km" },
-  ];
 
   return (
     <div className="w-96 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto">
       {/* Partie 1: Recherche avec onglets */}
-      <Card className="rounded-lg shadow-lg">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-lg">Recherche</CardTitle>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => setIsSettingsOpen(true)}
-                className="h-8 w-8 border border-gray-300"
-                title="Paramètres"
-              >
-                <Settings className="h-4 w-4 text-muted-foreground" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => {
-                  // TODO: Navigation vers la liste des leads
-                }}
-                className="h-8 w-8 border border-gray-300"
-                title="Voir la liste des leads"
-              >
-                <Table className="h-4 w-4 text-muted-foreground" />
-              </Button>
-            </div>
+      <Tabs defaultValue="address" className="w-full">
+        <div className="flex items-center justify-between gap-2 mb-4">
+          <TabsList className="grid w-full grid-cols-2 max-w-[240px]">
+            <TabsTrigger value="address">Par adresse</TabsTrigger>
+            <TabsTrigger value="type">Par type</TabsTrigger>
+          </TabsList>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setIsSettingsOpen(true)}
+              className="h-8 w-8"
+              title="Paramètres"
+            >
+              <Settings className="h-4 w-4 text-muted-foreground" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => {
+                // TODO: Navigation vers la liste des leads
+              }}
+              className="h-8 w-8"
+              title="Voir la liste des leads"
+            >
+              <Table className="h-4 w-4 text-muted-foreground" />
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          <Tabs defaultValue="address" className="w-full">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="address">Par adresse</TabsTrigger>
-              <TabsTrigger value="type">Par type</TabsTrigger>
-            </TabsList>
+        </div>
             
             {/* Onglet Recherche par adresse */}
-            <TabsContent value="address" className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <div className="flex gap-2">
-                  <Input
-                    ref={inputRef}
-                    id="address"
-                    placeholder="Entrez une adresse..."
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        handleSearch();
-                      }
-                    }}
-                  />
-                  <Button 
-                    onClick={handleSearch} 
-                    size="icon"
-                    variant="outline"
-                    className="border border-gray-300"
-                  >
-                    <Search className="h-4 w-4 text-muted-foreground" />
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Commencez à taper pour voir les suggestions d'adresses
-                </p>
-              </div>
+            <TabsContent value="address" className="mt-0">
+              <Card>
+                <CardContent className="p-4">
+                  <InputGroup>
+                    <InputGroupInput
+                      ref={inputRef}
+                      id="address"
+                      placeholder="Entrez une adresse..."
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleSearch();
+                        }
+                      }}
+                    />
+                    <InputGroupAddon 
+                      align="inline-end"
+                      onClick={handleSearch}
+                      className="cursor-pointer hover:text-foreground"
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleSearch();
+                        }
+                      }}
+                    >
+                      <Search className="h-4 w-4" />
+                    </InputGroupAddon>
+                  </InputGroup>
+                </CardContent>
+              </Card>
             </TabsContent>
 
             {/* Onglet Recherche par type */}
-            <TabsContent value="type" className="space-y-4 mt-4">
-              <div className="space-y-4">
-                {/* Sélecteur de type de lieu */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Type de lieu</label>
-                  <Select value={selectedPlaceType} onValueChange={(value) => setSelectedPlaceType(value as PlaceSearchType)}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Sélectionnez un type de lieu" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {placeTypeOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+            <TabsContent value="type" className="mt-0">
+              <Card>
+                <CardContent className="space-y-4 p-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Type de lieu</label>
+                    <Select value={selectedPlaceType} onValueChange={(value) => setSelectedPlaceType(value as PlaceSearchType)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Sélectionnez un type de lieu" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {placeTypeOptions.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
 
-                {/* Sélecteur de distance */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Distance</label>
-                  <Select value={selectedDistance} onValueChange={setSelectedDistance}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {distanceOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium">Distance</label>
+                      <span className="text-sm text-muted-foreground">
+                        {selectedDistance[0] >= 1000 
+                          ? `${(selectedDistance[0] / 1000).toFixed(selectedDistance[0] % 1000 === 0 ? 0 : 1)} km`
+                          : `${selectedDistance[0]} m`}
+                      </span>
+                    </div>
+                    <Slider
+                      value={selectedDistance}
+                      onValueChange={setSelectedDistance}
+                      min={500}
+                      max={10000}
+                      step={100}
+                      className="w-full"
+                    />
+                  </div>
 
-                {/* Bouton de recherche */}
-                <Button 
-                  onClick={handleSearchByType} 
-                  className="w-full"
-                  disabled={isSearching || !selectedPlaceType}
-                >
-                  {isSearching ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Recherche en cours...
-                    </>
-                  ) : (
-                    <>
-                      <Search className="h-4 w-4 mr-2" />
-                      Rechercher
-                    </>
+                  <Button 
+                    onClick={handleSearchByType} 
+                    className="w-full"
+                    disabled={isSearching || !selectedPlaceType}
+                  >
+                    {isSearching ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Recherche en cours...
+                      </>
+                    ) : (
+                      <>
+                        <Search className="h-4 w-4 mr-2" />
+                        Rechercher
+                      </>
+                    )}
+                  </Button>
+
+                  {searchError && (
+                    <div className="text-sm text-destructive bg-destructive/10 rounded-md p-2">
+                      {searchError}
+                    </div>
                   )}
-                </Button>
 
-                {/* Affichage des erreurs */}
-                {searchError && (
-                  <div className="text-sm text-red-600 bg-red-50 rounded-md p-2">
-                    {searchError}
-                  </div>
-                )}
+                  {searchResults.length > 0 && (
+                    <div className="text-sm font-medium text-muted-foreground bg-muted/50 rounded-md p-2">
+                      {searchResults.length} résultat{searchResults.length > 1 ? "s" : ""} trouvé{searchResults.length > 1 ? "s" : ""}
+                    </div>
+                  )}
 
-                {/* Affichage du nombre de résultats */}
-                {searchResults.length > 0 && (
-                  <div className="text-sm font-medium text-gray-700 bg-blue-50 rounded-md p-2">
-                    {searchResults.length} résultat{searchResults.length > 1 ? "s" : ""} trouvé{searchResults.length > 1 ? "s" : ""}
-                  </div>
-                )}
-
-                {/* Liste des résultats */}
-                {searchResults.length > 0 && (
-                  <div className="space-y-3 max-h-96 overflow-y-auto">
-                    {searchResults.map((result) => (
-                      <div
-                        key={result.placeId}
-                        onClick={() => {
-                          if (onSearchResultSelect) {
-                            onSearchResultSelect(result);
-                          }
-                        }}
-                        className="bg-white rounded-md border border-gray-200 hover:border-gray-300 hover:bg-gray-50 cursor-pointer transition-colors overflow-hidden"
-                      >
-                        {/* Image satellite */}
-                        <div className="w-full">
+                  {searchResults.length > 0 && (
+                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                      {searchResults.map((result) => (
+                        <Card
+                          key={result.placeId}
+                          className="cursor-pointer overflow-hidden transition-colors hover:bg-accent/50"
+                          onClick={() => onSearchResultSelect?.(result)}
+                        >
                           <SatelliteImage 
                             coordinates={result.coordinates} 
                             address={result.address}
                             zoom={17}
                             width={400}
                             height={200}
-                            className="rounded-t-md"
-                            onClick={() => {
-                              if (onSearchResultSelect) {
-                                onSearchResultSelect(result);
-                              }
-                            }}
+                            className="rounded-t-lg"
+                            onClick={() => onSearchResultSelect?.(result)}
                           />
-                        </div>
-                        {/* Informations du lieu */}
-                        <div className="p-3">
-                          <div className="text-sm font-medium">{result.name}</div>
-                          <div className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                            <MapPin className="h-3 w-3" />
-                            {result.address}
-                          </div>
-                          {result.rating && (
-                            <div className="text-xs text-muted-foreground mt-1">
-                              ⭐ {result.rating.toFixed(1)} {result.userRatingsTotal ? `(${result.userRatingsTotal})` : ""}
+                          <CardContent className="p-3">
+                            <div className="text-sm font-medium">{result.name}</div>
+                            <div className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                              <MapPin className="h-3 w-3 shrink-0" />
+                              {result.address}
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                            {result.rating && (
+                              <div className="text-xs text-muted-foreground mt-1">
+                                ⭐ {result.rating.toFixed(1)} {result.userRatingsTotal ? `(${result.userRatingsTotal})` : ""}
+                              </div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
+        </Tabs>
 
       {/* Drawer des paramètres */}
-      <Drawer open={isSettingsOpen} onOpenChange={setIsSettingsOpen} direction="right" shouldScaleBackground={false}>
+      <Drawer
+        open={isSettingsOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setIsSettingsOpen(false);
+            setShowAddPanelRef(false);
+            setEditingRef(null);
+          }
+        }}
+        direction="right"
+        shouldScaleBackground={false}
+      >
         <DrawerContent className="h-full w-[400px] right-0 top-0 left-auto p-0 flex flex-col border-l shadow-xl z-20">
           <DrawerHeader className="border-b bg-white">
             <div className="flex items-center justify-between">
-              <DrawerTitle>Paramètres</DrawerTitle>
+              <DrawerTitle>
+                {showAddPanelRef || editingRef 
+                  ? (editingRef ? "Modifier le panneau" : "Ajouter une référence")
+                  : "Paramètres"}
+              </DrawerTitle>
               <DrawerClose asChild>
                 <Button
                   variant="outline"
@@ -456,95 +771,180 @@ export function Sidebar({
                 </Button>
               </DrawerClose>
             </div>
-            <DrawerDescription>
-              Configuration des équipements solaires pour les calculs de potentiel
-            </DrawerDescription>
+            {!(showAddPanelRef || editingRef) && (
+              <DrawerDescription>
+                Configuration des équipements solaires pour les calculs de potentiel
+              </DrawerDescription>
+            )}
           </DrawerHeader>
           
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {/* Sélecteur de type de panneau */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Type de panneau solaire</label>
-              <Select value={panelType} onValueChange={(value) => setPanelType(value as SolarPanelType)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="monocrystalline">Monocristallin</SelectItem>
-                  <SelectItem value="polycrystalline">Polycristallin</SelectItem>
-                  <SelectItem value="thin_film">Couche mince</SelectItem>
-                  <SelectItem value="bifacial">Bifacial</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                {panelType === "monocrystalline" && "Rendement élevé, meilleur pour espaces limités"}
-                {panelType === "polycrystalline" && "Bon rapport qualité/prix"}
-                {panelType === "thin_film" && "Léger et flexible, moins efficace"}
-                {panelType === "bifacial" && "Capture la lumière des deux côtés"}
-              </p>
-            </div>
-
-            {/* Sélecteur de type d'onduleur */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Type d'onduleur/inverseur</label>
-              <Select value={inverterType} onValueChange={(value) => setInverterType(value as InverterType)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="central_inverter">Onduleur central</SelectItem>
-                  <SelectItem value="string_inverter">Onduleur string</SelectItem>
-                  <SelectItem value="micro_inverter">Micro-onduleur</SelectItem>
-                  <SelectItem value="power_optimizer">Optimiseur de puissance</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                {inverterType === "central_inverter" && "Pour grandes installations, coût réduit"}
-                {inverterType === "string_inverter" && "Équilibre entre coût et performance"}
-                {inverterType === "micro_inverter" && "Optimisation par panneau, meilleur rendement"}
-                {inverterType === "power_optimizer" && "Optimisation avec onduleur central"}
-              </p>
-            </div>
-
-            {/* Puissance du panneau (optionnel) */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Puissance d'un panneau (W)</label>
-              <Input
-                type="number"
-                value={panelPowerW}
-                onChange={(e) => setPanelPowerW(e.target.value)}
-                placeholder="400"
-                min="100"
-                max="1000"
-                step="50"
+            {/* Formulaire d'ajout/modification */}
+            {(showAddPanelRef || editingRef) ? (
+              <PanelReferenceForm
+                key={editingRef?.id ?? "add"}
+                initialRef={editingRef ?? undefined}
+                onSave={(ref) => {
+                  if (editingRef) {
+                    setPanelReferences((prev) => {
+                      const next = prev.map((r) => (r.id === ref.id ? ref : r));
+                      savePanelReferences(next);
+                      return next;
+                    });
+                  } else {
+                    setPanelReferences((prev) => {
+                      const next = [...prev, ref];
+                      savePanelReferences(next);
+                      return next;
+                    });
+                  }
+                  savePanelReferenceToFirebase(ref).catch((e) =>
+                    console.error("Firebase save panel ref:", e)
+                  );
+                  setShowAddPanelRef(false);
+                  setEditingRef(null);
+                }}
+                onCancel={() => {
+                  setShowAddPanelRef(false);
+                  setEditingRef(null);
+                }}
               />
-              <p className="text-xs text-muted-foreground">
-                Puissance nominale d'un panneau en watts (ex: 400W)
-              </p>
-            </div>
+            ) : (
+              <>
+                {/* Références de panneau */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium">Références de panneau</label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowAddPanelRef(true)}
+                      className="h-8"
+                    >
+                      <Plus className="h-3.5 w-3 mr-1" />
+                      Ajouter
+                    </Button>
+                  </div>
+              <ul className="space-y-3">
+                {panelReferences.map((ref) => (
+                  <li
+                    key={ref.id}
+                    className="rounded-xl border border-border bg-white p-3 shadow-sm flex items-center gap-3"
+                  >
+                    {/* Photo panneau : carré, premier élément, ancré à gauche */}
+                    <div className="flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted">
+                      {ref.imageUrl ? (
+                        <Image
+                          src={ref.imageUrl}
+                          alt={ref.name}
+                          width={64}
+                          height={64}
+                          className="w-full h-full object-cover aspect-square"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
+                      )}
+                    </div>
+                    {/* Contenu */}
+                    <div className="flex-1 min-w-0 flex flex-col justify-center">
+                      <div className="font-semibold text-sm text-foreground truncate">{ref.name}</div>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{ref.costEur}</span>
+                        <span className="text-muted-foreground/40 text-xs">|</span>
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                          <Zap className="h-3.5 w-3.5 text-muted-foreground/80" />
+                          {ref.powerW}W
+                        </span>
+                        {ref.warrantyYears != null && (
+                          <>
+                            <span className="text-muted-foreground/40 text-xs">|</span>
+                            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                              <FileCheck className="h-3.5 w-3.5 text-muted-foreground/80" />
+                              {ref.warrantyYears}y
+                            </span>
+                          </>
+                        )}
+                        {ref.countryCode && (
+                          <>
+                            <span className="text-muted-foreground/40 text-xs">|</span>
+                            <span className="inline-flex items-center shrink-0" title={ref.countryOfOrigin}>
+                              <img
+                                src={getCountryFlagUrl(ref.countryCode)}
+                                alt=""
+                                className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                width={12}
+                                height={12}
+                              />
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="relative flex items-start">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0"
+                        onClick={() => setOpenPanelMenuId((id) => (id === ref.id ? null : ref.id))}
+                        title="Options"
+                        aria-expanded={openPanelMenuId === ref.id}
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                      {openPanelMenuId === ref.id && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-10"
+                            aria-hidden
+                            onClick={() => setOpenPanelMenuId(null)}
+                          />
+                          <div className="absolute right-0 top-full z-20 mt-1 min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md">
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-accent"
+                              onClick={() => {
+                                setEditingRef(ref);
+                                setOpenPanelMenuId(null);
+                              }}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                              Modifier
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
+                              onClick={() => {
+                                setOpenPanelMenuId(null);
+                                const next = panelReferences.filter((r) => r.id !== ref.id);
+                                if (next.length === 0) return;
+                                setPanelReferences(next);
+                                savePanelReferences(next);
+                                deletePanelReferenceFromFirebase(ref.id).catch((e) =>
+                                  console.error("Firebase delete panel ref:", e)
+                                );
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Supprimer
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </li>
+                ))}
+                </ul>
+              </div>
 
-            {/* Rendement du panneau (optionnel) */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Rendement du panneau (%)</label>
-              <Input
-                type="number"
-                value={panelEfficiency}
-                onChange={(e) => setPanelEfficiency(e.target.value)}
-                placeholder="20"
-                min="10"
-                max="30"
-                step="0.5"
-              />
-              <p className="text-xs text-muted-foreground">
-                Rendement de conversion solaire en électricité (ex: 20%)
-              </p>
-            </div>
-
-            <div className="pt-4 border-t">
-              <p className="text-xs text-muted-foreground">
-                Les paramètres sont sauvegardés automatiquement et utilisés pour les calculs de potentiel solaire.
-              </p>
-            </div>
+              <div className="pt-4 border-t">
+                <p className="text-xs text-muted-foreground">
+                  Les paramètres sont sauvegardés automatiquement et utilisés pour les calculs de potentiel solaire.
+                </p>
+              </div>
+              </>
+            )}
           </div>
         </DrawerContent>
       </Drawer>

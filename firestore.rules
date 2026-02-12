@@ -21,6 +21,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Références de panneaux solaires (paramètres)
+    match /panel_references/{refId} {
+      allow read, write: if true;
+    }
+
     // Bloquer tout le reste par défaut
     match /{document=**} {
       allow read, write: if false;

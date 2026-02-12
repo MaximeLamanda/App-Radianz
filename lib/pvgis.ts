@@ -242,3 +242,47 @@ export function validateCoordinates(coordinates: AddressCoordinates): boolean {
     coordinates.lng <= 180
   );
 }
+
+/** Profil solaire type (fraction par heure 0-23). Pic midi. */
+const HOURLY_SOLAR = [0,0,0,0,0,0,0.02,0.05,0.08,0.1,0.11,0.12,0.12,0.11,0.1,0.08,0.06,0.04,0.02,0.01,0,0,0,0];
+const SOLAR_SUM = HOURLY_SOLAR.reduce((a,b)=>a+b,0);
+
+/** Jour type production (24h) depuis mensuelles, pour peakpower kWp. */
+export function buildTypicalDayFromMonthly(monthly: Array<{month:number;production:number}>, peakpower = 1): number[] {
+  const annual = monthly.reduce((s,m)=>s+(m.production??0),0);
+  const daily = (annual/365)*peakpower;
+  return HOURLY_SOLAR.map(f=>Math.round((daily*f/SOLAR_SUM)*100)/100);
+}
+
+export interface PVGISHourlyTypicalDay { hourlyProduction: number[]; peakpower: number; }
+
+export async function getPVGISHourlyTypicalDay(
+  coordinates: AddressCoordinates,
+  opts?: { peakpower?: number; loss?: number; monthlyProduction?: Array<{month:number;production:number}> }
+): Promise<PVGISHourlyTypicalDay> {
+  const peakpower = opts?.peakpower ?? 1;
+  const fallback = (): PVGISHourlyTypicalDay => ({
+    hourlyProduction: opts?.monthlyProduction?.length
+      ? buildTypicalDayFromMonthly(opts.monthlyProduction, peakpower)
+      : HOURLY_SOLAR.map(f=>Math.round(4*peakpower*(f/SOLAR_SUM)*100)/100),
+    peakpower,
+  });
+  const url = `https://re.jrc.ec.europa.eu/api/v5_3/seriescalc?lat=${coordinates.lat}&lon=${coordinates.lng}&pvcalculation=1&peakpower=${peakpower}&loss=${opts?.loss??14}&optimalangles=1&outputformat=json`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(18000) });
+    if (!res.ok) return fallback();
+    const data = await res.json();
+    const hourly = data.outputs?.hourly ?? data.outputs?.time_series;
+    if (!Array.isArray(hourly)) return fallback();
+    const byH = Array(24).fill(0); const cnt = Array(24).fill(0);
+    for (const row of hourly) {
+      const h = (row.hour ?? 0) % 24;
+      // P = puissance en W (PVGIS seriescalc) ; E = énergie en Wh si présent. 1 W × 1 h = 1 Wh = 0,001 kWh.
+      const raw = Number(row.P ?? row.E ?? 0);
+      byH[h] += raw; cnt[h]++;
+    }
+    // PVGIS renvoie P en W (puissance). Énergie sur 1 h = P (W) × 1 h = P Wh → kWh = P/1000.
+    const avgByHour = byH.map((s, h) => (cnt[h] ? s / cnt[h] : 0) / 1000);
+    return { hourlyProduction: avgByHour.map((v) => Math.round(v * 100) / 100), peakpower };
+  } catch { return fallback(); }
+}
