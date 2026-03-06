@@ -274,10 +274,16 @@ export function MapComponent({
 
       // Google Maps affiche déjà nativement les établissements (restaurants, magasins, etc.)
       // sur la carte en mode roadmap - pas besoin de marqueurs custom
-      // On utilise PlacesService pour obtenir les détails quand on clique sur la carte
-      
-      // Créer un service Places pour rechercher les établissements au clic
-      const placesService = new maps.places.PlacesService(map);
+      // PlacesService (legacy) n'est plus dispo pour les nouveaux clients Google (depuis mars 2025)
+      // On utilise uniquement getPlaceDetailsNew (Place API) pour les détails au clic
+      let placesService: google.maps.places.PlacesService | null = null;
+      try {
+        if (maps.places?.PlacesService) {
+          placesService = new maps.places.PlacesService(map);
+        }
+      } catch {
+        // PlacesService indisponible (nouveau client Google) - on utilise uniquement Place API
+      }
       
       // Construire un prospect à partir des détails (ancienne API)
       const buildProspectFromLegacyDetails = (
@@ -359,39 +365,45 @@ export function MapComponent({
               }
               return prospect;
             }
-            return new Promise<Prospect | null>((resolve) => {
-              placesService.getDetails(
-                {
-                  placeId,
-                  fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
-                },
-                (placeDetails, detailsStatus) => {
-                  if (detailsStatus === "OK" && placeDetails) {
-                    resolve(buildProspectFromLegacyDetails(placeId, placeDetails, coordinates, address));
-                  } else {
-                    resolve(null);
+            if (placesService) {
+              return new Promise<Prospect | null>((resolve) => {
+                placesService!.getDetails(
+                  {
+                    placeId,
+                    fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
+                  },
+                  (placeDetails, detailsStatus) => {
+                    if (detailsStatus === "OK" && placeDetails) {
+                      resolve(buildProspectFromLegacyDetails(placeId, placeDetails, coordinates, address));
+                    } else {
+                      resolve(null);
+                    }
                   }
-                }
-              );
-            });
+                );
+              });
+            }
+            return null;
           })
-          .catch(() =>
-            new Promise<Prospect | null>((resolve) => {
-              placesService.getDetails(
-                {
-                  placeId,
-                  fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
-                },
-                (placeDetails, detailsStatus) => {
-                  if (detailsStatus === "OK" && placeDetails) {
-                    resolve(buildProspectFromLegacyDetails(placeId, placeDetails, coordinates, address));
-                  } else {
-                    resolve(null);
+          .catch(() => {
+            if (placesService) {
+              return new Promise<Prospect | null>((resolve) => {
+                placesService!.getDetails(
+                  {
+                    placeId,
+                    fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
+                  },
+                  (placeDetails, detailsStatus) => {
+                    if (detailsStatus === "OK" && placeDetails) {
+                      resolve(buildProspectFromLegacyDetails(placeId, placeDetails, coordinates, address));
+                    } else {
+                      resolve(null);
+                    }
                   }
-                }
-              );
-            })
-          );
+                );
+              });
+            }
+            return null;
+          });
       };
 
       // Traiter les détails d'un lieu : récupérer Google puis vérifier le pipeline avec nom + adresse (éviter le mauvais lieu si même nom)
@@ -518,10 +530,10 @@ export function MapComponent({
           drawingMode: maps.drawing.OverlayType.POLYGON,
           drawingControl: false,
           polygonOptions: {
-            fillColor: "#4285F4",
+            fillColor: "#E4FE55",
             fillOpacity: 0.35,
             strokeWeight: 2,
-            strokeColor: "#4285F4",
+            strokeColor: "#E4FE55",
             clickable: false,
             editable: true,
             zIndex: 1,
@@ -759,10 +771,10 @@ export function MapComponent({
 
       const polygon = new maps.Polygon({
         paths: surface.polygon,
-        fillColor: "#4285F4",
+        fillColor: "#E4FE55",
         fillOpacity: 0.35,
         strokeWeight: 2,
-        strokeColor: "#4285F4",
+        strokeColor: "#E4FE55",
         clickable: false,
         editable: false,
         zIndex: 1,
@@ -934,7 +946,7 @@ export function MapComponent({
         icon: {
           path: maps.SymbolPath.CIRCLE,
           scale: 8,
-          fillColor: "#4285F4",
+          fillColor: "#E4FE55",
           fillOpacity: 1,
           strokeColor: "#FFFFFF",
           strokeWeight: 2,
@@ -1004,8 +1016,8 @@ export function MapComponent({
     (currentProspect?.roofSurface?.polygon?.length ?? 0) > 0;
 
   return (
-    <div className="h-full w-full relative">
-      <div ref={mapRef} className="h-full w-full" />
+    <div className="absolute inset-0 h-full min-h-[70vh]">
+      <div ref={mapRef} className="absolute inset-0 h-full w-full min-h-[70vh]" />
 
       {hasSurfaces && (
         <div className="absolute bottom-3 left-3 z-100 pointer-events-none flex flex-col gap-1 rounded-lg bg-white/95 border border-gray-200 px-2 py-1.5 shadow-sm text-xs">

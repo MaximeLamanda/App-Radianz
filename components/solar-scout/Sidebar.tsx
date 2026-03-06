@@ -797,25 +797,25 @@ export function Sidebar({
 
 
   // Initialiser l'autocomplétion Google Places pour la recherche d'adresse principale
+  // Autocomplete (legacy) n'est plus dispo pour les nouveaux clients Google (depuis mars 2025)
+  // Si Autocomplete échoue, on utilise le fallback Geocoder via handleSearch
   useEffect(() => {
     if (!inputRef.current) return;
-    if (!window.google || !window.google.maps || !window.google.maps.places) {
-      return;
-    }
+    if (!window.google || !window.google.maps) return;
 
     const maps = window.google.maps;
-    
-    // Créer l'autocomplétion
-    const autocomplete = new maps.places.Autocomplete(inputRef.current, {
-      types: ["address"],
-      fields: ["formatted_address", "geometry", "name", "place_id"],
-    });
+    try {
+      if (!maps.places?.Autocomplete) return;
+      const autocomplete = new maps.places.Autocomplete(inputRef.current, {
+        types: ["address"],
+        fields: ["formatted_address", "geometry", "name", "place_id"],
+      });
 
-    autocompleteRef.current = autocomplete;
+      autocompleteRef.current = autocomplete;
 
-    // Écouter la sélection d'une adresse
-    autocomplete.addListener("place_changed", () => {
-      const place = autocomplete.getPlace();
+      // Écouter la sélection d'une adresse
+      autocomplete.addListener("place_changed", () => {
+        const place = autocomplete.getPlace();
       
       if (!place.geometry || !place.geometry.location) {
         return;
@@ -835,11 +835,14 @@ export function Sidebar({
       }
     });
 
-    return () => {
-      if (autocompleteRef.current) {
-        maps.event.clearInstanceListeners(autocompleteRef.current);
-      }
-    };
+      return () => {
+        if (autocompleteRef.current) {
+          maps.event.clearInstanceListeners(autocompleteRef.current);
+        }
+      };
+    } catch {
+      // Autocomplete indisponible (nouveau client Google) - fallback via Geocoder dans handleSearch
+    }
   }, [onAddressSelect, address]);
 
 

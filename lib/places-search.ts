@@ -17,9 +17,18 @@ export async function searchPlacesByType(
     throw new Error("Google Maps Places API n'est pas disponible");
   }
 
+  const maps = window.google.maps;
+  let service: google.maps.places.PlacesService;
+  try {
+    service = new maps.places.PlacesService(document.createElement("div"));
+  } catch {
+    throw new Error(
+      "La recherche par type n'est pas disponible (PlacesService legacy). " +
+      "Utilisez la recherche par adresse ou cliquez sur la carte."
+    );
+  }
+
   return new Promise((resolve, reject) => {
-    const maps = window.google.maps;
-    const service = new maps.places.PlacesService(document.createElement("div"));
 
     const request: google.maps.places.PlaceSearchRequest = {
       location: new maps.LatLng(coordinates.lat, coordinates.lng),

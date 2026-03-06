@@ -14,12 +14,13 @@ export async function getPlaceDetailsNew(
   nationalPhoneNumber: string | null;
   internationalPhoneNumber: string | null;
 } | null> {
-  if (!window.google?.maps?.places) {
-    return null;
-  }
+  if (!window.google?.maps) return null;
 
   try {
-    const Place = (window.google.maps.places as any).Place;
+    // Charger la bibliothèque places dynamiquement (nouveaux clients : places pas dans le script initial)
+    const places = await (window.google.maps as any).importLibrary?.("places") ?? window.google.maps.places;
+    if (!places) return null;
+    const Place = (places as any).Place;
     if (typeof Place === "undefined") {
       return null;
     }

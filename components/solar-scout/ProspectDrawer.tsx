@@ -907,7 +907,7 @@ export function ProspectDrawer({
                     )}
                     </div>
 
-                    {/* Type + Surface + Orientation */}
+                    {/* Type + Surface + Année */}
                     <div className="rounded-lg px-3 py-2 bg-white/10 flex gap-4">
                       <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
                         <span className="text-[10px] uppercase tracking-wide text-white/60">Type</span>
@@ -926,16 +926,6 @@ export function ProspectDrawer({
                         <span className="text-[10px] uppercase tracking-wide text-white/60">Surface</span>
                         <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
                           {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0).toFixed(0)} m²
-                        </div>
-                      </div>
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60" title="Écart au Sud (0° = face sud)">Orientation</span>
-                        <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
-                          {(() => {
-                            const surfaces = prospect.roofSurfaces ?? (prospect.roofSurface ? [prospect.roofSurface] : []);
-                            const firstOrientation = surfaces[0]?.orientation;
-                            return firstOrientation != null ? `${Math.abs(firstOrientation).toFixed(1)}°` : "—";
-                          })()}
                         </div>
                       </div>
                       <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
@@ -1819,7 +1809,7 @@ export function ProspectDrawer({
                 <Button
                   variant="default"
                   size="icon"
-                  className="h-12 w-12 shrink-0 border-0 bg-blue-500 hover:bg-blue-600 text-white"
+                  className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
                   onClick={() => onDrawingChange(!isDrawing)}
                   title={isDrawing ? "Quitter l'édition" : "Surface"}
                   aria-label={isDrawing ? "Quitter l'édition" : "Surface"}
