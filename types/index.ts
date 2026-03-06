@@ -9,6 +9,8 @@ export interface RoofSurface {
   polygon: Array<{ lat: number; lng: number }>;
   /** Pourcentage de surface disponible pour l'installation solaire (0-100). Défaut: 100% */
   availablePercentage?: number;
+  /** Orientation du toit en degrés (azimut). 0 = Sud, 90 = Ouest, -90 = Est, 180 = Nord. Calculé depuis le polygone. */
+  orientation?: number;
 }
 
 export interface Exposure {
@@ -20,25 +22,34 @@ export interface Exposure {
 
 /**
  * Potentiel solaire d'un bâtiment
+ * 
+ * Source de vérité : productionPerKwpAnnual et productionPerKwpMonthly (données PVGIS pour 1 kWp).
+ * La production affichée = productionPerKwp × kWp actuel (kWp = surfaceToKwp(surface)).
+ * 
+ * Les champs maxKwhPerYear, maxArrayAreaMeters2, monthlyProduction sont conservés pour migration
+ * depuis les anciens prospects.
  */
 export interface SolarPotential {
-  // Champs existants
   maxArrayPanelsCount: number;
-  maxArrayAreaMeters2: number;
+  maxArrayAreaMeters2?: number; // Déprécié, migration seulement
   maxSunshineHoursPerYear: number;
-  maxKwhPerYear: number;
+  maxKwhPerYear?: number; // Déprécié, migration seulement
   carbonOffsetFactorKgPerMwh?: number;
   
-  /** Puissance crête estimée (kWp) à partir de la surface de toit dessinée (surface × coef. utilisation × rendement panneau). */
+  /** Puissance crête estimée (kWp) à partir de la surface de toit dessinée. */
   estimatedKwp?: number;
   
-  // Nouveaux champs pour données PVGIS
-  optimalInclination?: number; // Angle d'inclinaison optimal en degrés
-  optimalAzimuth?: number; // Orientation optimale (0=sud, 90=ouest, -90=est)
-  annualIrradiation?: number; // Irradiation annuelle en kWh/m²
-  monthlyProduction?: Array<{ month: number; production: number }>; // Production mensuelle
-  monthlyIrradiation?: Array<{ month: number; irradiation: number }>; // Irradiation mensuelle
-  pvgisDataFetched?: boolean; // Flag pour indiquer si les données PVGIS sont disponibles
+  /** Production annuelle pour 1 kWp (kWh/kWp/an). Source de vérité PVGIS. */
+  productionPerKwpAnnual?: number;
+  /** Production mensuelle pour 1 kWp (kWh/kWp par mois). Source de vérité PVGIS. */
+  productionPerKwpMonthly?: Array<{ month: number; production: number }>;
+  
+  optimalInclination?: number;
+  optimalAzimuth?: number;
+  annualIrradiation?: number;
+  monthlyProduction?: Array<{ month: number; production: number }>; // Déprécié, migration
+  monthlyIrradiation?: Array<{ month: number; irradiation: number }>;
+  pvgisDataFetched?: boolean;
 }
 
 // Type de lieu : utilise les types natifs de Google Places API
@@ -51,6 +62,28 @@ export interface Contact {
   internationalPhoneNumber?: string;
 }
 
+/** Référent commercial (personne qui a généré le lien / contact) */
+export interface CommercialReferent {
+  name: string;
+  email: string;
+  phone?: string;
+  company?: string;
+  logoUrl?: string;
+  /** Photo de profil du référent (utilisateur qui a généré le lien) */
+  photoURL?: string;
+}
+
+/** Mode de configuration : Perfect fit (prod ≈ conso) ou Highest production (max surface) */
+export type ProspectConfigurationMode = "perfect_fit" | "highest_production";
+
+/** Statut du prospect dans le pipeline */
+export type ProspectPipelineStatus =
+  | "nouveau"
+  | "en_cours"
+  | "devis_envoye"
+  | "converti"
+  | "perdu";
+
 export interface Prospect {
   id?: string;
   name?: string;
@@ -60,12 +93,39 @@ export interface Prospect {
   roofSurfaces?: RoofSurface[]; // Tableau de surfaces multiples
   exposure?: Exposure;
   placeType: PlaceType;
+  placeId?: string; // Identifiant Google Places (pour recherche/détail)
   qualityScore: number; // 0-100
   contact?: Contact;
   thumbnailUrl?: string;
   solarPotential?: SolarPotential;
+  pipelineStatus?: ProspectPipelineStatus;
+  configurationMode?: ProspectConfigurationMode;
+  priceRangeMinEur?: number;
+  priceRangeMaxEur?: number;
+  breakEvenMinYears?: number | null;
+  breakEvenMaxYears?: number | null;
   createdAt?: Date;
   updatedAt?: Date;
+  /** Données enrichies via API recherche-entreprises (api.gouv.fr) */
+  siren?: string;
+  siret?: string;
+  companyLegalName?: string;
+  companyManagerName?: string;
+  companyAddress?: string;
+  companyNaf?: string;
+  companyPhone?: string;
+  /** URL api.gouv directe qui a trouvé le résultat (pour affichage / test) */
+  companyEnrichmentApiUrl?: string;
+  /** Token pour lien partagé prospect */
+  shareToken?: string;
+  /** Référent commercial (mock pour l'instant) */
+  commercialReferent?: CommercialReferent;
+  /** Consommation annuelle override saisie par le prospect (kWh) */
+  annualConsumptionKwhOverride?: number;
+  /** UID du propriétaire (Firebase Auth) */
+  userId?: string;
+  /** Année de construction du bâtiment (source BDNB), affichée quand disponible */
+  anneeConstruction?: number | null;
 }
 
 export interface Lead {
@@ -142,9 +202,35 @@ export interface PanelReference {
   /** Code pays ISO 3166-1 alpha-2 (ex. "cn") pour afficher le drapeau via API */
   countryCode?: string;
   costEur: number; // coût en € par panneau
+  /** Largeur d'un panneau en m (ex. 1). Utilisé avec lengthM pour le calcul du nombre de panneaux. */
+  widthM?: number;
+  /** Longueur d'un panneau en m (ex. 1.6). Utilisé avec widthM pour le calcul du nombre de panneaux. */
+  lengthM?: number;
   /** URL ou chemin de la photo du panneau (ex. /DM450M10RT-B54HBB.jpeg) */
   imageUrl?: string;
   /** Garantie en années (ex. 25) */
+  warrantyYears?: number;
+  /** Badge "Recommandé" */
+  recommended?: boolean;
+}
+
+/**
+ * Référence d'onduleur (marque/modèle) pour les paramètres
+ * Stockée dans Firebase Firestore
+ */
+export interface InverterReference {
+  id: string;
+  name: string;
+  inverterType: InverterType;
+  powerW: number; // Puissance maximale en W
+  efficiencyPercent: number; // Rendement en %
+  countryOfOrigin: string;
+  /** Code pays ISO 3166-1 alpha-2 (ex. "de") pour afficher le drapeau via API */
+  countryCode?: string;
+  costEur: number; // coût en € par onduleur
+  /** URL ou chemin de la photo de l'onduleur */
+  imageUrl?: string;
+  /** Garantie en années (ex. 10) */
   warrantyYears?: number;
   /** Badge "Recommandé" */
   recommended?: boolean;
@@ -158,4 +244,6 @@ export interface SolarEquipmentSettings {
   inverterType: InverterType;
   panelPowerW?: number; // Puissance d'un panneau en W (optionnel)
   panelEfficiency?: number; // Rendement du panneau en % (optionnel)
+  /** Taux d'utilisation du toit (0–1) : part de la surface couverte par les panneaux. 0,75 = 75 %. */
+  usableRoofRatio?: number;
 }
