@@ -1,5 +1,7 @@
 import Fuse from "fuse.js";
 import { NextRequest, NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
 import type { EnrichmentResult } from "@/lib/recherche-entreprises";
 
 const API_GOUV_BASE = "https://recherche-entreprises.api.gouv.fr/search";
