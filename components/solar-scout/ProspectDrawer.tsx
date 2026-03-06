@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,10 +27,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
-import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2 } from "lucide-react";
-import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline } from "@/lib/firestore";
+import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar } from "lucide-react";
+import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { translatePlaceType } from "@/lib/place-types-translation";
 import {
   Label,
@@ -54,14 +54,16 @@ import {
   normalizePlaceTypeForConsumption,
   type MonthIndex,
 } from "@/lib/building-energy-consumption";
-import { buildTypicalDayFromMonthly } from "@/lib/pvgis";
+import {
+  getProductionFromPerKwp,
+  getProductionPerKwpFromSolarPotential,
+} from "@/lib/pvgis";
 import {
   getPanelReferences,
   getCountryFlagUrl,
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
   calculatePanelCount,
-  calculateTotalPowerKW,
   calculateInverterCount,
   estimateInstallationPriceEur,
   estimateTotalPriceRangeEur,
@@ -72,8 +74,11 @@ import {
 import { getPanelReferencesFromFirebase } from "@/lib/firestore-panel-references";
 import { getInverterReferencesFromFirebase } from "@/lib/firestore-inverter-references";
 import { fetchCompanyEnrichment, buildApiGouvSearchUrl } from "@/lib/recherche-entreprises";
+import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
+import { useAuth } from "@/lib/auth-context";
+import { getUserProfile } from "@/lib/firestore-user-profile";
 import type { ScoredCandidate } from "@/lib/find-local-siren";
-import type { Prospect, SolarPotential, PanelReference, InverterReference } from "@/types";
+import type { Prospect, SolarPotential, PanelReference, InverterReference, CommercialReferent } from "@/types";
 
 /** Options du select : types canoniques (sans doublons) + type actuel si inconnu */
 function getPlaceTypeOptions(currentValue: string): { value: string; label: string }[] {
@@ -141,11 +146,11 @@ function PlaceTypeSelect({
           ?.value ?? value ?? "other";
   const contentClassName =
     variant === "dark"
-      ? "bg-black text-white border-white/20 [&_[data-radix-select-viewport]]:bg-black [&_button]:text-white [&_button]:hover:bg-white/10"
+      ? "bg-black text-white border-white/20 **:data-radix-select-viewport:bg-black [&_button]:text-white hover:[&_button]:bg-white/10"
       : undefined;
   const itemClassName =
     variant === "dark"
-      ? "focus:bg-white/10 focus:text-white data-[highlighted]:bg-white/10 data-[highlighted]:text-white text-white/90"
+      ? "focus:bg-white/10 focus:text-white data-highlighted:bg-white/10 data-highlighted:text-white text-white/90"
       : undefined;
 
   return (
@@ -182,6 +187,7 @@ interface ProspectDrawerProps {
   onSurfaceDelete?: (surfaceId: string) => void;
   onProspectUpdate?: (prospect: Prospect) => void;
   onValidateDrawing?: () => void;
+  voirHref?: (prospectId: string) => string;
 }
 
 export function ProspectDrawer({
@@ -196,8 +202,11 @@ export function ProspectDrawer({
   onSurfaceDelete,
   onProspectUpdate,
   onValidateDrawing,
+  voirHref = (id) => `/solar-scout?prospectId=${id}`,
 }: ProspectDrawerProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const isOnMap = pathname?.includes("/solar-scout") ?? false;
   const [isAdding, setIsAdding] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [address, setAddress] = useState(prospect?.address || "");
@@ -213,6 +222,8 @@ export function ProspectDrawer({
   const [phase2ScoringLoading, setPhase2ScoringLoading] = useState(false);
   const [drawerTab, setDrawerTab] = useState<"prospect" | "projet">("prospect");
   const [prospectDetailsOpen, setProspectDetailsOpen] = useState(false);
+  const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+  const { user } = useAuth();
 
   // Enrichissement entreprise (api.gouv) : une fois par prospect si pas déjà de SIREN (drawer ouvert)
   useEffect(() => {
@@ -319,39 +330,31 @@ export function ProspectDrawer({
     }
   }, [prospect]);
 
-  // Récupérer les données PVGIS quand le drawer s'ouvre
-  useEffect(() => {
-    const fetchPVGISData = async () => {
-      // Conditions pour appeler PVGIS :
-      // 1. Le drawer doit être ouvert
-      // 2. Un prospect doit exister avec des coordonnées
-      // 3. Les données PVGIS ne doivent pas déjà être chargées
-      if (
-        !isOpen ||
-        !prospect ||
-        !prospect.coordinates ||
-        prospect.solarPotential?.pvgisDataFetched ||
-        isLoadingPVGIS
-      ) {
-        return;
-      }
+  // Clé stable : inclure la surface pour re-fetcher quand elle change (données PVGIS dépendent du kWp)
+  const totalAreaForKey =
+    prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+  const pvgisFetchKey =
+    isOpen && prospect?.coordinates && !prospect.solarPotential?.pvgisDataFetched && totalAreaForKey > 0
+      ? `${prospect.id ?? "noid"}-${prospect.coordinates.lat}-${prospect.coordinates.lng}-${Math.round(totalAreaForKey)}`
+      : null;
+  const pvgisFetchInProgressRef = useRef(false);
 
+  // Récupérer les données PVGIS une seule fois à l'ouverture du drawer pour ce prospect
+  useEffect(() => {
+    if (!pvgisFetchKey || !prospect || !prospect.coordinates || !onProspectUpdate) return;
+    if (pvgisFetchInProgressRef.current) return;
+
+    const fetchPVGISData = async () => {
+      pvgisFetchInProgressRef.current = true;
       setIsLoadingPVGIS(true);
       setPvgisError(null);
 
       try {
-        // PVGIS retourne la production pour 1 kWp ; on appelle avec peakpower=1 puis on multiplie par notre kWp.
-        const totalArea = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) || 
-                          (prospect.roofSurface?.area || 0);
-        const kwp = totalArea > 0 ? Math.max(0.1, surfaceToKwp(totalArea)) : 1;
-
-        // Récupérer l'orientation de la première surface (ou surface principale) si disponible
-        const surfaces = prospect.roofSurfaces || 
+        const surfaces = prospect.roofSurfaces ||
           (prospect.roofSurface?.area > 0 ? [prospect.roofSurface] : []);
         const firstSurface = surfaces[0];
         const orientation = firstSurface?.orientation;
 
-        // Préparer le body avec l'orientation si disponible
         const requestBody: {
           lat: number;
           lon: number;
@@ -362,21 +365,18 @@ export function ProspectDrawer({
         } = {
           lat: prospect.coordinates.lat,
           lon: prospect.coordinates.lng,
-          peakpower: 1, // Référence 1 kWp : les sorties sont ensuite multipliées par notre kWp
+          peakpower: 1,
           loss: 14,
         };
 
-        // Si on a une orientation calculée, l'utiliser avec une inclinaison par défaut de 30°
         if (orientation != null) {
           requestBody.azimuth = orientation;
-          requestBody.slope = 30; // Inclinaison par défaut raisonnable pour l'Europe
+          requestBody.slope = 30;
         }
 
         const response = await fetch("/api/pvgis", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestBody),
         });
 
@@ -387,53 +387,50 @@ export function ProspectDrawer({
 
         const pvgisData = await response.json();
 
-        if (!pvgisData || typeof pvgisData.annualProduction !== 'number') {
+        if (!pvgisData || typeof pvgisData.annualProduction !== "number") {
           throw new Error("Données PVGIS invalides reçues");
         }
 
-        // Multiplier par notre kWp : PVGIS donne la production pour 1 kWp
-        const annualProduction = Math.round(pvgisData.annualProduction * kwp);
-        const monthlyProduction = Array.isArray(pvgisData.monthlyProduction)
+        const productionPerKwpAnnual = Math.round(pvgisData.annualProduction * 100) / 100;
+        const productionPerKwpMonthly = Array.isArray(pvgisData.monthlyProduction)
           ? pvgisData.monthlyProduction.map((m: { month: number; production: number }) => ({
               month: m.month,
-              production: Math.round((m.production || 0) * kwp),
+              production: Math.round((m.production || 0) * 100) / 100,
             }))
           : [];
 
-        if (onProspectUpdate && prospect) {
-          const updatedSolarPotential: SolarPotential = {
-            ...prospect.solarPotential,
-            maxKwhPerYear: annualProduction,
-            maxSunshineHoursPerYear: pvgisData.sunshineHoursEquivalent,
-            optimalInclination: pvgisData.optimalInclination,
-            optimalAzimuth: pvgisData.optimalAzimuth,
-            annualIrradiation: pvgisData.annualIrradiation,
-            monthlyProduction,
-            monthlyIrradiation: Array.isArray(pvgisData.monthlyIrradiation) 
-              ? pvgisData.monthlyIrradiation 
-              : [],
-            pvgisDataFetched: true,
-            maxArrayPanelsCount: prospect.solarPotential?.maxArrayPanelsCount || 0,
-            maxArrayAreaMeters2: prospect.solarPotential?.maxArrayAreaMeters2 || totalArea,
-          };
+        const updatedSolarPotential: SolarPotential = {
+          ...prospect.solarPotential,
+          productionPerKwpAnnual,
+          productionPerKwpMonthly,
+          maxSunshineHoursPerYear: pvgisData.sunshineHoursEquivalent,
+          optimalInclination: pvgisData.optimalInclination,
+          optimalAzimuth: pvgisData.optimalAzimuth,
+          annualIrradiation: pvgisData.annualIrradiation,
+          monthlyIrradiation: Array.isArray(pvgisData.monthlyIrradiation)
+            ? pvgisData.monthlyIrradiation
+            : [],
+          pvgisDataFetched: true,
+          maxArrayPanelsCount: prospect.solarPotential?.maxArrayPanelsCount || 0,
+        };
 
-          onProspectUpdate({
-            ...prospect,
-            solarPotential: updatedSolarPotential,
-          });
-        }
+        onProspectUpdate({
+          ...prospect,
+          solarPotential: updatedSolarPotential,
+        });
       } catch (error) {
         console.error("Erreur lors de la récupération des données PVGIS:", error);
         setPvgisError(
           error instanceof Error ? error.message : "Erreur lors de la récupération des données d'ensoleillement"
         );
       } finally {
+        pvgisFetchInProgressRef.current = false;
         setIsLoadingPVGIS(false);
       }
     };
 
     fetchPVGISData();
-  }, [isOpen, prospect, isLoadingPVGIS, onProspectUpdate]);
+  }, [pvgisFetchKey]); // prospect et onProspectUpdate lus dans la closure, pas en deps pour éviter re-jeux infinis
 
   const handleAddToPipeline = async () => {
     if (!prospect || !onAddToPipeline) return;
@@ -471,7 +468,8 @@ export function ProspectDrawer({
           pipelineOptions.priceRangeMinEur = priceRange.totalMinEur;
           pipelineOptions.priceRangeMaxEur = priceRange.totalMaxEur;
           if (annualProductionKWh > 0) {
-            const annualSavings = estimateAnnualSavingsEur(annualProductionKWh);
+            const totalConsumptionKwh = totalArea > 0 ? getEnergyConsumption(prospect.placeType || "other") * totalArea : 0;
+            const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
             pipelineOptions.breakEvenMinYears = getBreakEvenYears(
               priceRange.totalMinEur,
               annualSavings
@@ -490,7 +488,8 @@ export function ProspectDrawer({
           address: address || prospect.address,
           configurationMode,
         },
-        pipelineOptions
+        pipelineOptions,
+        user?.uid
       );
 
       // Créer un lead à partir du prospect
@@ -555,7 +554,8 @@ export function ProspectDrawer({
           pipelineOptions.priceRangeMinEur = priceRange.totalMinEur;
           pipelineOptions.priceRangeMaxEur = priceRange.totalMaxEur;
           if (annualProductionKWh > 0) {
-            const annualSavings = estimateAnnualSavingsEur(annualProductionKWh);
+            const totalConsumptionKwh = totalArea > 0 ? getEnergyConsumption(prospect.placeType || "other") * totalArea : 0;
+            const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
             pipelineOptions.breakEvenMinYears = getBreakEvenYears(
               priceRange.totalMinEur,
               annualSavings
@@ -568,11 +568,34 @@ export function ProspectDrawer({
         }
       }
 
+      const updatedProspect: Prospect = {
+        ...prospect,
+        address: address || prospect.address,
+        configurationMode,
+        ...(pipelineOptions.estimatedKwp != null && {
+          solarPotential: {
+            ...prospect.solarPotential,
+            maxArrayPanelsCount: prospect.solarPotential?.maxArrayPanelsCount ?? 0,
+            maxArrayAreaMeters2: prospect.solarPotential?.maxArrayAreaMeters2 ?? 0,
+            maxSunshineHoursPerYear: prospect.solarPotential?.maxSunshineHoursPerYear ?? 0,
+            maxKwhPerYear: prospect.solarPotential?.maxKwhPerYear ?? 0,
+            estimatedKwp: pipelineOptions.estimatedKwp,
+          },
+        }),
+        ...(pipelineOptions.priceRangeMinEur != null && { priceRangeMinEur: pipelineOptions.priceRangeMinEur }),
+        ...(pipelineOptions.priceRangeMaxEur != null && { priceRangeMaxEur: pipelineOptions.priceRangeMaxEur }),
+        ...(pipelineOptions.breakEvenMinYears !== undefined && { breakEvenMinYears: pipelineOptions.breakEvenMinYears }),
+        ...(pipelineOptions.breakEvenMaxYears !== undefined && { breakEvenMaxYears: pipelineOptions.breakEvenMaxYears }),
+      };
+
       await updateProspectInPipeline(
         prospect.id,
-        { ...prospect, address: address || prospect.address, configurationMode },
+        updatedProspect,
         pipelineOptions
       );
+
+      onProspectUpdate?.(updatedProspect);
+      toast.success("Enregistré");
       onSaveSuccess?.();
     } catch (error) {
       alert("Erreur lors de l'enregistrement. Veuillez réessayer.");
@@ -581,94 +604,146 @@ export function ProspectDrawer({
     }
   };
 
-  /** Valeurs effectives selon le mode (Perfect fit vs Highest production) */
+  const handleGenerateLink = async () => {
+    if (!prospect?.id) return;
+    setIsGeneratingLink(true);
+    try {
+      const shareToken = prospect.shareToken ?? crypto.randomUUID();
+      let commercialReferent: CommercialReferent;
+      if (user) {
+        const userProfile = await getUserProfile(user.uid);
+        commercialReferent = buildCommercialReferentFromUser(user, userProfile);
+      } else {
+        commercialReferent = getCommercialReferent();
+      }
+      await updateProspect(prospect.id, {
+        shareToken,
+        commercialReferent,
+      });
+      if (onProspectUpdate) {
+        onProspectUpdate({ ...prospect, shareToken, commercialReferent });
+      }
+      const url = `${typeof window !== "undefined" ? window.location.origin : ""}/p/${shareToken}`;
+      await navigator.clipboard.writeText(url);
+      toast.success("Lien copié", {
+        description: "Le lien prospect a été copié dans le presse-papiers.",
+      });
+    } catch (error) {
+      toast.error("Erreur lors de la génération du lien", {
+        description: "Veuillez réessayer.",
+      });
+    } finally {
+      setIsGeneratingLink(false);
+    }
+  };
+
+  /** Valeurs effectives selon le mode (Perfect fit vs Highest production).
+   * Source : productionPerKwp (PVGIS) × kWp actuel. kWp = surfaceToKwp(surface). */
   const effectiveConfig = useMemo(() => {
     const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
-    const maxKwhPerYear = prospect?.solarPotential?.maxKwhPerYear ?? 0;
     const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
+    const legacyKwp = (prospect?.solarPotential?.maxArrayAreaMeters2 ?? 0) > 0
+      ? surfaceToKwp(prospect!.solarPotential!.maxArrayAreaMeters2!, undefined, undefined, panelRef)
+      : undefined;
+    const perKwp = getProductionPerKwpFromSolarPotential(prospect?.solarPotential, legacyKwp);
 
-    if (!prospect || surfaceM2 <= 0 || maxKwhPerYear <= 0 || !panelRef) {
-      return { scaleFactor: 1, effectiveKwp: 0, effectivePanelCount: 0, effectiveAnnualProductionKwh: 0 };
+    if (!prospect || surfaceM2 <= 0 || !panelRef || !perKwp) {
+      return {
+        scaleFactor: 1,
+        effectiveKwp: 0,
+        effectivePanelCount: 0,
+        effectiveAnnualProductionKwh: 0,
+        kwpAtFetch: 0,
+        productionPerKwp: null,
+      };
     }
 
     const fullKwp = surfaceToKwp(surfaceM2, undefined, undefined, panelRef);
+    const productible = perKwp.productionPerKwpAnnual;
     const usableArea = getUsableRoofAreaM2(surfaceM2);
     const maxPanelCount = calculatePanelCount(usableArea, undefined, panelRef);
     const panelPowerW = panelRef.powerW;
 
+    const panelCountFromKwp = (kwp: number) =>
+      Math.min(Math.floor((kwp * 1000) / panelPowerW), maxPanelCount);
+
     if (configurationMode === "highest_production") {
-      const totalPowerKW = calculateTotalPowerKW(maxPanelCount, undefined, panelRef);
+      const effectiveKwp = fullKwp;
+      const effectiveAnnualProductionKwh = Math.round(productible * fullKwp);
       return {
         scaleFactor: 1,
-        effectiveKwp: totalPowerKW,
-        effectivePanelCount: maxPanelCount,
-        effectiveAnnualProductionKwh: maxKwhPerYear,
+        effectiveKwp,
+        effectivePanelCount: panelCountFromKwp(fullKwp),
+        effectiveAnnualProductionKwh,
+        kwpAtFetch: fullKwp,
+        productionPerKwp: perKwp,
       };
     }
 
-    // Perfect fit : règle 70/125 — PV (kWc) = (Conso annuelle × 0,7) / Productible (kWh/kWc/an)
-    // 70 % couverture autoconsommation cible ; productible = production annuelle par kWp du site
-    const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7; // 70 %
+    const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7;
     const placeType = prospect.placeType || "other";
-    const consoAnnuelleKwh = getEnergyConsumption(placeType) * surfaceM2; // kWh/an
-    const productibleKwhPerKwpPerYear = fullKwp > 0 ? maxKwhPerYear / fullKwp : 0; // kWh/kWp/an
-    const targetKwp = productibleKwhPerKwpPerYear > 0
-      ? (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / productibleKwhPerKwpPerYear
+    const consoAnnuelleKwh = getEnergyConsumption(placeType) * surfaceM2;
+    const targetKwp = productible > 0
+      ? (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / productible
       : 0;
-    const cappedKwp = Math.min(targetKwp, fullKwp);
-    const perfectFitPanelCount = Math.min(
-      Math.floor((cappedKwp * 1000) / panelPowerW),
-      maxPanelCount
-    );
-    const effectiveKwp = (perfectFitPanelCount * panelPowerW) / 1000;
-    const scaleFactor = fullKwp > 0 ? effectiveKwp / fullKwp : 1;
-    const effectiveAnnualProductionKwh = Math.round(maxKwhPerYear * scaleFactor);
-
+    const effectiveKwp = Math.min(targetKwp, fullKwp);
+    const effectiveAnnualProductionKwh = Math.round(productible * effectiveKwp);
     return {
-      scaleFactor,
+      scaleFactor: 1,
       effectiveKwp,
-      effectivePanelCount: perfectFitPanelCount,
+      effectivePanelCount: panelCountFromKwp(effectiveKwp),
       effectiveAnnualProductionKwh,
+      kwpAtFetch: fullKwp,
+      productionPerKwp: perKwp,
     };
   }, [prospect, configurationMode, usedPanelRef]);
 
-  /** Config pour les choice cards : panneaux + onduleurs pour chaque mode */
+  /** Config pour les choice cards : panneaux + onduleurs. production = productionPerKwp × kWp. */
   const choiceCardsConfig = useMemo(() => {
     const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
-    const maxKwhPerYear = prospect?.solarPotential?.maxKwhPerYear ?? 0;
     const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
     const inverterRef = usedInverterRef ?? getRecommendedInverterReferenceSync();
+    const legacyKwp = (prospect?.solarPotential?.maxArrayAreaMeters2 ?? 0) > 0
+      ? surfaceToKwp(prospect!.solarPotential!.maxArrayAreaMeters2!, undefined, undefined, panelRef)
+      : undefined;
+    const perKwp = getProductionPerKwpFromSolarPotential(prospect?.solarPotential, legacyKwp);
 
-    if (!prospect || surfaceM2 <= 0 || maxKwhPerYear <= 0 || !panelRef) {
+    if (!prospect || surfaceM2 <= 0 || !panelRef || !perKwp) {
       return { perfectFit: { panelCount: 0, inverterCount: 0 }, highestProduction: { panelCount: 0, inverterCount: 0 } };
     }
 
     const fullKwp = surfaceToKwp(surfaceM2, undefined, undefined, panelRef);
+    const productible = perKwp.productionPerKwpAnnual;
     const usableArea = getUsableRoofAreaM2(surfaceM2);
     const maxPanelCount = calculatePanelCount(usableArea, undefined, panelRef);
-    const highestPowerKW = calculateTotalPowerKW(maxPanelCount, undefined, panelRef);
-    const highestInverterCount = calculateInverterCount(highestPowerKW, inverterRef);
 
-    // Perfect fit : règle 70/125 — PV (kWc) = (Conso annuelle × 0,7) / Productible (kWh/kWc/an)
+    const panelCountFromKwp = (kwp: number) =>
+      Math.min(Math.floor((kwp * 1000) / panelRef.powerW), maxPanelCount);
+
+    const highestPanelCount = panelCountFromKwp(fullKwp);
+    const highestInverterCount = calculateInverterCount(fullKwp, inverterRef);
+
     const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7;
     const placeType = prospect.placeType || "other";
     const consoAnnuelleKwh = getEnergyConsumption(placeType) * surfaceM2;
-    const productibleKwhPerKwpPerYear = fullKwp > 0 ? maxKwhPerYear / fullKwp : 0;
-    const targetKwp = productibleKwhPerKwpPerYear > 0
-      ? (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / productibleKwhPerKwpPerYear
+    const targetKwp = productible > 0
+      ? (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / productible
       : 0;
     const cappedKwp = Math.min(targetKwp, fullKwp);
-    const perfectFitPanelCount = Math.min(
-      Math.floor((cappedKwp * 1000) / panelRef.powerW),
-      maxPanelCount
-    );
-    const perfectFitPowerKW = (perfectFitPanelCount * panelRef.powerW) / 1000;
-    const perfectFitInverterCount = calculateInverterCount(perfectFitPowerKW, inverterRef);
+    const perfectFitPanelCount = panelCountFromKwp(cappedKwp);
+    const perfectFitInverterCount = calculateInverterCount(cappedKwp, inverterRef);
 
-    return {
+    const config = {
       perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount },
-      highestProduction: { panelCount: maxPanelCount, inverterCount: highestInverterCount },
+      highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount },
     };
+    if (process.env.NODE_ENV === "development") {
+      console.log("[Production]", {
+        highest_production: { panneaux: config.highestProduction.panelCount, onduleurs: config.highestProduction.inverterCount },
+        perfect_fit: { panneaux: config.perfectFit.panelCount, onduleurs: config.perfectFit.inverterCount },
+      });
+    }
+    return config;
   }, [prospect, usedPanelRef, usedInverterRef]);
 
   /** Nombre max d'onduleurs recommandé ; au-delà, le modèle n'est pas adapté */
@@ -679,15 +754,15 @@ export function ProspectDrawer({
   const inverterCountExceedsLimit = effectiveInverterCount > MAX_INVERTER_COUNT;
 
   return (
-    <div className="h-full w-full bg-gray-50 border-l shadow-xl flex flex-col rounded-2xl overflow-hidden">
-        <div className="border-b p-4 bg-transparent hover:bg-gray-100/80 transition-colors">
+    <div className="h-full w-full bg-white border border-border shadow-xl flex flex-col rounded-2xl overflow-hidden">
+        <div className="p-4 rounded-t-2xl">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold leading-none tracking-tight">Informations du prospect</h2>
             <Button
               variant="outline"
               size="icon"
               onClick={() => onOpenChange(false)}
-              className="h-8 w-8 border border-gray-300"
+              className="h-8 w-8"
               title="Fermer"
             >
               <X className="h-4 w-4 text-muted-foreground" />
@@ -695,7 +770,7 @@ export function ProspectDrawer({
           </div>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="flex-1 overflow-y-auto px-4 space-y-2">
           {false ? (
             <>
               {/* Skeleton pour le score de qualité */}
@@ -741,7 +816,7 @@ export function ProspectDrawer({
                     config={{
                       score: { label: "Score", color: "hsl(var(--chart-2))" },
                     } satisfies ChartConfig}
-                    className="aspect-square max-h-[140px] !min-h-0 w-full max-w-[140px] h-[140px]"
+                    className="aspect-square max-h-[140px] min-h-0! w-full max-w-[140px] h-[140px]"
                   >
                     <RadialBarChart
                       data={[{ score: prospect.qualityScore }]}
@@ -797,7 +872,7 @@ export function ProspectDrawer({
               </div>
 
               <Tabs value={drawerTab} onValueChange={(v) => setDrawerTab(v as "prospect" | "projet")} className="w-full">
-                <TabsList className="grid w-full grid-cols-2 gap-1 rounded-xl p-1.5 my-2 bg-black !h-auto">
+                <TabsList className="grid w-full grid-cols-2 gap-1 rounded-xl p-1.5 my-2 bg-black h-auto!">
                   <TabsTrigger value="prospect" className="rounded-lg px-4 py-2 bg-transparent text-white/70 data-[state=active]:bg-white/10 data-[state=active]:text-white data-[state=inactive]:hover:text-white data-[state=inactive]:hover:bg-white/10">Prospect</TabsTrigger>
                   <TabsTrigger value="projet" className="rounded-lg px-4 py-2 bg-transparent text-white/70 data-[state=active]:bg-white/10 data-[state=active]:text-white data-[state=inactive]:hover:text-white data-[state=inactive]:hover:bg-white/10">Projet</TabsTrigger>
                 </TabsList>
@@ -805,8 +880,8 @@ export function ProspectDrawer({
                 <TabsContent value="prospect" className="mt-0 space-y-2">
               {/* Bloc prospect : nom, adresse, type, lat/lon */}
               <Card className="bg-black border-0 text-white overflow-hidden rounded-xl">
-                <CardContent className="p-0">
-                  <div className="p-3 flex flex-col gap-3 relative">
+                <CardContent className="py-3 px-4">
+                  <div className="flex flex-col gap-3 relative">
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <span className="text-[10px] uppercase tracking-wide text-white/70">Prospect</span>
                       <button
@@ -861,6 +936,12 @@ export function ProspectDrawer({
                             const firstOrientation = surfaces[0]?.orientation;
                             return firstOrientation != null ? `${Math.abs(firstOrientation).toFixed(1)}°` : "—";
                           })()}
+                        </div>
+                      </div>
+                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
+                        <span className="text-[10px] uppercase tracking-wide text-white/60" title="Année de construction (BDNB)">Année</span>
+                        <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
+                          {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
                         </div>
                       </div>
                     </div>
@@ -935,6 +1016,15 @@ export function ProspectDrawer({
                                 <span>Téléphone</span>
                               </div>
                               <a href={`tel:${(prospect.contact?.internationalPhoneNumber || prospect.contact?.nationalPhoneNumber || "").replace(/\s/g, "")}`} className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline" title={prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber}>{prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber}</a>
+                            </div>
+                          )}
+                          {prospect.anneeConstruction != null && (
+                            <div className="flex items-center gap-4 min-w-0">
+                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
+                                <Calendar className="h-3.5 w-3.5 opacity-70" />
+                                <span>Année construction</span>
+                              </div>
+                              <span className="text-white truncate min-w-0 flex-1 text-left pl-1">{prospect.anneeConstruction}</span>
                             </div>
                           )}
                         </div>
@@ -1025,19 +1115,19 @@ export function ProspectDrawer({
               </Card>
 
               <Dialog open={prospectDetailsOpen} onOpenChange={setProspectDetailsOpen}>
-                <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col p-0 bg-black border-0 [&>button]:text-white [&>button]:right-4 [&>button]:top-4 [&>button]:hover:bg-white/10 [&>button]:hover:text-white">
-                  <DialogHeader className="px-6 pt-6 pb-2">
+                <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col p-0 bg-black border-0 [&>button]:text-white [&>button]:right-4 [&>button]:top-4 hover:[&>button]:bg-white/10 hover:[&>button]:text-white">
+                  <DialogHeader className="px-4 md:px-5 pt-4 md:pt-5 pb-2">
                     <DialogTitle className="text-white text-lg font-semibold">
                       {prospect.name || "Détails du prospect"}
                     </DialogTitle>
                   </DialogHeader>
-                  <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-4">
+                  <div className="flex-1 overflow-y-auto px-4 md:px-5 pb-4 md:pb-5 space-y-4">
                     <div className="space-y-0 [&>p]:m-0 [&>p]:leading-tight">
                       {prospect.name && (
                         <p className="text-xl font-medium text-white" title={prospect.name}>{prospect.name}</p>
                       )}
                       {prospect.address && (
-                        <p className="text-sm text-white/80 mt-1 break-words" title={prospect.address}>{prospect.address}</p>
+                        <p className="text-sm text-white/80 mt-1 wrap-break-word" title={prospect.address}>{prospect.address}</p>
                       )}
                     </div>
                     <div className="rounded-lg px-4 py-3 bg-white/10 flex gap-6 flex-wrap">
@@ -1059,6 +1149,10 @@ export function ProspectDrawer({
                           })()}
                         </span>
                       </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] uppercase tracking-wide text-white/60">Année</span>
+                        <span className="text-sm text-white">{prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}</span>
+                      </div>
                     </div>
                     {(prospect.siren || prospect.companyLegalName || prospect.companyManagerName || prospect.companyAddress || prospect.companyNaf || prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber) && (
                       <div className="space-y-3 text-sm">
@@ -1071,16 +1165,16 @@ export function ProspectDrawer({
                             <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">SIRET</span><span className="text-white font-mono break-all">{prospect.siret}</span></div>
                           )}
                           {prospect.companyLegalName && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Dénomination</span><span className="text-white break-words">{prospect.companyLegalName}</span></div>
+                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Dénomination</span><span className="text-white wrap-break-word">{prospect.companyLegalName}</span></div>
                           )}
                           {prospect.companyAddress && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Adresse siège</span><span className="text-white break-words">{prospect.companyAddress}</span></div>
+                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Adresse siège</span><span className="text-white wrap-break-word">{prospect.companyAddress}</span></div>
                           )}
                           {prospect.companyNaf && (
                             <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Code NAF</span><span className="text-white font-mono">{prospect.companyNaf}</span></div>
                           )}
                           {prospect.companyManagerName && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Gérant</span><span className="text-white break-words">{prospect.companyManagerName}</span></div>
+                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Gérant</span><span className="text-white wrap-break-word">{prospect.companyManagerName}</span></div>
                           )}
                           {(prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber) && (
                             <div className="flex gap-3">
@@ -1146,9 +1240,9 @@ export function ProspectDrawer({
                       return (
                         <div
                           key={surfaceId}
-                          className="rounded-xl border border-border bg-white p-3 shadow-sm flex items-stretch gap-3"
+                          className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3"
                         >
-                          <div className="flex-shrink-0 flex items-center">
+                          <div className="shrink-0 flex items-center">
                             <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
                           </div>
                           <div className="flex-1 min-w-0 flex flex-col justify-center">
@@ -1234,7 +1328,7 @@ export function ProspectDrawer({
               )}
               {pvgisError && !isLoadingPVGIS && (
                 <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 p-2 rounded">
-                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
                   <span>{pvgisError}</span>
                 </div>
               )}
@@ -1242,8 +1336,7 @@ export function ProspectDrawer({
 
                 <TabsContent value="projet" className="mt-0 space-y-2">
               {/* Choice cards : Perfect fit / Highest production — au-dessus de Production */}
-              {prospect.solarPotential?.monthlyProduction &&
-               prospect.solarPotential.monthlyProduction.length > 0 &&
+              {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) &&
                !isLoadingPVGIS &&
                ((prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0) && (
                 <div className="grid grid-cols-2 gap-2">
@@ -1252,7 +1345,7 @@ export function ProspectDrawer({
                     onClick={() => setConfigurationMode("perfect_fit")}
                     className={`rounded-xl border p-3 text-left transition-colors ${
                       configurationMode === "perfect_fit"
-                        ? "border-blue-500 bg-blue-50/80 shadow-sm"
+                        ? "border-blue-500 bg-blue-50/80 shadow-xs"
                         : "border-border bg-white hover:bg-gray-50"
                     }`}
                   >
@@ -1277,7 +1370,7 @@ export function ProspectDrawer({
                     onClick={() => setConfigurationMode("highest_production")}
                     className={`rounded-xl border p-3 text-left transition-colors ${
                       configurationMode === "highest_production"
-                        ? "border-blue-500 bg-blue-50/80 shadow-sm"
+                        ? "border-blue-500 bg-blue-50/80 shadow-xs"
                         : "border-border bg-white hover:bg-gray-50"
                     }`}
                   >
@@ -1301,8 +1394,7 @@ export function ProspectDrawer({
               )}
 
               {/* Production mensuelle : affiché uniquement si surface définie (kWp + consommation) */}
-              {prospect.solarPotential?.monthlyProduction &&
-               prospect.solarPotential.monthlyProduction.length > 0 &&
+              {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) &&
                !isLoadingPVGIS &&
                ((prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0) && (
                 <>
@@ -1316,12 +1408,14 @@ export function ProspectDrawer({
                             prospect.roofSurface?.area ??
                             0;
                           const placeType = prospect.placeType || "other";
-                          const scale = effectiveConfig.scaleFactor;
-                          const raw = prospect.solarPotential?.monthlyProduction ?? [];
 
-                          if (chartViewMode === "daily") {
-                            const hourlyProduction = buildTypicalDayFromMonthly(raw, scale);
-                            const dailyProductionKwh = hourlyProduction.reduce((s, v) => s + (v ?? 0), 0);
+                          if (chartViewMode === "daily" && effectiveConfig.productionPerKwp) {
+                            const { dailyTypical } = getProductionFromPerKwp(
+                              effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+                              effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+                              effectiveConfig.effectiveKwp
+                            );
+                            const dailyProductionKwh = dailyTypical.reduce((s, v) => s + (v ?? 0), 0);
                             const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
                             const dailyConsumptionKwh =
                               surfaceM2 * (hourlyConsumptionPerM2?.reduce((s, v) => s + (v ?? 0), 0) ?? 0);
@@ -1361,7 +1455,7 @@ export function ProspectDrawer({
                       </div>
                       <div
                         role="tablist"
-                        className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 flex-shrink-0"
+                        className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
                         aria-label="Vue du graphique"
                       >
                         <button
@@ -1371,7 +1465,7 @@ export function ProspectDrawer({
                           onClick={() => setChartViewMode("monthly")}
                           className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
                             chartViewMode === "monthly"
-                              ? "bg-background text-foreground shadow-sm"
+                              ? "bg-background text-foreground shadow-xs"
                               : "text-muted-foreground hover:text-foreground"
                           }`}
                         >
@@ -1384,7 +1478,7 @@ export function ProspectDrawer({
                           onClick={() => setChartViewMode("daily")}
                           className={`rounded px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
                             chartViewMode === "daily"
-                              ? "bg-background text-foreground shadow-sm"
+                              ? "bg-background text-foreground shadow-xs"
                               : "text-muted-foreground hover:text-foreground"
                           }`}
                         >
@@ -1398,28 +1492,33 @@ export function ProspectDrawer({
                         viewMode={chartViewMode}
                         onViewModeChange={setChartViewMode}
                         data={(() => {
-                          const raw = prospect.solarPotential!.monthlyProduction!;
                           const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
                           const placeType = prospect.placeType || "other";
-                          const scale = effectiveConfig.scaleFactor;
-                          return raw.map((m) => ({
+                          if (!effectiveConfig.productionPerKwp) return [];
+                          const { monthlyProduction } = getProductionFromPerKwp(
+                            effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+                            effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+                            effectiveConfig.effectiveKwp
+                          );
+                          return monthlyProduction.map((m) => ({
                             month: m.month,
-                            production: Math.round((m.production ?? 0) * scale),
+                            production: m.production,
                             consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
                           }));
                         })()}
                         dailyData={(() => {
-                          const raw = prospect.solarPotential!.monthlyProduction!;
                           const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
-                          if (surfaceM2 <= 0) return undefined;
+                          if (surfaceM2 <= 0 || !effectiveConfig.productionPerKwp) return undefined;
                           const placeType = prospect.placeType || "other";
-                          const scale = effectiveConfig.scaleFactor;
-                          // raw est déjà en kWh total (déjà × kWp côté PVGIS), donc peakpower=1 pour ne pas re-multiplier
-                          const hourlyProduction = buildTypicalDayFromMonthly(raw, scale);
+                          const { dailyTypical } = getProductionFromPerKwp(
+                            effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+                            effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+                            effectiveConfig.effectiveKwp
+                          );
                           const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
                           return Array.from({ length: 24 }, (_, hour) => ({
                             hour,
-                            production: hourlyProduction[hour] ?? 0,
+                            production: dailyTypical[hour] ?? 0,
                             consumption: Math.round((hourlyConsumptionPerM2[hour] ?? 0) * surfaceM2),
                           }));
                         })()}
@@ -1435,7 +1534,7 @@ export function ProspectDrawer({
                     const totalConsumptionKwh = surfaceM2 > 0 ? getEnergyConsumption(placeType) * surfaceM2 : 0;
                     const energyBillEur = estimateEnergyBillEur(totalConsumptionKwh);
                     const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
-                    const annualSavings = estimateAnnualSavingsEur(annualProductionKWh);
+                    const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
                     const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
                     const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
                     const panelCount = effectiveConfig.effectivePanelCount;
@@ -1453,7 +1552,7 @@ export function ProspectDrawer({
                         : "—";
                     return (
                       <>
-                        <div className="grid grid-cols-2 gap-2 -mt-10">
+                        <div className="grid grid-cols-2 gap-2">
                           <div className="rounded-xl px-4 py-4 min-h-[130px] flex flex-col justify-between bg-gray-100">
                             <div className="flex items-center justify-between gap-1">
                               <span className="text-[10px] uppercase tracking-wide text-gray-500">Energy Bill</span>
@@ -1502,8 +1601,8 @@ export function ProspectDrawer({
                               <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
                               <span className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">{effectiveConfig.effectivePanelCount}</span>
                             </div>
-                            <div className="rounded-xl border border-border bg-white p-3 shadow-sm flex items-stretch gap-3">
-                            <div className="flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
+                            <div className="rounded-xl border border-border bg-white p-3 flex items-stretch gap-3">
+                            <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
                               {usedPanelRef.imageUrl ? (
                                 <Image
                                   src={usedPanelRef.imageUrl}
@@ -1565,8 +1664,8 @@ export function ProspectDrawer({
                               )}
                               <span className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">{effectiveInverterCount}</span>
                             </div>
-                            <div className="rounded-xl border border-border bg-white p-3 shadow-sm flex items-stretch gap-3">
-                              <div className="flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
+                            <div className="rounded-xl border border-border bg-white p-3 flex items-stretch gap-3">
+                              <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
                                 {usedInverterRef.imageUrl ? (
                                   <Image
                                     src={usedInverterRef.imageUrl}
@@ -1634,9 +1733,10 @@ export function ProspectDrawer({
                 const totalPowerKW = effectiveConfig.effectiveKwp;
                 const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
                 const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
+                const totalConsumptionKwh = getEnergyConsumption(prospect.placeType || "other") * totalArea;
                 const equipmentEur = estimateInstallationPriceEur(panelCount, inverterCount, recommendedPanel, recommendedInverter);
                 const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
-                const annualSavings = estimateAnnualSavingsEur(annualProductionKWh);
+                const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
                 const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
                 const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
                 const breakEvenLabel =
@@ -1655,17 +1755,55 @@ export function ProspectDrawer({
           )}
         </div>
 
-        <div className="border-t p-4 mt-auto bg-white space-y-2">
+        <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl">
           {prospect?.id && (
-            <div className="flex gap-2">
-              <Link href={`/solar-scout?prospectId=${prospect.id}`}>
-                <Button variant="outline" size="lg" className="shrink-0">
-                  Voir
+            <div className="flex flex-wrap gap-2">
+              <Link href={voirHref(prospect.id)}>
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  className="h-12 w-12 shrink-0"
+                  title={isOnMap ? "Voir" : "Voir sur la carte"}
+                  aria-label={isOnMap ? "Voir" : "Voir sur la carte"}
+                >
+                  {isOnMap ? (
+                    <Eye className="h-4 w-4" />
+                  ) : (
+                    <Map className="h-4 w-4" />
+                  )}
                 </Button>
               </Link>
               <Button
+                variant="secondary"
+                size="icon"
+                className="h-12 w-12 shrink-0"
+                onClick={handleGenerateLink}
+                disabled={isGeneratingLink}
+                title={isGeneratingLink ? "Génération..." : "Générer le lien prospect et copier dans le presse-papiers"}
+                aria-label={isGeneratingLink ? "Génération..." : "Lien prospect"}
+              >
+                {isGeneratingLink ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Link2 className="h-4 w-4" />
+                )}
+              </Button>
+              {prospect.shareToken && (
+                <Link href={`/p/${prospect.shareToken}`} target="_blank" rel="noopener noreferrer">
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-12 w-12 shrink-0"
+                    title="Voir la page partagée"
+                    aria-label="Voir la page partagée"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </Button>
+                </Link>
+              )}
+              <Button
                 onClick={handleSave}
-                className="flex-1"
+                className="flex-1 min-w-0"
                 size="lg"
                 disabled={isSaving}
               >
@@ -1677,15 +1815,22 @@ export function ProspectDrawer({
             <div className="flex gap-2">
               {onDrawingChange && (
                 <Button
-                  variant={isDrawing ? "secondary" : "outline"}
-                  size="lg"
+                  variant="default"
+                  size="icon"
+                  className="h-12 w-12 shrink-0 border-0 bg-blue-500 hover:bg-blue-600 text-white"
                   onClick={() => onDrawingChange(!isDrawing)}
-                  className="shrink-0"
+                  title={isDrawing ? "Quitter l'édition" : "Surface"}
+                  aria-label={isDrawing ? "Quitter l'édition" : "Surface"}
                 >
-                  {isDrawing ? "Quitter l'édition" : "Surface"}
+                  {isDrawing ? (
+                    <X className="h-4 w-4" />
+                  ) : (
+                    <PenTool className="h-4 w-4" />
+                  )}
                 </Button>
               )}
               <Button
+                variant={(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 ? "default" : "secondary"}
                 onClick={handleAddToPipeline}
                 className="flex-1"
                 size="lg"

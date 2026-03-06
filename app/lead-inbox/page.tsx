@@ -48,7 +48,7 @@ export default function LeadInboxPage() {
   }
 
   return (
-    <div className="min-h-screen p-6">
+    <div className="min-h-screen p-4 md:p-5">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold mb-6">Lead Inbox</h1>
         
@@ -65,7 +65,7 @@ export default function LeadInboxPage() {
                 <CardContent className="p-6">
                   <div className="flex items-center gap-6">
                     {/* Colonne Property avec thumbnail */}
-                    <div className="w-32 h-32 flex-shrink-0 rounded-lg overflow-hidden bg-muted flex items-center justify-center">
+                    <div className="w-32 h-32 shrink-0 rounded-lg overflow-hidden bg-muted flex items-center justify-center">
                       {lead.thumbnailUrl ? (
                         <Image
                           src={lead.thumbnailUrl}
