@@ -561,7 +561,7 @@ export default function ProspectSharePage() {
                     <div className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3">
                       <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
                         {usedPanelRef.imageUrl ? (
-                          <Image src={usedPanelRef.imageUrl} alt={usedPanelRef.name} width={48} height={48} className="w-full h-full object-cover" />
+                          <Image src={usedPanelRef.imageUrl} alt={usedPanelRef.name} width={48} height={48} className="w-full h-full object-cover" unoptimized />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
                         )}
@@ -597,7 +597,7 @@ export default function ProspectSharePage() {
                     <div className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3">
                       <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
                         {usedInverterRef.imageUrl ? (
-                          <Image src={usedInverterRef.imageUrl} alt={usedInverterRef.name} width={48} height={48} className="w-full h-full object-cover" />
+                          <Image src={usedInverterRef.imageUrl} alt={usedInverterRef.name} width={48} height={48} className="w-full h-full object-cover" unoptimized />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
                         )}

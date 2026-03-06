@@ -1610,6 +1610,7 @@ export function ProspectDrawer({
                                   width={48}
                                   height={48}
                                   className="w-full h-full object-cover"
+                                  unoptimized
                                 />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
@@ -1673,6 +1674,7 @@ export function ProspectDrawer({
                                     width={48}
                                     height={48}
                                     className="w-full h-full object-cover"
+                                    unoptimized
                                   />
                                 ) : (
                                   <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>

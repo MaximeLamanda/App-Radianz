@@ -676,6 +676,7 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                       width={56}
                                       height={56}
                                       className="w-full h-full object-cover"
+                                      unoptimized
                                     />
                                   ) : (
                                     <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
@@ -757,6 +758,7 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                       width={56}
                                       height={56}
                                       className="w-full h-full object-cover"
+                                      unoptimized
                                     />
                                   ) : (
                                     <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>

@@ -361,6 +361,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                             width={64}
                             height={64}
                             className="w-full h-full object-cover aspect-square"
+                            unoptimized
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
@@ -461,6 +462,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                             width={64}
                             height={64}
                             className="w-full h-full object-cover aspect-square"
+                            unoptimized
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>

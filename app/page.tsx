@@ -70,7 +70,7 @@ function EquipmentThumbnail({
       title={equipment.name}
     >
       {src ? (
-        <Image src={src} alt={alt} width={32} height={32} className="object-contain w-full h-full" />
+        <Image src={src} alt={alt} width={32} height={32} className="object-contain w-full h-full" unoptimized />
       ) : (
         <FallbackIcon className="h-4 w-4 text-muted-foreground" />
       )}
