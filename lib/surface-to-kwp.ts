@@ -36,48 +36,59 @@ import {
   getSolarEquipmentSettings,
   DEFAULT_SOLAR_SETTINGS,
   PANEL_TYPE_CHARACTERISTICS,
+  getRecommendedPanelReferenceSync,
 } from "./solar-settings";
-import type { SolarEquipmentSettings } from "@/types";
+import type { SolarEquipmentSettings, PanelReference } from "@/types";
 
 /** Coefficient d'utilisation du toit : part de la surface réellement couverte par les panneaux (0,75 = 75 %). */
 export const DEFAULT_USABLE_ROOF_RATIO = 0.75;
 
 /**
  * Calcule la puissance crête (kWp) à partir de la surface de toit en m².
+ * Utilise le panneau recommandé si disponible.
  *
  * @param areaM2 - Surface du toit dessinée (m²)
  * @param settings - Paramètres panneaux (optionnel) ; sinon pris depuis localStorage ou défaut
- * @param usableRatio - Coefficient d'utilisation du toit (0 à 1) ; défaut 0,75
+ * @param usableRatio - Coefficient d'utilisation du toit (0 à 1) ; si non fourni, pris dans settings.usableRoofRatio
+ * @param recommendedPanel - Panneau recommandé (optionnel) ; utilisé en priorité
  * @returns kWp estimé (arrondi à 2 décimales)
  */
 export function surfaceToKwp(
   areaM2: number,
   settings?: SolarEquipmentSettings | null,
-  usableRatio: number = DEFAULT_USABLE_ROOF_RATIO
+  usableRatio?: number,
+  recommendedPanel?: PanelReference | null
 ): number {
   if (areaM2 <= 0) return 0;
 
   const s = settings ?? (typeof window !== "undefined" ? getSolarEquipmentSettings() : DEFAULT_SOLAR_SETTINGS);
-  const efficiency = s.panelEfficiency ?? PANEL_TYPE_CHARACTERISTICS[s.panelType].typicalEfficiency;
-  const ratio = Math.max(0.01, Math.min(1, usableRatio));
+  const ratio = Math.max(0.01, Math.min(1, usableRatio ?? s.usableRoofRatio ?? DEFAULT_USABLE_ROOF_RATIO));
+  
+  // Utiliser le panneau recommandé si disponible
+  const panel = recommendedPanel ?? (typeof window !== "undefined" ? getRecommendedPanelReferenceSync() : null);
+  const efficiency = panel?.efficiencyPercent 
+    ?? s.panelEfficiency 
+    ?? PANEL_TYPE_CHARACTERISTICS[s.panelType].typicalEfficiency;
 
   // surface utilisable (m²)
   const usableAreaM2 = areaM2 * ratio;
   // puissance crête par m² sous STC : (rendement % / 100) × 1 kW/m²
   const powerKwPerM2 = efficiency / 100;
   const kwp = usableAreaM2 * powerKwPerM2;
-
   return Math.round(kwp * 100) / 100;
 }
 
 /**
  * Retourne la surface utilisable (m²) à partir de la surface de toit et du coefficient.
+ * @param usableRatio - Si non fourni, pris depuis getSolarEquipmentSettings().usableRoofRatio
  */
 export function getUsableRoofAreaM2(
   areaM2: number,
-  usableRatio: number = DEFAULT_USABLE_ROOF_RATIO
+  usableRatio?: number
 ): number {
   if (areaM2 <= 0) return 0;
-  const ratio = Math.max(0.01, Math.min(1, usableRatio));
+  const ratio = typeof usableRatio === "number"
+    ? Math.max(0.01, Math.min(1, usableRatio))
+    : Math.max(0.01, Math.min(1, (typeof window !== "undefined" ? getSolarEquipmentSettings() : DEFAULT_SOLAR_SETTINGS).usableRoofRatio ?? DEFAULT_USABLE_ROOF_RATIO));
   return Math.round((areaM2 * ratio) * 100) / 100;
 }
