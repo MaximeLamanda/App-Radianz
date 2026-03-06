@@ -1,9 +1,11 @@
 {
-  "name": "solar-view",
+  "name": "app.radianz",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "ulimit -n 10240 2>/dev/null || true; next dev -p 3000",
+    "dev:3001": "ulimit -n 10240 2>/dev/null || true; next dev -p 3001",
+    "dev:restart": "bash scripts/dev.sh",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -45,6 +47,9 @@
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
     "firebase": "^10.12.5",
+    "firebase-admin": "^13.6.1",
+    "fuse.js": "^7.1.0",
+    "geist": "^1.7.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.427.0",
     "next": "^14.2.5",
@@ -61,15 +66,15 @@
     "vaul": "^0.9.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.1",
     "@types/google.maps": "^3.55.2",
     "@types/node": "^20.14.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "autoprefixer": "^10.4.19",
     "eslint": "^8.57.1",
     "eslint-config-next": "^14.2.5",
     "postcss": "^8.4.40",
-    "tailwindcss": "^3.4.7",
+    "tailwindcss": "^4.2.1",
     "typescript": "^5.5.4"
   }
 }
