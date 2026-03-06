@@ -1,5 +1,6 @@
 import { initializeApp, getApps, FirebaseApp } from "firebase/app";
 import { getAnalytics, Analytics } from "firebase/analytics";
+import { getAuth, Auth } from "firebase/auth";
 import { getFirestore, Firestore } from "firebase/firestore";
 import { getStorage, FirebaseStorage } from "firebase/storage";
 
@@ -17,16 +18,22 @@ let app: FirebaseApp;
 let analytics: Analytics | null = null;
 let db: Firestore;
 let storage: FirebaseStorage;
+let auth: Auth;
 
 if (typeof window !== "undefined") {
   if (!getApps().length) {
     app = initializeApp(firebaseConfig);
-    analytics = getAnalytics(app);
+    try {
+      analytics = getAnalytics(app);
+    } catch {
+      analytics = null; // Bloqué dans certains navigateurs (Cursor, iframe, etc.)
+    }
   } else {
     app = getApps()[0];
   }
   db = getFirestore(app);
   storage = getStorage(app);
+  auth = getAuth(app);
 } else {
   // Server-side initialization
   if (!getApps().length) {
@@ -36,6 +43,7 @@ if (typeof window !== "undefined") {
   }
   db = getFirestore(app);
   storage = getStorage(app);
+  auth = getAuth(app);
 }
 
-export { app, analytics, db, storage };
+export { app, analytics, auth, db, storage };

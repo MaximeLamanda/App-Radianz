@@ -9,7 +9,7 @@
  * - slope / azimuth : degrés.
  */
 
-import type { AddressCoordinates } from "@/types";
+import type { AddressCoordinates, SolarPotential } from "@/types";
 
 /**
  * Interface pour les données PVGIS brutes (structure API v5_3)
@@ -102,8 +102,10 @@ export interface PVGISOptions {
   lon: number;
   peakpower?: number; // Puissance en kW (défaut: 1)
   loss?: number; // Pertes système en % (défaut: 14)
-  optimalangles?: boolean; // Calculer les angles optimaux (défaut: true)
+  optimalangles?: boolean; // Calculer les angles optimaux (défaut: true si slope/azimuth non fournis)
   pvtechchoice?: string; // Technologie PV (défaut: "crystSi")
+  slope?: number; // Inclinaison en degrés (0-90). Si fourni, optimalangles sera false
+  azimuth?: number; // Orientation en degrés (0=Sud, 90=Ouest, -90=Est). Si fourni, optimalangles sera false
 }
 
 /**
@@ -116,10 +118,23 @@ function buildPVGISURL(options: PVGISOptions): string {
     lon: options.lon.toString(),
     peakpower: (options.peakpower || 1).toString(),
     loss: (options.loss || 14).toString(),
-    optimalangles: options.optimalangles !== false ? "1" : "0",
     pvtechchoice: options.pvtechchoice || "crystSi",
     outputformat: "json",
   });
+
+  // Si slope ou azimuth sont fournis, utiliser des angles fixes (optimalangles=false)
+  // Sinon, utiliser les angles optimaux (optimalangles=true)
+  if (options.slope != null || options.azimuth != null) {
+    params.append("optimalangles", "0");
+    if (options.slope != null) {
+      params.append("slope", options.slope.toString());
+    }
+    if (options.azimuth != null) {
+      params.append("azimuth", options.azimuth.toString());
+    }
+  } else {
+    params.append("optimalangles", options.optimalangles !== false ? "1" : "0");
+  }
 
   return `${baseURL}?${params.toString()}`;
 }
@@ -247,11 +262,76 @@ export function validateCoordinates(coordinates: AddressCoordinates): boolean {
 const HOURLY_SOLAR = [0,0,0,0,0,0,0.02,0.05,0.08,0.1,0.11,0.12,0.12,0.11,0.1,0.08,0.06,0.04,0.02,0.01,0,0,0,0];
 const SOLAR_SUM = HOURLY_SOLAR.reduce((a,b)=>a+b,0);
 
-/** Jour type production (24h) depuis mensuelles, pour peakpower kWp. */
-export function buildTypicalDayFromMonthly(monthly: Array<{month:number;production:number}>, peakpower = 1): number[] {
+/**
+ * Jour type production (24h) à partir des productions mensuelles PVGIS.
+ * @param monthly Production mensuelle (kWh/mois) — peut être pour 1 kWp ou déjà scalée.
+ * @param scaleFactor Facteur de mise à l'échelle (ex. effectiveKwp/kwpAtFetch). Si monthly est pour X kWp et on veut Y kWp, passer Y/X.
+ */
+export function buildTypicalDayFromMonthly(monthly: Array<{month:number;production:number}>, scaleFactor = 1): number[] {
   const annual = monthly.reduce((s,m)=>s+(m.production??0),0);
-  const daily = (annual/365)*peakpower;
+  const daily = (annual/365)*scaleFactor;
   return HOURLY_SOLAR.map(f=>Math.round((daily*f/SOLAR_SUM)*100)/100);
+}
+
+/** Plage plausible kWh/kWp/an (France/Europe). Utilisée pour la migration. */
+const PRODUCTIBLE_MIN = 500;
+const PRODUCTIBLE_MAX = 2000;
+
+/**
+ * Récupère productionPerKwp depuis un SolarPotential.
+ * Utilise les nouveaux champs si présents, sinon dérive des anciens (migration).
+ */
+export function getProductionPerKwpFromSolarPotential(
+  solarPotential: SolarPotential | undefined,
+  /** Pour migration : kWp correspondant à maxArrayAreaMeters2 (surfaceToKwp(area)) */
+  legacyKwpAtFetch?: number
+): { productionPerKwpAnnual: number; productionPerKwpMonthly: Array<{ month: number; production: number }> } | null {
+  if (!solarPotential) return null;
+  if (
+    solarPotential.productionPerKwpAnnual != null &&
+    solarPotential.productionPerKwpAnnual > 0 &&
+    solarPotential.productionPerKwpMonthly?.length
+  ) {
+    return {
+      productionPerKwpAnnual: solarPotential.productionPerKwpAnnual,
+      productionPerKwpMonthly: solarPotential.productionPerKwpMonthly,
+    };
+  }
+  const maxKwh = solarPotential.maxKwhPerYear;
+  const kwp = legacyKwpAtFetch;
+  if (maxKwh != null && maxKwh > 0 && kwp != null && kwp > 0) {
+    const derived = maxKwh / kwp;
+    if (derived >= PRODUCTIBLE_MIN && derived <= PRODUCTIBLE_MAX) {
+      const monthly = solarPotential.monthlyProduction;
+      const perKwpMonthly =
+        monthly?.length === 12
+          ? monthly.map((m) => ({ month: m.month, production: (m.production ?? 0) / kwp }))
+          : Array.from({ length: 12 }, (_, i) => ({
+              month: i + 1,
+              production: Math.round((derived / 12) * 100) / 100,
+            }));
+      return { productionPerKwpAnnual: derived, productionPerKwpMonthly: perKwpMonthly };
+    }
+  }
+  return null;
+}
+
+/**
+ * Calcule la production à partir des données PVGIS normalisées (par kWp).
+ * production = productionPerKwp × kwp
+ */
+export function getProductionFromPerKwp(
+  productionPerKwpAnnual: number,
+  productionPerKwpMonthly: Array<{ month: number; production: number }>,
+  kwp: number
+): { annualKwh: number; monthlyProduction: Array<{ month: number; production: number }>; dailyTypical: number[] } {
+  const annualKwh = Math.round(productionPerKwpAnnual * kwp);
+  const monthlyProduction = productionPerKwpMonthly.map((m) => ({
+    month: m.month,
+    production: Math.round((m.production ?? 0) * kwp),
+  }));
+  const dailyTypical = buildTypicalDayFromMonthly(productionPerKwpMonthly, kwp);
+  return { annualKwh, monthlyProduction, dailyTypical };
 }
 
 export interface PVGISHourlyTypicalDay { hourlyProduction: number[]; peakpower: number; }
