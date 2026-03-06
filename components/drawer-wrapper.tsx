@@ -9,8 +9,8 @@ export function DrawerWrapper({ children }: { children: ReactNode }) {
   
   return (
     <>
-      <SidebarInset>
-        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
+      <SidebarInset className="min-w-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           {children}
         </div>
       </SidebarInset>
@@ -22,7 +22,7 @@ export function DrawerWrapper({ children }: { children: ReactNode }) {
             isDrawerOpen ? 'right-0' : 'right-[calc(440px*-1)]'
           }`}
         >
-          <div className="flex-1 min-w-0 mr-5 my-5 flex">
+          <div className="flex-1 min-w-0 mr-5 my-5 flex overflow-hidden rounded-2xl bg-white">
             {drawerContent}
           </div>
         </div>

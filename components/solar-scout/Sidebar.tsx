@@ -992,7 +992,7 @@ export function Sidebar({
 
 
   return (
-    <div className="w-96 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto">
+    <div className="w-96 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
       {/* Partie 1: Recherche avec onglets */}
       <Tabs defaultValue="address" className="w-full">
         <div className="mb-4 flex">

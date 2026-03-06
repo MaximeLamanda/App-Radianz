@@ -26,8 +26,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="fr" className="bg-transparent h-screen overflow-hidden" suppressHydrationWarning>
-      <body className={`${GeistSans.variable} ${GeistMono.variable} font-sans antialiased bg-transparent h-screen overflow-hidden`} suppressHydrationWarning>
+    <html lang="fr" className="bg-transparent h-svh overflow-hidden" suppressHydrationWarning>
+      <body className={`${GeistSans.variable} ${GeistMono.variable} font-sans antialiased bg-transparent h-svh overflow-hidden`} suppressHydrationWarning>
         <AuthProvider>
         <DesignThemeProvider>
         <DrawerProvider>
