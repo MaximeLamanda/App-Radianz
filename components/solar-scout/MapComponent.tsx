@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { loadProspectSurfaces } from "@/lib/prospect-storage";
+import { getProspectByPlaceId } from "@/lib/firestore";
+import { loadMapPosition, saveMapPosition, getDefaultMapPosition } from "@/lib/map-position-storage";
 import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exposure, PlaceSearchResult } from "@/types";
 
 /** Overlay Google Maps : bouton "Valider" ancré à une position lat/lng sur la carte */
@@ -65,7 +68,7 @@ interface MapComponentProps {
   isDrawing: boolean;
   onDrawingChange: (isDrawing: boolean) => void;
   centerCoordinates?: AddressCoordinates | null;
-  onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }> }) => void;
+  onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }>; orientation?: number }) => void;
   currentProspect?: Prospect | null;
   shouldValidateDrawing?: boolean;
   onValidationComplete?: () => void;
@@ -73,6 +76,9 @@ interface MapComponentProps {
   searchResults?: PlaceSearchResult[];
   onSearchResultClick?: (result: PlaceSearchResult) => void;
   onGetMapCenter?: (getCenterFunc: () => AddressCoordinates | null) => void;
+  onBdnbSurface?: (surfaces: RoofSurface[] | null) => void;
+  /** Appelé quand les infos BDNB (année, surface) sont disponibles ou réinitialisées */
+  onBdnbInfo?: (info: { anneeConstruction: number | null; surfaceM2: number | null }) => void;
 }
 
 export function MapComponent({
@@ -88,6 +94,8 @@ export function MapComponent({
   searchResults = [],
   onSearchResultClick,
   onGetMapCenter,
+  onBdnbSurface,
+  onBdnbInfo,
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -97,6 +105,15 @@ export function MapComponent({
   const isFocusingOnResultRef = useRef<boolean>(false);
   const [validationButtonPosition, setValidationButtonPosition] = useState<{ lat: number; lng: number } | null>(null);
   const validationOverlayRef = useRef<google.maps.OverlayView | null>(null);
+
+  // Ref vers onBdnbSurface pour éviter les stale closures
+  const onBdnbSurfaceRef = useRef<((surfaces: RoofSurface[] | null) => void) | undefined>(undefined);
+  onBdnbSurfaceRef.current = onBdnbSurface;
+  const onBdnbInfoRef = useRef<((info: { anneeConstruction: number | null; surfaceM2: number | null }) => void) | undefined>(undefined);
+  onBdnbInfoRef.current = onBdnbInfo;
+  // Ref vers fetchBdnbBatiment pour éviter les stale closures dans le listener de clic
+  const fetchBdnbBatimentRef = useRef<((coords: AddressCoordinates) => void) | null>(null);
+
   
   // Fonction pour obtenir le centre de la carte - toujours disponible via ref
   const getMapCenterFunc = useRef<(() => AddressCoordinates | null) | null>(null);
@@ -117,12 +134,18 @@ export function MapComponent({
     const maps = window.google.maps;
 
     try {
+      // Charger la position sauvegardée si centerCoordinates n'est pas fourni
+      const savedPosition = loadMapPosition();
+      const defaultPosition = savedPosition || getDefaultMapPosition();
+      const initialCenter = centerCoordinates || defaultPosition.center;
+      const initialZoom = defaultPosition.zoom || 16;
+      
       // Initialiser la carte Google Maps avec gestion d'erreur
       // Configuration pour afficher les établissements nativement
-      // Coordonnées de Roinville par défaut (sera remplacé par centerCoordinates si fourni)
+      // Utiliser la position sauvegardée ou celle fournie en props
       const map = new maps.Map(mapRef.current, {
-        center: centerCoordinates || { lat: 48.5311, lng: 2.0508 }, // Roinville par défaut
-        zoom: 16,
+        center: initialCenter,
+        zoom: initialZoom,
         mapTypeId: maps.MapTypeId.HYBRID, // Satellite + POI et libellés (EEA : JS API uniquement)
         disableDefaultUI: true, // Désactive tous les contrôles par défaut (zoom, type de carte, etc.)
         // Activer l'affichage des établissements (POI) nativement
@@ -138,7 +161,6 @@ export function MapComponent({
       mapInstanceRef.current = map;
 
       // Stocker le centre initial de la carte comme fallback
-      const initialCenter = centerCoordinates || { lat: 48.5311, lng: 2.0508 };
       lastKnownCenterRef.current = initialCenter;
       
       // Créer et stocker la fonction pour obtenir le centre de la carte
@@ -214,19 +236,40 @@ export function MapComponent({
         }
       };
       
-      // Écouter les changements de centre pour mettre à jour le dernier centre connu
+      // Sauvegarder la position quand la carte bouge
+      const savePosition = () => {
+        if (mapInstanceRef.current) {
+          try {
+            const center = mapInstanceRef.current.getCenter();
+            const zoom = mapInstanceRef.current.getZoom();
+            if (center) {
+              const lat = center.lat();
+              const lng = center.lng();
+              if (!isNaN(lat) && !isNaN(lng)) {
+                saveMapPosition({ lat, lng }, zoom || undefined);
+              }
+            }
+          } catch (error) {
+            console.error("[MapComponent] Erreur lors de la sauvegarde de la position:", error);
+          }
+        }
+      };
+      
+      // Écouter les changements de centre pour mettre à jour le dernier centre connu et sauvegarder
       maps.event.addListener(map, "center_changed", () => {
         updateLastKnownCenter();
       });
       
-      // Écouter l'événement "idle" (carte prête après mouvement) pour s'assurer que le centre est à jour
+      // Écouter l'événement "idle" (carte prête après mouvement) pour s'assurer que le centre est à jour et sauvegarder
       maps.event.addListener(map, "idle", () => {
         updateLastKnownCenter();
+        savePosition(); // Sauvegarder la position après chaque mouvement
       });
       
       // Écouter une première fois "idle" pour l'initialisation
       maps.event.addListenerOnce(map, "idle", () => {
         updateLastKnownCenter();
+        savePosition(); // Sauvegarder la position initiale
       });
 
       // Google Maps affiche déjà nativement les établissements (restaurants, magasins, etc.)
@@ -236,23 +279,70 @@ export function MapComponent({
       // Créer un service Places pour rechercher les établissements au clic
       const placesService = new maps.places.PlacesService(map);
       
-      // Fonction helper pour traiter les détails d'un lieu
-      const processPlaceDetails = (
+      // Construire un prospect à partir des détails (ancienne API)
+      const buildProspectFromLegacyDetails = (
+        placeIdParam: string,
+        placeDetails: google.maps.places.PlaceResult,
+        coordinates: AddressCoordinates,
+        address?: string
+      ): Prospect | null => {
+        const genericTypes = new Set([
+          "establishment", "point_of_interest", "locality", "political",
+          "geocode", "route", "street_address", "premise", "subpremise",
+          "administrative_area_level_1", "administrative_area_level_2",
+          "country", "postal_code", "neighborhood", "sublocality",
+        ]);
+        const findSpecificType = (types: string[]) =>
+          types.find((t) => !genericTypes.has(t)) || types[0] || "other";
+        const googleTypes = placeDetails.types || [];
+        const googlePlaceType = findSpecificType(googleTypes);
+        let finalCoordinates = coordinates;
+        if (placeDetails.geometry?.location) {
+          finalCoordinates = {
+            lat: placeDetails.geometry.location.lat(),
+            lng: placeDetails.geometry.location.lng(),
+          };
+        }
+        const prospectAddress = placeDetails.formatted_address || address || "";
+        if (!prospectAddress) return null;
+        const prospect: Prospect = {
+          name: placeDetails.name || undefined,
+          address: prospectAddress,
+          coordinates: finalCoordinates,
+          roofSurface: { area: 0, polygon: [] },
+          placeType: googlePlaceType,
+          placeId: placeIdParam,
+          qualityScore: calculateQualityScore(0, convertPlaceType(googleTypes)),
+          contact: extractContact(placeDetails),
+        };
+        const savedSurfaces = loadProspectSurfaces(prospect);
+        if (savedSurfaces.length > 0) {
+          const totalArea = savedSurfaces.reduce((sum, s) => sum + s.area, 0);
+          prospect.roofSurfaces = savedSurfaces;
+          prospect.roofSurface = savedSurfaces[savedSurfaces.length - 1] || { area: 0, polygon: [] };
+          prospect.qualityScore = calculateQualityScore(totalArea, convertPlaceType(googleTypes));
+        }
+        return prospect;
+      };
+
+      const fetchFromGoogle = (
         placeId: string,
         coordinates: AddressCoordinates,
         address?: string
-      ) => {
-        // Essayer d'abord la nouvelle API Places
-        getPlaceDetailsNew(placeId)
+      ): Promise<Prospect | null> => {
+        return getPlaceDetailsNew(placeId)
           .then((newPlaceDetails) => {
             if (newPlaceDetails?.primaryTypeDisplayName || newPlaceDetails?.primaryType) {
               const placeType = (newPlaceDetails.primaryType ?? newPlaceDetails.types?.find((t) => !["establishment", "point_of_interest"].includes(t))) ?? "other";
+              const prospectAddress = newPlaceDetails.formattedAddress || address || "";
+              if (!prospectAddress) return null;
               const prospect: Prospect = {
                 name: newPlaceDetails.displayName || undefined,
-                address: newPlaceDetails.formattedAddress || address,
+                address: prospectAddress,
                 coordinates: coordinates,
                 roofSurface: { area: 0, polygon: [] },
                 placeType,
+                placeId,
                 qualityScore: calculateQualityScore(0, placeType),
                 contact: {
                   websiteUri: newPlaceDetails.websiteURI || undefined,
@@ -260,108 +350,81 @@ export function MapComponent({
                   internationalPhoneNumber: newPlaceDetails.internationalPhoneNumber || undefined,
                 },
               };
-              
-              onProspectUpdate(prospect);
-              return;
-            }
-            
-            // Fallback sur l'ancienne API
-            placesService.getDetails(
-              {
-                placeId: placeId,
-                fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
-              },
-              (placeDetails, detailsStatus) => {
-                if (detailsStatus === "OK" && placeDetails) {
-                  const genericTypes = new Set([
-                    "establishment", "point_of_interest", "locality", "political",
-                    "geocode", "route", "street_address", "premise", "subpremise",
-                    "administrative_area_level_1", "administrative_area_level_2",
-                    "country", "postal_code", "neighborhood", "sublocality",
-                  ]);
-
-                  const findSpecificType = (types: string[]) => {
-                    return types.find(type => !genericTypes.has(type)) || types[0] || "other";
-                  };
-
-                  const googleTypes = placeDetails.types || [];
-                  const googlePlaceType = findSpecificType(googleTypes);
-                  
-                  // Utiliser les coordonnées du lieu si disponibles, sinon celles passées
-                  let finalCoordinates = coordinates;
-                  if (placeDetails.geometry?.location) {
-                    finalCoordinates = {
-                      lat: placeDetails.geometry.location.lat(),
-                      lng: placeDetails.geometry.location.lng(),
-                    };
-                  }
-                  
-                  const prospect: Prospect = {
-                    name: placeDetails.name || undefined,
-                    address: placeDetails.formatted_address || address,
-                    coordinates: finalCoordinates,
-                    roofSurface: { area: 0, polygon: [] },
-                    placeType: googlePlaceType,
-                    qualityScore: calculateQualityScore(0, convertPlaceType(googleTypes)),
-                    contact: extractContact(placeDetails),
-                  };
-                  
-                  onProspectUpdate(prospect);
-                }
+              const savedSurfaces = loadProspectSurfaces(prospect);
+              if (savedSurfaces.length > 0) {
+                const totalArea = savedSurfaces.reduce((sum, s) => sum + s.area, 0);
+                prospect.roofSurfaces = savedSurfaces;
+                prospect.roofSurface = savedSurfaces[savedSurfaces.length - 1] || { area: 0, polygon: [] };
+                prospect.qualityScore = calculateQualityScore(totalArea, placeType);
               }
-            );
+              return prospect;
+            }
+            return new Promise<Prospect | null>((resolve) => {
+              placesService.getDetails(
+                {
+                  placeId,
+                  fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
+                },
+                (placeDetails, detailsStatus) => {
+                  if (detailsStatus === "OK" && placeDetails) {
+                    resolve(buildProspectFromLegacyDetails(placeId, placeDetails, coordinates, address));
+                  } else {
+                    resolve(null);
+                  }
+                }
+              );
+            });
+          })
+          .catch(() =>
+            new Promise<Prospect | null>((resolve) => {
+              placesService.getDetails(
+                {
+                  placeId,
+                  fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
+                },
+                (placeDetails, detailsStatus) => {
+                  if (detailsStatus === "OK" && placeDetails) {
+                    resolve(buildProspectFromLegacyDetails(placeId, placeDetails, coordinates, address));
+                  } else {
+                    resolve(null);
+                  }
+                }
+              );
+            })
+          );
+      };
+
+      // Traiter les détails d'un lieu : récupérer Google puis vérifier le pipeline avec nom + adresse (éviter le mauvais lieu si même nom)
+      const processPlaceDetails = (
+        placeId: string,
+        coordinates: AddressCoordinates,
+        address?: string
+      ) => {
+        fetchFromGoogle(placeId, coordinates, address)
+          .then((prospect) => {
+            if (!prospect) return;
+            getProspectByPlaceId(placeId, { name: prospect.name, address: prospect.address })
+              .then((existing) => onProspectUpdate(existing ?? prospect));
           })
           .catch(() => {
-            // Erreur avec la nouvelle API, utiliser l'ancienne
-            placesService.getDetails(
-              {
-                placeId: placeId,
-                fields: ["name", "types", "formatted_address", "geometry", "website", "formatted_phone_number", "international_phone_number"],
-              },
-              (placeDetails, detailsStatus) => {
-                if (detailsStatus === "OK" && placeDetails) {
-                  const genericTypes = new Set([
-                    "establishment", "point_of_interest", "locality", "political",
-                    "geocode", "route", "street_address", "premise", "subpremise",
-                    "administrative_area_level_1", "administrative_area_level_2",
-                    "country", "postal_code", "neighborhood", "sublocality",
-                  ]);
-
-                  const findSpecificType = (types: string[]) => {
-                    return types.find(type => !genericTypes.has(type)) || types[0] || "other";
-                  };
-
-                  const googleTypes = placeDetails.types || [];
-                  const googlePlaceType = findSpecificType(googleTypes);
-                  
-                  // Utiliser les coordonnées du lieu si disponibles, sinon celles passées
-                  let finalCoordinates = coordinates;
-                  if (placeDetails.geometry?.location) {
-                    finalCoordinates = {
-                      lat: placeDetails.geometry.location.lat(),
-                      lng: placeDetails.geometry.location.lng(),
-                    };
-                  }
-                  
-                  const prospect: Prospect = {
-                    name: placeDetails.name || undefined,
-                    address: placeDetails.formatted_address || address,
-                    coordinates: finalCoordinates,
-                    roofSurface: { area: 0, polygon: [] },
-                    placeType: googlePlaceType,
-                    qualityScore: calculateQualityScore(0, convertPlaceType(googleTypes)),
-                    contact: extractContact(placeDetails),
-                  };
-                  
-                  onProspectUpdate(prospect);
-                }
-              }
-            );
+            fetchFromGoogle(placeId, coordinates, address).then((prospect) => {
+              if (prospect) onProspectUpdate(prospect);
+            });
           });
       };
       
-      // Écouter uniquement les clics sur les POI de Google Maps
+      // Écouter les clics sur la carte (POI et fond de carte)
       maps.event.addListener(map, "click", (event: google.maps.MapMouseEvent | google.maps.IconMouseEvent) => {
+        if (!event.latLng) return;
+
+        const clickCoords: AddressCoordinates = {
+          lat: event.latLng.lat(),
+          lng: event.latLng.lng(),
+        };
+
+        // Appel BDNB en parallèle via ref pour éviter les stale closures
+        fetchBdnbBatimentRef.current?.(clickCoords);
+
         // Vérifier si c'est un clic sur un POI (IconMouseEvent avec placeId)
         const placeId = (event as any).placeId;
         
@@ -372,18 +435,10 @@ export function MapComponent({
             event.stop();
           }
           
-          // Obtenir les coordonnées depuis l'événement
-          if (!event.latLng) return;
-          
-          const coordinates: AddressCoordinates = {
-            lat: event.latLng.lat(),
-            lng: event.latLng.lng(),
-          };
-          
           // Appeler directement getDetails avec le placeId
-          processPlaceDetails(placeId, coordinates);
+          processPlaceDetails(placeId, clickCoords);
         }
-        // Si pas de placeId, on ne fait rien (pas de recherche automatique)
+        // Si pas de placeId, on ne fait rien sur le flux prospect
       });
 
       return () => {
@@ -408,6 +463,44 @@ export function MapComponent({
       }
     }
   }, [onGetMapCenter]);
+
+  // Appel API BDNB : récupère tous les polygones + année + surface + orientation
+  const fetchBdnbBatiment = async (coords: AddressCoordinates) => {
+    try {
+      const res = await fetch(
+        `/api/bdnb?lat=${coords.lat}&lng=${coords.lng}`
+      );
+      if (!res.ok) return;
+
+      const data = await res.json();
+
+      if (!data.batiment || !data.batiment.polygonSurfaces?.length) {
+        onBdnbSurfaceRef.current?.(null);
+        onBdnbInfoRef.current?.({ anneeConstruction: null, surfaceM2: null });
+        return;
+      }
+
+      const { polygonSurfaces, anneeConstruction, surfaceM2 } = data.batiment;
+
+      onBdnbInfoRef.current?.({ anneeConstruction, surfaceM2 });
+
+      // Créer une RoofSurface par polygone BDNB (chacune avec son aire et orientation propres)
+      const bdnbSurfaces: RoofSurface[] = (polygonSurfaces as Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>)
+        .map((s, i) => ({
+          id: `bdnb-${i}`,
+          area: s.areaM2,
+          polygon: s.polygon,
+          orientation: s.orientation ?? undefined,
+        }));
+
+      onBdnbSurfaceRef.current?.(bdnbSurfaces);
+    } catch {
+      // Silencieux : l'API BDNB n'est pas critique
+    }
+  };
+
+  // Mettre à jour la ref à chaque render pour éviter les stale closures
+  fetchBdnbBatimentRef.current = fetchBdnbBatiment;
 
   // Gérer le mode dessin
   useEffect(() => {
@@ -533,12 +626,17 @@ export function MapComponent({
         ).join(', '));
         
         const area = calculatePolygonArea(coordinates);
+        const orientation = calculatePolygonOrientation(coordinates);
         console.log(`[Surface] 📏 Surface calculée: ${area.toFixed(2)} m²`);
+        if (orientation != null) {
+          console.log(`[Surface] 🧭 Orientation calculée: ${orientation.toFixed(1)}° (0=Sud, 90=Ouest, -90=Est)`);
+        }
 
         if (area > 0) {
           console.log("[Surface] ✅ Mise à jour du prospect avec la nouvelle surface");
           console.log(`[Surface] 📊 Données de la surface:`, {
             area: area.toFixed(2) + " m²",
+            orientation: orientation != null ? `${orientation.toFixed(1)}°` : "non calculée",
             pointCount: coordinates.length,
             firstPoint: coordinates[0],
             lastPoint: coordinates[coordinates.length - 1]
@@ -547,6 +645,7 @@ export function MapComponent({
           onSurfaceUpdate({
             area,
             polygon: coordinates,
+            orientation,
           });
 
           // Garder le polygone affiché mais le rendre non éditable
@@ -609,19 +708,26 @@ export function MapComponent({
 
   // Référence pour stocker tous les polygones affichés
   const polygonsRef = useRef<google.maps.Polygon[]>([]);
+  // Lignes de direction : Sud et orientation du toit
+  const directionLinesRef = useRef<google.maps.Polyline[]>([]);
 
-  // Afficher tous les polygones existants du prospect
+  // Afficher tous les polygones existants du prospect + lignes Sud / orientation
   useEffect(() => {
     if (!mapInstanceRef.current) return;
     if (!window.google?.maps) return;
 
     const maps = window.google.maps;
+    const LENGTH_M = 12; // longueur des traits en mètres
 
     // Nettoyer tous les polygones existants
     polygonsRef.current.forEach(polygon => {
       polygon.setMap(null);
     });
     polygonsRef.current = [];
+
+    // Nettoyer les lignes de direction
+    directionLinesRef.current.forEach(line => line.setMap(null));
+    directionLinesRef.current = [];
 
     // Si on a un polygone en cours de dessin, le garder
     if (polygonRef.current) {
@@ -630,13 +736,22 @@ export function MapComponent({
 
     // Récupérer toutes les surfaces
     const surfaces = currentProspect?.roofSurfaces || 
-      (currentProspect?.roofSurface.area > 0 ? [currentProspect.roofSurface] : []);
+      (currentProspect && currentProspect.roofSurface && (currentProspect.roofSurface.area ?? 0) > 0 ? [currentProspect.roofSurface] : []);
 
     if (surfaces.length === 0) {
       return;
     }
 
-    // Créer un polygone pour chaque surface
+    const arrowIcon = {
+      path: maps.SymbolPath.FORWARD_CLOSED_ARROW,
+      scale: 2.5,
+      fillColor: "#fff",
+      fillOpacity: 1,
+      strokeColor: "#fff",
+      strokeWeight: 1,
+    };
+
+    // Créer un polygone pour chaque surface + traits Sud et orientation
     surfaces.forEach((surface, index) => {
       if (!surface.polygon || surface.polygon.length === 0) {
         return;
@@ -655,6 +770,91 @@ export function MapComponent({
 
       polygon.setMap(mapInstanceRef.current);
       polygonsRef.current.push(polygon);
+
+      const center = calculatePolygonCenter(surface.polygon);
+
+      // Trait direction Sud (cap 180°) — rouge
+      const southPoint = pointAtBearing(center, 180, LENGTH_M);
+      const southLine = new maps.Polyline({
+        path: [
+          { lat: center.lat, lng: center.lng },
+          { lat: southPoint.lat, lng: southPoint.lng },
+        ],
+        strokeColor: "#DC2626",
+        strokeOpacity: 1,
+        strokeWeight: 3,
+        icons: [{ icon: { ...arrowIcon, strokeColor: "#DC2626", fillColor: "#DC2626" }, offset: "100%" }],
+        map: mapInstanceRef.current,
+        zIndex: 2,
+      });
+      directionLinesRef.current.push(southLine);
+
+      // Perp. 1 = perpendiculaire au plus long côté (orientation toit). Perp. 2 = perpendiculaire de Perp. 1 = direction du côté le plus long
+      if (surface.orientation != null) {
+        const bearing1 = 180 + surface.orientation;
+        const orientationPoint1 = pointAtBearing(center, bearing1, LENGTH_M);
+        const orientationLine1 = new maps.Polyline({
+          path: [
+            { lat: center.lat, lng: center.lng },
+            { lat: orientationPoint1.lat, lng: orientationPoint1.lng },
+          ],
+          strokeColor: "#2563EB",
+          strokeOpacity: 1,
+          strokeWeight: 3,
+          icons: [{ icon: { ...arrowIcon, strokeColor: "#2563EB", fillColor: "#2563EB" }, offset: "100%" }],
+          map: mapInstanceRef.current,
+          zIndex: 2,
+        });
+        directionLinesRef.current.push(orientationLine1);
+
+        // Direction du côté le plus long : deux sens possibles (orientation ± 90°)
+        let azimuthCote1 = surface.orientation + 90;
+        if (azimuthCote1 > 180) azimuthCote1 -= 360;
+        if (azimuthCote1 < -180) azimuthCote1 += 360;
+        
+        let azimuthCote2 = surface.orientation - 90;
+        if (azimuthCote2 > 180) azimuthCote2 -= 360;
+        if (azimuthCote2 < -180) azimuthCote2 += 360;
+        
+        // Retenir celle avec l'angle le plus faible (plus proche du Sud)
+        const azimuthLongestSide = Math.abs(azimuthCote1) < Math.abs(azimuthCote2) ? azimuthCote1 : azimuthCote2;
+        
+        // Dessiner les deux flèches du côté dans les deux sens opposés
+        const bearing2 = 180 + azimuthLongestSide;
+        const bearing2Opposite = (bearing2 + 180) % 360;
+        
+        // Flèche sens 1
+        const orientationPoint2 = pointAtBearing(center, bearing2, LENGTH_M);
+        const orientationLine2 = new maps.Polyline({
+          path: [
+            { lat: center.lat, lng: center.lng },
+            { lat: orientationPoint2.lat, lng: orientationPoint2.lng },
+          ],
+          strokeColor: "#0D9488",
+          strokeOpacity: 1,
+          strokeWeight: 3,
+          icons: [{ icon: { ...arrowIcon, strokeColor: "#0D9488", fillColor: "#0D9488" }, offset: "100%" }],
+          map: mapInstanceRef.current,
+          zIndex: 2,
+        });
+        directionLinesRef.current.push(orientationLine2);
+        
+        // Flèche sens opposé
+        const orientationPoint2Opposite = pointAtBearing(center, bearing2Opposite, LENGTH_M);
+        const orientationLine2Opposite = new maps.Polyline({
+          path: [
+            { lat: center.lat, lng: center.lng },
+            { lat: orientationPoint2Opposite.lat, lng: orientationPoint2Opposite.lng },
+          ],
+          strokeColor: "#0D9488",
+          strokeOpacity: 1,
+          strokeWeight: 3,
+          icons: [{ icon: { ...arrowIcon, strokeColor: "#0D9488", fillColor: "#0D9488" }, offset: "100%" }],
+          map: mapInstanceRef.current,
+          zIndex: 2,
+        });
+        directionLinesRef.current.push(orientationLine2Opposite);
+      }
     });
   }, [currentProspect?.roofSurfaces, currentProspect?.roofSurface.polygon]);
 
@@ -799,9 +999,30 @@ export function MapComponent({
     };
   }, [searchResults, onSearchResultClick, centerCoordinates]);
 
+  const hasSurfaces =
+    (currentProspect?.roofSurfaces?.length ?? 0) > 0 ||
+    (currentProspect?.roofSurface?.polygon?.length ?? 0) > 0;
+
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full relative">
       <div ref={mapRef} className="h-full w-full" />
+
+      {hasSurfaces && (
+        <div className="absolute bottom-3 left-3 z-100 pointer-events-none flex flex-col gap-1 rounded-lg bg-white/95 border border-gray-200 px-2 py-1.5 shadow-sm text-xs">
+          <span className="flex items-center gap-2">
+            <span className="w-4 h-0.5 rounded bg-[#DC2626]" style={{ minWidth: 12 }} />
+            Sud
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="w-4 h-0.5 rounded bg-[#2563EB]" style={{ minWidth: 12 }} />
+            Perp. (orientation toit)
+          </span>
+          <span className="flex items-center gap-2">
+            <span className="w-4 h-0.5 rounded bg-[#0D9488]" style={{ minWidth: 12 }} />
+            Côté le plus long
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -852,6 +1073,125 @@ function calculatePolygonArea(
   return finalArea;
 }
 
+/**
+ * Calcule l'orientation (azimut) du toit depuis le polygone
+ * Retourne l'azimut en degrés selon la convention PVGIS : -90° = Est, 0° = Sud, 90° = Ouest
+ * Méthode : prendre le(s) plus long(s) côté(s), direction = vecteur du côté ; perpendiculaire = orientation du toit (celle qui pointe vers le Sud).
+ */
+function calculatePolygonOrientation(
+  coordinates: Array<{ lat: number; lng: number }>
+): number | undefined {
+  if (coordinates.length < 3) return undefined;
+
+  const R = 6371000; // Rayon de la Terre en mètres
+  const centerLat = coordinates.reduce((sum, c) => sum + c.lat, 0) / coordinates.length;
+  const centerLng = coordinates.reduce((sum, c) => sum + c.lng, 0) / coordinates.length;
+  const latRad = (centerLat * Math.PI) / 180;
+
+  // Convertir les coordonnées en mètres (projection locale)
+  const projectedCoords = coordinates.map(coord => {
+    const dLat = (coord.lat - centerLat) * Math.PI / 180;
+    const dLng = (coord.lng - centerLng) * Math.PI / 180;
+    const x = dLng * R * Math.cos(latRad);
+    const y = dLat * R;
+    return { x, y };
+  });
+
+  // Calculer longueur et vecteur (dx, dy) de chaque côté
+  interface Side {
+    index: number;
+    length: number;
+    dx: number;
+    dy: number;
+  }
+
+  const sides: Side[] = [];
+  for (let i = 0; i < projectedCoords.length; i++) {
+    const j = (i + 1) % projectedCoords.length;
+    const p1 = projectedCoords[i];
+    const p2 = projectedCoords[j];
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (length < 1e-6) continue;
+    sides.push({ index: i, length, dx, dy });
+  }
+
+  const sortedSides = [...sides].sort((a, b) => b.length - a.length);
+  const longest = sortedSides[0];
+  const second = sortedSides[1];
+  if (!longest) return undefined;
+
+  // Direction du plus long côté (vecteur unitaire)
+  let dirX = longest.dx / longest.length;
+  let dirY = longest.dy / longest.length;
+
+  // Si le 2e plus long est quasi parallèle, moyenner les directions (en tenant compte du sens opposé)
+  if (second && second.length > 0) {
+    const dot = longest.dx * second.dx + longest.dy * second.dy;
+    const cross = longest.dx * second.dy - longest.dy * second.dx;
+    if (Math.abs(cross) < 0.01 * longest.length * second.length) {
+      const sx = second.dx / second.length;
+      const sy = second.dy / second.length;
+      if (dot >= 0) {
+        dirX = dirX + sx;
+        dirY = dirY + sy;
+      } else {
+        dirX = dirX - sx;
+        dirY = dirY - sy;
+      }
+      const n = Math.sqrt(dirX * dirX + dirY * dirY);
+      if (n > 1e-6) {
+        dirX /= n;
+        dirY /= n;
+      }
+    }
+  }
+
+  // Les deux perpendiculaires possibles au plus long côté
+  const perp1 = { x: -dirY, y: dirX };
+  const perp2 = { x: dirY, y: -dirX };
+
+  function bearingToAzimuth(px: number, py: number): number {
+    const perpBearing = Math.atan2(py, px);
+    const perpDeg = (perpBearing * 180) / Math.PI;
+    let bearingDeg = 90 - perpDeg;
+    while (bearingDeg >= 360) bearingDeg -= 360;
+    while (bearingDeg < 0) bearingDeg += 360;
+    let az = bearingDeg - 180;
+    if (az > 180) az -= 360;
+    if (az < -180) az += 360;
+    return az;
+  }
+
+  const azimuth1 = bearingToAzimuth(perp1.x, perp1.y);
+  const azimuth2 = bearingToAzimuth(perp2.x, perp2.y);
+
+  // Les deux directions possibles du côté le plus long (perp. des perp.)
+  let azimuthCote1 = azimuth1 + 90;
+  if (azimuthCote1 > 180) azimuthCote1 -= 360;
+  if (azimuthCote1 < -180) azimuthCote1 += 360;
+  
+  let azimuthCote2 = azimuth1 - 90;
+  if (azimuthCote2 > 180) azimuthCote2 -= 360;
+  if (azimuthCote2 < -180) azimuthCote2 += 360;
+
+  // Comparer les 4 options : 2 perp. et 2 côtés, et choisir celle avec l'angle le plus faible avec le Sud (|azimuth| min)
+  const candidates = [
+    { azimuth: azimuth1, type: 'perp' },
+    { azimuth: azimuth2, type: 'perp' },
+    { azimuth: azimuthCote1, type: 'cote' },
+    { azimuth: azimuthCote2, type: 'cote' },
+  ];
+
+  // Trouver celle avec la valeur absolue la plus faible (plus proche du Sud = 0°)
+  const best = candidates.reduce((min, candidate) => 
+    Math.abs(candidate.azimuth) < Math.abs(min.azimuth) ? candidate : min
+  );
+
+  return Math.round(best.azimuth * 10) / 10;
+}
+
 // Fonction pour calculer le centre d'un polygone
 function calculatePolygonCenter(
   coordinates: Array<{ lat: number; lng: number }>
@@ -867,6 +1207,32 @@ function calculatePolygonCenter(
   return {
     lat: latSum / coordinates.length,
     lng: lngSum / coordinates.length,
+  };
+}
+
+/** Retourne un point à `distanceMeters` mètres du `center` dans la direction du cap (bearing en degrés, 0 = Nord, 90 = Est, 180 = Sud). */
+function pointAtBearing(
+  center: { lat: number; lng: number },
+  bearingDeg: number,
+  distanceMeters: number
+): { lat: number; lng: number } {
+  const R = 6371000; // rayon Terre en m
+  const br = (bearingDeg * Math.PI) / 180;
+  const latRad = (center.lat * Math.PI) / 180;
+  const d = distanceMeters / R;
+  const lat2 = Math.asin(
+    Math.sin(latRad) * Math.cos(d) + Math.cos(latRad) * Math.sin(d) * Math.cos(br)
+  );
+  const lng2 =
+    center.lng +
+    (180 / Math.PI) *
+      Math.atan2(
+        Math.sin(br) * Math.sin(d) * Math.cos(latRad),
+        Math.cos(d) - Math.sin(latRad) * Math.sin(lat2)
+      );
+  return {
+    lat: (lat2 * 180) / Math.PI,
+    lng: lng2,
   };
 }
 
