@@ -41,7 +41,7 @@ export function MapErrorBoundary({ children }: MapErrorBoundaryProps) {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="text-sm text-muted-foreground">
-              <p className="mb-2">Google Maps n'a pas pu se charger. Voici les étapes à suivre :</p>
+              <p className="mb-2">Google Maps n&apos;a pas pu se charger. Voici les étapes à suivre :</p>
               <ol className="list-decimal list-inside space-y-2 ml-2">
                 <li>
                   <strong>Vérifiez votre clé API</strong> dans le fichier <code className="bg-muted px-1 rounded">.env.local</code>
@@ -61,7 +61,7 @@ export function MapErrorBoundary({ children }: MapErrorBoundaryProps) {
                   </ul>
                 </li>
                 <li>
-                  <strong>Vérifiez la console du navigateur</strong> (F12) pour voir l'erreur exacte
+                  <strong>Vérifiez la console du navigateur</strong> (F12) pour voir l&apos;erreur exacte
                 </li>
               </ol>
             </div>

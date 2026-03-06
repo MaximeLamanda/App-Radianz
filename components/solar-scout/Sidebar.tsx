@@ -316,7 +316,7 @@ export function PanelReferenceForm({
       {/* Pays */}
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label htmlFor="country">Pays d'origine</Label>
+          <Label htmlFor="country">Pays d&apos;origine</Label>
           <Input
             id="country"
             placeholder="Ex. Chine"
@@ -581,7 +581,7 @@ export function InverterReferenceForm({
 
       {/* Type d'onduleur */}
       <div className="space-y-2">
-        <Label>Type d'onduleur</Label>
+        <Label>Type d&apos;onduleur</Label>
         <Select value={inverterType} onValueChange={(v) => setInverterType(v as InverterType)}>
           <SelectTrigger>
             <SelectValue />
@@ -627,7 +627,7 @@ export function InverterReferenceForm({
       {/* Pays */}
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label htmlFor="country">Pays d'origine</Label>
+          <Label htmlFor="country">Pays d&apos;origine</Label>
           <Input
             id="country"
             placeholder="Ex. Allemagne"

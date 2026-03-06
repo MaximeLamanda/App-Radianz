@@ -1750,7 +1750,7 @@ export function ProspectDrawer({
             </>
           ) : (
             <div className="text-sm text-muted-foreground text-center py-8">
-              Cliquez sur la carte pour obtenir les informations d'un lieu
+              Cliquez sur la carte pour obtenir les informations d&apos;un lieu
             </div>
           )}
         </div>

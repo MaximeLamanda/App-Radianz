@@ -32,7 +32,7 @@ export default function InitEnergyDataPage() {
       
       <div className="bg-white rounded-lg shadow-md p-6 space-y-4">
         <p className="text-gray-700">
-          Cette page permet d'initialiser les données de consommation énergétique par type de bâtiment
+          Cette page permet d&apos;initialiser les données de consommation énergétique par type de bâtiment
           dans Firebase Firestore (consommation annuelle et <strong>mensuelle</strong> en kWh/m²).
         </p>
         
