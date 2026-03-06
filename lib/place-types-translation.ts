@@ -72,7 +72,6 @@ export const placeTypeTranslations: Record<string, string> = {
   // Services publics
   police: "Commissariat de police",
   fire_station: "Caserne de pompiers",
-  post_office: "Bureau de poste",
   city_hall: "Mairie",
   courthouse: "Tribunal",
   embassy: "Ambassade",
@@ -86,17 +85,6 @@ export const placeTypeTranslations: Record<string, string> = {
   zoo: "Zoo",
   aquarium: "Aquarium",
   amusement_park: "Parc d'attractions",
-  
-  // Éducation
-  primary_school: "École primaire",
-  secondary_school: "École secondaire",
-  university: "Université",
-  
-  // Transport
-  bus_station: "Gare routière",
-  train_station: "Gare ferroviaire",
-  subway_station: "Station de métro",
-  airport: "Aéroport",
   taxi_stand: "Station de taxi",
   
   // Religieux
@@ -113,23 +101,11 @@ export const placeTypeTranslations: Record<string, string> = {
   car_wash: "Lavage de voiture",
   laundry: "Laverie",
   dry_cleaner: "Pressing",
-  
-  // Alimentation
-  meal_takeaway: "Restaurant à emporter",
-  meal_delivery: "Service de livraison de repas",
   food: "Restaurant",
-  bakery: "Boulangerie",
   butcher_shop: "Boucherie",
   seafood: "Poissonnerie",
-  
-  // Autres établissements
-  accounting: "Cabinet comptable",
-  lawyer: "Cabinet d'avocats",
-  real_estate_agency: "Agence immobilière",
-  insurance_agency: "Agence d'assurance",
   travel_agency: "Agence de voyage",
   moving_company: "Entreprise de déménagement",
-  storage: "Entreprise de stockage",
   storage_facility: "Installation de stockage",
 };
 
