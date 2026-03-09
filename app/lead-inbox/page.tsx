@@ -1,43 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { MapPin } from "lucide-react";
 import Image from "next/image";
-import { db } from "@/lib/firebase";
-import { collection, getDocs, query, orderBy } from "firebase/firestore";
-import type { Lead } from "@/types";
+import { useLeads } from "@/lib/swr-hooks";
 
 export default function LeadInboxPage() {
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchLeads = async () => {
-      try {
-        const leadsRef = collection(db, "leads");
-        const q = query(leadsRef, orderBy("createdAt", "desc"));
-        const querySnapshot = await getDocs(q);
-        
-        const leadsData: Lead[] = [];
-        querySnapshot.forEach((doc) => {
-          leadsData.push({
-            id: doc.id,
-            ...doc.data(),
-            createdAt: doc.data().createdAt?.toDate() || new Date(),
-          } as Lead);
-        });
-        
-        setLeads(leadsData);
-      } catch (error) {
-        console.error("Erreur lors de la récupération des leads:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchLeads();
-  }, []);
+  const { data: leads = [], isLoading: loading } = useLeads();
 
   if (loading) {
     return (

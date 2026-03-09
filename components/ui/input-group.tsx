@@ -14,7 +14,7 @@ const InputGroup = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
       role="group"
       data-slot="input-group"
       className={cn(
-        "flex h-10 w-full min-w-0 items-center rounded-md border border-input bg-background text-sm ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 [&_input]:border-0 [&_input]:bg-transparent [&_input]:shadow-none [&_input]:outline-none [&_input]:ring-0 [&_input]:focus-visible:ring-0",
+        "flex h-10 w-full min-w-0 items-center rounded-md border border-input bg-background text-sm ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 [&_input]:border-0 [&_input]:bg-transparent [&_input]:shadow-none [&_input]:outline-hidden [&_input]:ring-0 focus-visible:[&_input]:ring-0",
         className
       )}
       {...props}

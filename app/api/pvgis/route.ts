@@ -16,7 +16,7 @@ import type { AddressCoordinates } from "@/types";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { lat, lon, peakpower, loss } = body;
+    const { lat, lon, peakpower, loss, azimuth, slope } = body;
 
     // Valider les paramètres
     if (typeof lat !== "number" || typeof lon !== "number") {
@@ -42,6 +42,12 @@ export async function POST(request: NextRequest) {
     }
     if (typeof loss === "number" && loss >= 0 && loss <= 100) {
       options.loss = loss;
+    }
+    if (typeof azimuth === "number" && azimuth >= -180 && azimuth <= 180) {
+      options.azimuth = azimuth;
+    }
+    if (typeof slope === "number" && slope >= 0 && slope <= 90) {
+      options.slope = slope;
     }
 
     // Appeler PVGIS
@@ -86,6 +92,8 @@ export async function GET(request: NextRequest) {
   const lon = searchParams.get("lon");
   const peakpower = searchParams.get("peakpower");
   const loss = searchParams.get("loss");
+  const azimuth = searchParams.get("azimuth");
+  const slope = searchParams.get("slope");
 
   if (!lat || !lon) {
     return NextResponse.json(
@@ -118,6 +126,18 @@ export async function GET(request: NextRequest) {
       const lossNum = parseFloat(loss);
       if (!isNaN(lossNum) && lossNum >= 0 && lossNum <= 100) {
         options.loss = lossNum;
+      }
+    }
+    if (azimuth) {
+      const azimuthNum = parseFloat(azimuth);
+      if (!isNaN(azimuthNum) && azimuthNum >= -180 && azimuthNum <= 180) {
+        options.azimuth = azimuthNum;
+      }
+    }
+    if (slope) {
+      const slopeNum = parseFloat(slope);
+      if (!isNaN(slopeNum) && slopeNum >= 0 && slopeNum <= 90) {
+        options.slope = slopeNum;
       }
     }
 

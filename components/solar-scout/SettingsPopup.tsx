@@ -11,7 +11,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, X, Zap, FileCheck, ArrowLeft, User, Settings, Sun, Building2, LogOut, Loader2, Camera } from "lucide-react";
+import { Plus, X, Zap, FileCheck, ArrowLeft, User, Settings, Sun, Building2, LogOut, Loader2, Camera, HelpCircle, Sparkles, Calendar } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -20,18 +20,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { usePanelReferences, useInverterReferences } from "@/lib/swr-hooks";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import {
-  getPanelReferencesFromFirebase,
   savePanelReferenceToFirebase,
   deletePanelReferenceFromFirebase,
-  initializePanelReferencesInFirebase,
 } from "@/lib/firestore-panel-references";
 import {
-  getInverterReferencesFromFirebase,
   saveInverterReferenceToFirebase,
   deleteInverterReferenceFromFirebase,
-  initializeInverterReferencesInFirebase,
 } from "@/lib/firestore-inverter-references";
 import {
   getPanelReferences,
@@ -49,6 +46,13 @@ import { signOut, updateProfile } from "firebase/auth";
 import { auth, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import type { PanelReference, InverterReference, CommercialReferent } from "@/types";
+import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type MenuItem = "compte" | "parametres";
 
@@ -59,11 +63,14 @@ interface SettingsPopupProps {
 
 export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
   const { user } = useAuth();
+  const { data: panelsData, mutate: mutatePanels } = usePanelReferences();
+  const { data: invertersData, mutate: mutateInverters } = useInverterReferences();
+  const panelReferences = panelsData ?? [];
+  const inverterReferences = invertersData ?? [];
+
   const [activeMenu, setActiveMenu] = useState<MenuItem>("compte");
-  const [panelReferences, setPanelReferences] = useState<PanelReference[]>([]);
   const [showAddPanelRef, setShowAddPanelRef] = useState(false);
   const [editingRef, setEditingRef] = useState<PanelReference | null>(null);
-  const [inverterReferences, setInverterReferences] = useState<InverterReference[]>([]);
   const [showAddInverterRef, setShowAddInverterRef] = useState(false);
   const [editingInverterRef, setEditingInverterRef] = useState<InverterReference | null>(null);
   const [materielTab, setMaterielTab] = useState<"panels" | "inverters">("panels");
@@ -108,66 +115,6 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
       phone: user.phoneNumber ?? userProfile?.phone ?? "",
     });
   }, [editingProfile, user?.uid, user?.displayName, user?.phoneNumber, userProfile?.firstName, userProfile?.lastName, userProfile?.phone]);
-
-  // Charger les références de panneaux
-  useEffect(() => {
-    let cancelled = false;
-    getPanelReferencesFromFirebase()
-      .then(async (fromFirebase) => {
-        if (cancelled) return;
-        if (fromFirebase.length > 0) {
-          setPanelReferences(fromFirebase);
-          savePanelReferences(fromFirebase);
-        } else {
-          await initializePanelReferencesInFirebase().catch(() => {});
-          if (cancelled) return;
-          const afterInit = await getPanelReferencesFromFirebase();
-          if (afterInit.length > 0) {
-            setPanelReferences(afterInit);
-            savePanelReferences(afterInit);
-          } else {
-            const fromLocal = getPanelReferences();
-            if (fromLocal.length > 0) setPanelReferences(fromLocal);
-          }
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        const fromLocal = getPanelReferences();
-        if (fromLocal.length > 0) setPanelReferences(fromLocal);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  // Charger les références d'onduleur
-  useEffect(() => {
-    let cancelled = false;
-    getInverterReferencesFromFirebase()
-      .then(async (fromFirebase) => {
-        if (cancelled) return;
-        if (fromFirebase.length > 0) {
-          setInverterReferences(fromFirebase);
-          saveInverterReferences(fromFirebase);
-        } else {
-          await initializeInverterReferencesInFirebase().catch(() => {});
-          if (cancelled) return;
-          const afterInit = await getInverterReferencesFromFirebase();
-          if (afterInit.length > 0) {
-            setInverterReferences(afterInit);
-            saveInverterReferences(afterInit);
-          } else {
-            const fromLocal = getInverterReferences();
-            if (fromLocal.length > 0) setInverterReferences(fromLocal);
-          }
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        const fromLocal = getInverterReferences();
-        if (fromLocal.length > 0) setInverterReferences(fromLocal);
-      });
-    return () => { cancelled = true; };
-  }, []);
 
   useEffect(() => {
     setAccountInfo(getCommercialReferent());
@@ -486,7 +433,84 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                       </div>
 
                       <div className="rounded-lg border p-4 space-y-2">
-                        <p className="text-lg font-semibold">Gratuit</p>
+                        <div className="flex items-center justify-between">
+                          <p className="text-lg font-semibold">
+                            {userProfile?.status === "admin" ? "Admin" : userProfile?.status === "premium" ? "Premium" : userProfile?.status === "demo" ? "Demo" : userProfile?.status === "starter" ? "Starter" : "Gratuit"}
+                          </p>
+                          <Button variant="secondary" size="sm" className="rounded-full font-medium">
+                            Mise à niveau
+                          </Button>
+                        </div>
+                        {user && userProfile && (
+                          <TooltipProvider>
+                            <div className="space-y-0 pt-3 border-t border-dashed mt-3">
+                              <div className="flex items-center justify-between py-2">
+                                <div className="flex items-center gap-1.5">
+                                  <Sparkles className="h-4 w-4 text-muted-foreground" />
+                                  <span className="text-sm">Crédits BDNB</span>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button type="button" className="inline-flex text-muted-foreground hover:text-foreground">
+                                        <HelpCircle className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      Requêtes d&apos;imagerie bâtiments BDNB
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </div>
+                                <span className="text-sm font-medium tabular-nums">
+                                  {userProfile.bdnbRequestCount ?? 0}
+                                  {userProfile.status === "admin"
+                                    ? " ∞"
+                                    : userProfile.status === "premium"
+                                      ? " / 5000"
+                                      : userProfile.status === "starter" || !userProfile.status
+                                        ? " / 500"
+                                        : userProfile.status === "demo"
+                                          ? " / 10"
+                                          : ""}
+                                </span>
+                              </div>
+                              <div className="text-xs text-muted-foreground pl-5.5 -mt-1 pb-2">
+                                Crédits de détection de bâtiments
+                              </div>
+                              <div className="flex items-center justify-between py-2 border-t border-dashed">
+                                <div className="flex items-center gap-1.5">
+                                  <Calendar className="h-4 w-4 text-muted-foreground" />
+                                  <span className="text-sm">Crédits OSM</span>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button type="button" className="inline-flex text-muted-foreground hover:text-foreground">
+                                        <HelpCircle className="h-3.5 w-3.5" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      Requêtes OpenStreetMap (bâtiments)
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </div>
+                                <span className="text-sm font-medium tabular-nums">
+                                  {userProfile.osmRequestCount ?? 0}
+                                  {userProfile.status === "admin"
+                                    ? " ∞"
+                                    : userProfile.status === "premium"
+                                      ? " / 2000"
+                                      : userProfile.status === "starter" || !userProfile.status
+                                        ? " / 200"
+                                        : userProfile.status === "demo"
+                                          ? " / 5"
+                                          : ""}
+                                </span>
+                              </div>
+                              <div className="text-xs text-muted-foreground pl-5.5 -mt-1">
+                                {userProfile.status === "demo"
+                                  ? "Actualiser à 5 à 00:00 chaque jour"
+                                  : "Crédits de bâtiments OSM"}
+                              </div>
+                            </div>
+                          </TooltipProvider>
+                        )}
                       </div>
                     </>
                   )}
@@ -550,9 +574,8 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                       onDelete={(id) => {
                         const next = panelReferences.filter((r) => r.id !== id);
                         if (next.length === 0) return;
-                        setPanelReferences(next);
                         savePanelReferences(next);
-                        deletePanelReferenceFromFirebase(id).catch(() => {});
+                        deletePanelReferenceFromFirebase(id).then(() => mutatePanels()).catch(() => {});
                         setShowAddPanelRef(false);
                         setEditingRef(null);
                       }}
@@ -567,9 +590,10 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                             ? [...panelReferences.map((r) => ({ ...r, recommended: false })), ref]
                             : [...panelReferences, ref];
                         }
-                        setPanelReferences(updatedRefs);
                         savePanelReferences(updatedRefs);
-                        Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r))).catch(() => {});
+                        Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
+                          .then(() => mutatePanels())
+                          .catch(() => {});
                         setShowAddPanelRef(false);
                         setEditingRef(null);
                       }}
@@ -586,9 +610,8 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                       onDelete={(id) => {
                         const next = inverterReferences.filter((r) => r.id !== id);
                         if (next.length === 0) return;
-                        setInverterReferences(next);
                         saveInverterReferences(next);
-                        deleteInverterReferenceFromFirebase(id).catch(() => {});
+                        deleteInverterReferenceFromFirebase(id).then(() => mutateInverters()).catch(() => {});
                         setShowAddInverterRef(false);
                         setEditingInverterRef(null);
                       }}
@@ -603,9 +626,10 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                             ? [...inverterReferences.map((r) => ({ ...r, recommended: false })), ref]
                             : [...inverterReferences, ref];
                         }
-                        setInverterReferences(updatedRefs);
                         saveInverterReferences(updatedRefs);
-                        Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r))).catch(() => {});
+                        Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
+                          .then(() => mutateInverters())
+                          .catch(() => {});
                         setShowAddInverterRef(false);
                         setEditingInverterRef(null);
                       }}
@@ -717,9 +741,10 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                       const updatedRefs = panelReferences.map((r) =>
                                         r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
                                       );
-                                      setPanelReferences(updatedRefs);
                                       savePanelReferences(updatedRefs);
-                                      Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r))).catch(() => {});
+                                      Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
+                                        .then(() => mutatePanels())
+                                        .catch(() => {});
                                     }}
                                     className="h-4 w-8"
                                   />
@@ -799,9 +824,10 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                       const updatedRefs = inverterReferences.map((r) =>
                                         r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
                                       );
-                                      setInverterReferences(updatedRefs);
                                       saveInverterReferences(updatedRefs);
-                                      Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r))).catch(() => {});
+                                      Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
+                                        .then(() => mutateInverters())
+                                        .catch(() => {});
                                     }}
                                     className="h-4 w-8"
                                   />

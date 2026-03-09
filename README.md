@@ -1,10 +1,10 @@
-# Solar View
+# app.Radianz
 
 Plateforme complète de prospection et gestion de leads pour installations solaires photovoltaïques. Application web permettant d'identifier, analyser et qualifier des prospects pour des projets d'énergie solaire.
 
 ## 🎯 Vue d'ensemble
 
-Solar View est une application Next.js qui permet aux professionnels du solaire de :
+Radianz est une application Next.js qui permet aux professionnels du solaire de :
 - **Prospecter** des bâtiments via Google Maps
 - **Analyser** le potentiel solaire des toitures
 - **Qualifier** les leads avec un système de scoring
@@ -19,36 +19,48 @@ Solar View est une application Next.js qui permet aux professionnels du solaire 
 - **Firebase** (Firestore pour la base de données, Storage pour les images)
 - **Google Maps API** (Maps JavaScript API, Places API, Static Maps API)
 - **Radix UI** pour les composants accessibles
+- **Recharts** pour les graphiques (production mensuelle, KPIs, répartition par type)
+- **Fuse.js** pour la recherche floue (matching SIREN local)
+- **API PVGIS** (Commission Européenne) pour la production solaire réelle par localisation
+- **API recherche-entreprises** (api.gouv.fr) pour l'enrichissement SIREN/SIRET
 
 ## 📁 Structure du projet
 
 ### Modules principaux
 
-1. **Solar Scout** (`/solar-scout`)
+1. **Home / Tableau de bord** (`/`)
+   - Vue d'ensemble des prospects et leads
+   - Graphiques : évolution des leads (quotidien/semaine/année), répartition par type de bâtiment
+   - Tableau des prospects avec filtres (statut pipeline, type de lieu)
+   - Ouverture du drawer prospect via `?prospectId=`
+
+2. **Solar Scout** (`/solar-scout`)
    - Module principal de prospection
    - Carte interactive Google Maps avec vue satellite
    - Recherche d'adresses et de lieux par type
    - Dessin de polygones pour mesurer les surfaces de toit
    - Calcul automatique du potentiel solaire
    - Système de scoring de qualité des prospects
+   - Persistance de la position de la carte (localStorage)
 
-2. **Lead Inbox** (`/lead-inbox`)
-   - Tableau de bord de gestion des leads
-   - Affichage des leads avec thumbnails de toiture
-   - Informations : nom, quality score, contact
-   - Filtrage et tri des leads
+3. **Lead Inbox** (`/lead-inbox`)
+   - Liste des leads (collection Firestore `leads`)
 
-3. **Admin** (`/admin`)
+4. **Admin** (`/admin`)
    - Interface d'administration
    - Initialisation des données de consommation énergétique
 
 ### Composants principaux
 
+- `AppSidebar` : Barre latérale de navigation (Home, Solar Scout, Paramètres)
 - `MapComponent` : Carte Google Maps avec dessin de polygones
-- `Sidebar` : Panneau latéral avec recherche et paramètres
-- `ProspectDrawer` : Drawer avec informations détaillées du prospect
+- `Sidebar` : Panneau latéral Solar Scout avec recherche et paramètres
+- `ProspectDrawer` : Drawer avec informations détaillées du prospect (PVGIS, SIREN, graphiques)
+- `SettingsDrawer` : Drawer global pour gérer les références de panneaux et onduleurs
 - `SatelliteImage` : Affichage et analyse d'images satellites
+- `MonthlyProductionChart` : Graphique production mensuelle / journalière (PVGIS)
 - `GoogleMapsLoader` : Chargement dynamique de l'API Google Maps
+- `DrawerProvider` / `drawer-context` : Contexte global pour ouvrir des drawers
 
 ### Bibliothèques utilitaires
 
@@ -59,13 +71,24 @@ Solar View est une application Next.js qui permet aux professionnels du solaire 
 - `building-energy-consumption.ts` : Données de consommation énergétique
 - `firestore-energy-data.ts` : Gestion des données énergétiques dans Firestore
 - `firestore.ts` : Opérations CRUD sur Firestore
+- `firestore-panel-references.ts` : Références de panneaux dans Firebase
+- `firestore-inverter-references.ts` : Références d'onduleurs dans Firebase
+- `firestore-prospect.ts` : Préparation et lecture des prospects Firestore
+- `pvgis.ts` : Intégration API PVGIS (production solaire, données horaires)
+- `find-local-siren.ts` : Matching SIREN/SIRET local via API Sirene (api.gouv)
+- `recherche-entreprises.ts` : Enrichissement entreprises (api.gouv.fr)
+- `surface-to-kwp.ts` : Calcul kWp à partir de la surface de toit
+- `geometry.ts` : Utilitaires géométriques (centroïde polygone)
+- `map-position-storage.ts` : Persistance de la position de la carte
+- `prospect-storage.ts` : Stockage local des prospects
+- `place-types-translation.ts` : Traduction des types de lieux Google Places
 
 ## 🚀 Installation
 
 ```bash
 # Cloner le projet
 git clone <repository-url>
-cd Solar-view
+cd app.Radianz
 
 # Installer les dépendances
 npm install
@@ -122,9 +145,24 @@ npm start
 
 # Linter
 npm run lint
+
+# Initialiser les données énergétiques dans Firebase
+npm run init-energy-data
+
+# Mettre à jour les profils de consommation horaire (Firebase)
+npm run update-hourly-consumption
 ```
 
 Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
+
+### Routes API
+
+- `POST /api/pvgis` : Données de production solaire PVGIS (annuelles/mensuelles)
+- `POST /api/pvgis-hourly` : Profil journalier typique (24h) pour 1 kWp
+- `GET /api/find-local-siren` : Matching SIREN/SIRET local (paramètres : `poiName`, `address`, `lat`, `lon`)
+- `GET /api/recherche-entreprises` : Enrichissement entreprise via api.gouv
+- `GET /api/init-panel-references` : Initialisation des références panneaux dans Firestore
+- `GET /api/init-energy-data` : Initialisation des données de consommation énergétique
 
 ## ✨ Fonctionnalités
 
@@ -150,12 +188,20 @@ Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
   - Surface maximale d'installation
   - Production annuelle estimée (kWh/an)
   - Heures d'ensoleillement
+- **PVGIS** (Commission Européenne) : Production solaire réelle par localisation
+  - Production annuelle et mensuelle
+  - Irradiation et inclinaison/azimut optimaux
+  - Profil journalier typique (24h) pour comparaison production/consommation
+  - Appel automatique à l'ouverture du drawer prospect
+- **Modes de configuration** : Perfect fit (production ≈ consommation) ou Highest production (max surface)
 - **Paramètres configurables** :
+  - Références de panneaux et onduleurs stockées dans Firebase (Settings Drawer)
   - Type de panneau (monocristallin, polycristallin, couche mince, bifacial)
   - Type d'onduleur (central, string, micro-onduleur, optimiseur)
   - Puissance et rendement des panneaux
 - **Consommation énergétique** : Estimation de la consommation selon le type de bâtiment
 - **Couverture solaire** : Calcul du pourcentage de couverture de la consommation
+- **Orientation du toit** : Azimut calculé depuis le polygone dessiné
 
 ### 🎯 Scoring et qualification
 
@@ -172,18 +218,34 @@ Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
 - **Détection automatique de toits** : (En développement) Détection via YOLO ou API cloud
 - **Thumbnails** : Génération de miniatures pour les leads
 
+### 🏢 Enrichissement entreprises (api.gouv.fr)
+
+- **Recherche SIREN/SIRET** : Enrichissement automatique des prospects via `recherche-entreprises.api.gouv.fr`
+  - Nom légal, dirigeant, adresse, NAF, téléphone
+- **Find Local SIREN** : Matching établissement local vs sièges nationaux (API Sirene)
+  - Scoring composite (nom, rue, code postal, distance GPS)
+  - 4 requêtes parallèles pour maximiser la pertinence
+
+### 💰 Estimation financière
+
+- **Coûts d'installation** : Estimation à partir des références panneaux/onduleurs
+- **Fourchette de prix** : Min/max selon puissance installée
+- **ROI et break-even** : Temps de retour sur investissement en années
+
 ### 💾 Gestion des données
 
 - **Pipeline Firebase** : Stockage des prospects et leads dans Firestore
+- **Références panneaux/onduleurs** : Stockées dans Firebase (priorité) avec fallback localStorage
 - **Données énergétiques** : Base de données de consommation par type de bâtiment
-- **Persistance locale** : Sauvegarde des paramètres d'équipement dans localStorage
+- **Persistance locale** : Paramètres d'équipement, position de la carte
 
 ### 📋 Gestion des prospects
 
 - **Drawer d'informations** : Panneau latéral avec détails complets du prospect
 - **Édition** : Modification des informations du prospect
-- **Ajout au pipeline** : Conversion du prospect en lead
+- **Ajout au pipeline** : Conversion du prospect en lead (avec prix et break-even)
 - **Suppression de surfaces** : Gestion des surfaces de toit multiples
+- **Ouverture par URL** : `/?prospectId=<id>` pour ouvrir directement un prospect
 
 ## 📚 Documentation additionnelle
 
@@ -192,6 +254,7 @@ Le projet inclut plusieurs fichiers de documentation :
 - **[ROOFTOP_DETECTION.md](./ROOFTOP_DETECTION.md)** : Guide complet pour la détection automatique de toits
 - **[docs/ENERGY_CONSUMPTION_DATA.md](./docs/ENERGY_CONSUMPTION_DATA.md)** : Documentation sur les données de consommation énergétique
 - **[docs/INIT_ENERGY_DATA.md](./docs/INIT_ENERGY_DATA.md)** : Guide d'initialisation des données énergétiques
+- **[docs/PVGIS_OUTPUT_UNITS.md](./docs/PVGIS_OUTPUT_UNITS.md)** : Unités et sorties de l'API PVGIS
 - **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** : Guide de dépannage
 
 ## 🎨 Types de bâtiments supportés
@@ -229,13 +292,52 @@ Voir [docs/ENERGY_CONSUMPTION_DATA.md](./docs/ENERGY_CONSUMPTION_DATA.md) pour l
 
 ## 🔧 Fonctionnalités en développement
 
+- [x] Estimation de coûts d'installation
+- [x] Calcul de ROI et temps de retour sur investissement
+- [x] Orientation du toit (azimut calculé depuis le polygone)
+- [x] Visualisation du polygone bâtiment BDNB au clic (France)
 - [ ] Détection automatique de toits via IA (YOLO ou API cloud)
-- [ ] Calcul d'exposition solaire (orientation nord/sud/est/ouest)
-- [ ] Estimation de coûts d'installation
-- [ ] Calcul de ROI et temps de retour sur investissement
 - [ ] Export de rapports PDF
 - [ ] Intégration CRM
 - [ ] Notifications et rappels
+
+## 🌍 Futur du projet
+
+### Expansion géographique européenne
+
+L'intégration de la BDNB (France) ouvre la voie à une couverture pan-européenne. Chaque pays dispose de sa propre base de données bâtiments, avec des maturités variables :
+
+| Pays | Base de données | Polygones | Année construction | API gratuite |
+|---|---|---|---|---|
+| 🇫🇷 France | **BDNB** (CSTB) — déjà intégré | ✅ | ✅ | ✅ |
+| 🇳🇱 Pays-Bas | **BAG** (Kadaster) | ✅ | ✅ | ✅ (clé simple) |
+| 🇪🇸 Espagne | **Catastro** (Ministerio) | ✅ | ✅ | ✅ (sans clé) |
+| 🇩🇰 Danemark | **BBR** | ✅ | ✅ | ✅ |
+| 🇧🇪 Belgique | **URBIS / CadGIS** | ✅ | partiel | ✅ |
+| 🇩🇪 Allemagne | **ALKIS** | ✅ | partiel | variable par Land |
+| 🇬🇧 Royaume-Uni | **OS MasterMap / EPC** | ✅ | ✅ (EPC) | ✅ |
+| 🇮🇹 Italie | **Catasto** | ✅ | limité | limité |
+
+**Architecture cible** : détecter le pays du point cliqué via reverse geocoding (Nominatim), puis router vers l'API nationale correspondante, avec un fallback OpenStreetMap (Overpass API) pour les pays non encore intégrés.
+
+### Enrichissement des données bâtiment
+
+- **DPE tertiaire** : Intégration des données de performance énergétique ADEME pour affiner l'estimation de consommation des bâtiments prospects (déjà disponible dans la BDNB Expert)
+- **Hauteur de bâtiment** : Exploiter `hauteur_mean` (BDNB / BD TOPO IGN) pour estimer le nombre d'étages et la toiture accessible
+- **Données photovoltaïques existantes** : Croisement avec le registre des installations PV (ENEDIS/ORE) pour exclure les bâtiments déjà équipés
+
+### Automatisation de la surface de toit
+
+- **Pré-remplissage automatique du polygone** : Utiliser le polygone BDNB comme surface initiale au lieu du dessin manuel, avec possibilité de correction
+- **Détection IA de toiture** : Segmentation automatique via modèle YOLO entraîné sur images satellites pour isoler la surface utile réelle (hors équipements techniques, cheminées, etc.)
+- **Taux d'occupation du toit** : Estimation automatique du pourcentage de surface disponible selon le type de bâtiment
+
+### Fonctionnalités commerciales
+
+- **Export PDF** : Rapport de prospection complet avec carte, analyse solaire, estimation financière, et logo du commercial
+- **Intégration CRM** : Synchronisation avec HubSpot, Salesforce ou Pipedrive via webhooks
+- **Lien de partage prospect** : Page publique déjà partiellement développée (`/p/[shareToken]`) pour envoyer une proposition au propriétaire
+- **Notifications et rappels** : Alertes de suivi sur les prospects en cours de traitement
 
 ## 🤝 Contribution
 

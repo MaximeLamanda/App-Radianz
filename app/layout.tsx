@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
+import { SWRConfig } from "swr";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AuthProvider } from "@/lib/auth-context";
@@ -29,6 +30,7 @@ export default function RootLayout({
     <html lang="fr" className="bg-transparent h-svh overflow-hidden" suppressHydrationWarning>
       <body className={`${GeistSans.variable} ${GeistMono.variable} font-sans antialiased bg-transparent h-svh overflow-hidden`} suppressHydrationWarning>
         <AuthProvider>
+        <SWRConfig value={{ dedupingInterval: 2000, revalidateOnFocus: false }}>
         <DesignThemeProvider>
         <DrawerProvider>
           <SidebarProvider 
@@ -44,6 +46,7 @@ export default function RootLayout({
           </SidebarProvider>
         </DrawerProvider>
         </DesignThemeProvider>
+        </SWRConfig>
         </AuthProvider>
         <Toaster />
       </body>

@@ -52,7 +52,7 @@ export async function initializeEnergyConsumptionData(): Promise<void> {
 
 /** Dérive consommation moyenne, par mois et par heure si absentes (rétrocompatibilité). */
 function withMonthlyConsumption(data: Record<string, unknown>): BuildingEnergyConsumption {
-  const annual = (data.consumptionKwhPerM2 as number) ?? 150;
+  const annual = (data.consumptionKwhPerM2 as number) ?? 170;
   const monthly =
     typeof data.consumptionKwhPerM2PerMonth === "number"
       ? data.consumptionKwhPerM2PerMonth
@@ -106,7 +106,7 @@ export async function getEnergyConsumptionForMonthFromFirebase(
   monthIndex: number
 ): Promise<number> {
   const data = await getEnergyConsumptionFromFirebase(googlePlaceType);
-  if (!data) return 12.5;
+  if (!data) return 14.2;
   const byMonth = data.consumptionKwhPerM2ByMonth;
   if (Array.isArray(byMonth) && byMonth.length === 12 && monthIndex >= 0 && monthIndex <= 11) {
     return byMonth[monthIndex] ?? data.consumptionKwhPerM2PerMonth;
@@ -122,7 +122,7 @@ export async function getHourlyConsumptionProfileFromFirebase(
   googlePlaceType: string
 ): Promise<number[]> {
   const data = await getEnergyConsumptionFromFirebase(googlePlaceType);
-  if (!data?.consumptionKwhPerM2PerHours?.length) return annualToHourlyBreakdown(150);
+  if (!data?.consumptionKwhPerM2PerHours?.length) return annualToHourlyBreakdown(170);
   return data.consumptionKwhPerM2PerHours;
 }
 

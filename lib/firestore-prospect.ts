@@ -5,6 +5,7 @@
 
 import { Timestamp } from "firebase/firestore";
 import { getSatelliteImageUrl } from "./satellite-image";
+import { getMapboxStaticUrl, hasMapboxToken } from "./mapbox-static";
 import type {
   Prospect,
   ProspectPipelineStatus,
@@ -140,14 +141,20 @@ export function prepareProspectForFirestore(
 
   let thumbnailUrl = prospect.thumbnailUrl;
   if (!thumbnailUrl && prospect.coordinates?.lat != null && prospect.coordinates?.lng != null) {
-    thumbnailUrl =
-      getSatelliteImageUrl(
-        prospect.coordinates,
-        prospect.address || "",
-        200,
-        160,
-        17
-      ) || undefined;
+    // Préférer Mapbox satellite pour la vignette de la home table (dispo en EEA)
+    if (hasMapboxToken()) {
+      thumbnailUrl = getMapboxStaticUrl(prospect.coordinates, 200, 160, 17, "satellite-v9") || undefined;
+    }
+    if (!thumbnailUrl) {
+      thumbnailUrl =
+        getSatelliteImageUrl(
+          prospect.coordinates,
+          prospect.address || "",
+          200,
+          160,
+          17
+        ) || undefined;
+    }
   }
 
   const doc: ProspectDocument = {

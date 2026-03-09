@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuthAndQuota, incrementQuotaAfterSuccess } from "@/lib/api-auth-quota";
 
 const BDNB_BASE =
   "https://api.bdnb.io/v1/bdnb/donnees/batiment_groupe_complet/bbox";
+const BDNB_FFO_BASE =
+  "https://api.bdnb.io/v1/bdnb/donnees/batiment_groupe_ffo_bat/bbox";
 
 // Conversion WGS84 → Lambert93 (EPSG:2154)
 // Utilise une approximation suffisante pour une bbox de quelques dizaines de mètres
@@ -122,7 +125,8 @@ function lambert93ToWgs84(x: number, y: number): { lat: number; lng: number } {
 interface BdnbBatiment {
   batiment_groupe_id: string;
   geom_groupe: GeoJsonGeometry | null;
-  annee_construction: number | null;
+  annee_construction?: number | null;
+  anneeConstruction?: number | null;
   s_geom_groupe: number | null;
 }
 
@@ -256,19 +260,179 @@ function ringOrientationLambert(ring: number[][]): number | null {
 
 
 /**
- * GET /api/bdnb?lat=...&lng=...
+ * Batiment BDNB formaté pour le client
+ */
+interface BdnbBatimentFormatted {
+  id: string;
+  anneeConstruction: number | null;
+  surfaceM2: number | null;
+  polygonSurfaces: Array<{
+    polygon: Array<{ lat: number; lng: number }>;
+    areaM2: number;
+    orientation: number | null;
+  }>;
+  totalAreaM2: number;
+}
+
+function getAnneeConstruction(b: BdnbBatiment): number | null {
+  const v = b.annee_construction ?? (b as unknown as Record<string, unknown>).anneeConstruction;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+async function fetchAnneeConstructionFromFfo(
+  batimentGroupeId: string,
+  center: { x: number; y: number }
+): Promise<number | null> {
+  const DELTA = 50;
+  const url = new URL(BDNB_FFO_BASE);
+  url.searchParams.set("xmin", (center.x - DELTA).toFixed(1));
+  url.searchParams.set("ymin", (center.y - DELTA).toFixed(1));
+  url.searchParams.set("xmax", (center.x + DELTA).toFixed(1));
+  url.searchParams.set("ymax", (center.y + DELTA).toFixed(1));
+  url.searchParams.set("srid", "2154");
+  url.searchParams.set("select", "batiment_groupe_id,annee_construction");
+  url.searchParams.set("limit", "10");
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+      next: { revalidate: 0 },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Array<{ batiment_groupe_id: string; annee_construction?: number | null }>;
+    if (!Array.isArray(data)) return null;
+    const row = data.find((r) => r.batiment_groupe_id === batimentGroupeId);
+    const v = row?.annee_construction;
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatBdnbBatiment(b: BdnbBatiment): BdnbBatimentFormatted | null {
+  if (!b.geom_groupe) return null;
+  const rings = extractRingsLambert(b.geom_groupe);
+  if (rings.length === 0) return null;
+  const polygonSurfaces = rings.map((ring) => ({
+    polygon: ring.map(([x, y]) => lambert93ToWgs84(x, y)),
+    areaM2: Math.round(ringAreaM2Lambert(ring)),
+    orientation: ringOrientationLambert(ring),
+  }));
+  const totalAreaM2 = polygonSurfaces.reduce((sum, s) => sum + s.areaM2, 0);
+  return {
+    id: b.batiment_groupe_id,
+    anneeConstruction: getAnneeConstruction(b),
+    surfaceM2: b.s_geom_groupe,
+    polygonSurfaces,
+    totalAreaM2,
+  };
+}
+
+/**
+ * GET /api/bdnb
  *
- * Proxifie l'appel vers l'API BDNB Open (sans clé) pour récupérer le polygone
- * et l'année de construction du bâtiment le plus proche du point cliqué.
+ * Mode point: ?lat=...&lng=... — retourne le bâtiment le plus proche (comportement existant)
+ * Mode bbox: ?swLat=&swLng=&neLat=&neLng= — retourne tous les bâtiments dans la bbox (pour tuiles)
+ *
+ * Authentification requise (Authorization: Bearer <idToken>).
+ * Quotas appliqués selon le statut du profil (admin, premium, starter, demo).
  */
 export async function GET(request: NextRequest) {
+  const authResult = await requireAuthAndQuota(request, "bdnb");
+  if (!authResult.ok) return authResult.response;
+  const { uid } = authResult.context;
+
   const { searchParams } = request.nextUrl;
+  const swLatStr = searchParams.get("swLat");
+  const swLngStr = searchParams.get("swLng");
+  const neLatStr = searchParams.get("neLat");
+  const neLngStr = searchParams.get("neLng");
   const latStr = searchParams.get("lat");
   const lngStr = searchParams.get("lng");
 
+  const isBboxMode =
+    swLatStr != null &&
+    swLngStr != null &&
+    neLatStr != null &&
+    neLngStr != null;
+
+  if (isBboxMode) {
+    // Mode bbox : tuiles BDNB pour viewport
+    const swLat = parseFloat(swLatStr);
+    const swLng = parseFloat(swLngStr);
+    const neLat = parseFloat(neLatStr);
+    const neLng = parseFloat(neLngStr);
+    if (
+      isNaN(swLat) ||
+      isNaN(swLng) ||
+      isNaN(neLat) ||
+      isNaN(neLng)
+    ) {
+      return NextResponse.json(
+        { error: "swLat, swLng, neLat, neLng doivent être des nombres valides" },
+        { status: 400 }
+      );
+    }
+    const sw = wgs84ToLambert93(swLat, swLng);
+    const ne = wgs84ToLambert93(neLat, neLng);
+    const xmin = Math.min(sw.x, ne.x);
+    const ymin = Math.min(sw.y, ne.y);
+    const xmax = Math.max(sw.x, ne.x);
+    const ymax = Math.max(sw.y, ne.y);
+
+    const url = new URL(BDNB_BASE);
+    url.searchParams.set("xmin", xmin.toFixed(1));
+    url.searchParams.set("ymin", ymin.toFixed(1));
+    url.searchParams.set("xmax", xmax.toFixed(1));
+    url.searchParams.set("ymax", ymax.toFixed(1));
+    url.searchParams.set("srid", "2154");
+    url.searchParams.set(
+      "select",
+      "batiment_groupe_id,geom_groupe,annee_construction,s_geom_groupe"
+    );
+    url.searchParams.set("limit", "300");
+
+    try {
+      const res = await fetch(url.toString(), {
+        headers: { Accept: "application/json" },
+        next: { revalidate: 0 },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("[BDNB] Erreur API bbox:", res.status, text);
+        return NextResponse.json(
+          { error: `Erreur BDNB ${res.status}` },
+          { status: res.status }
+        );
+      }
+      const data = (await res.json()) as BdnbBatiment[];
+      const withGeom = Array.isArray(data) ? data.filter((b) => b.geom_groupe !== null) : [];
+      const batiments = withGeom
+        .map((b) => formatBdnbBatiment(b))
+        .filter((b): b is BdnbBatimentFormatted => b !== null);
+      if (batiments.length >= 300) {
+        console.warn("[BDNB] Limite 300 atteinte pour bbox:", {
+          swLat,
+          swLng,
+          neLat,
+          neLng,
+          nbRetournes: batiments.length,
+        });
+      }
+      incrementQuotaAfterSuccess(uid, "bdnb");
+      return NextResponse.json({ batiments });
+    } catch (error) {
+      console.error("[BDNB] Erreur fetch bbox:", error);
+      return NextResponse.json(
+        { error: "Erreur lors de la communication avec l'API BDNB" },
+        { status: 500 }
+      );
+    }
+  }
+
+  // Mode point : bâtiment le plus proche (comportement existant)
   if (!latStr || !lngStr) {
     return NextResponse.json(
-      { error: "Les paramètres lat et lng sont requis" },
+      { error: "lat et lng requis, ou swLat/swLng/neLat/neLng pour le mode bbox" },
       { status: 400 }
     );
   }
@@ -283,10 +447,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Convertir le point cliqué en Lambert93
   const center = wgs84ToLambert93(lat, lng);
-
-  // Bbox ±60m autour du point (en Lambert93, les unités sont en mètres)
   const DELTA_M = 60;
   const url = new URL(BDNB_BASE);
   url.searchParams.set("xmin", (center.x - DELTA_M).toFixed(1));
@@ -328,34 +489,27 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ batiment: null });
     }
 
-    // Sélectionner le bâtiment le plus proche du point cliqué (distance centroïde en Lambert93)
     const nearest = withGeom.reduce((best, current) => {
       const dBest = centroidDistSqLambert(best.geom_groupe!, center.x, center.y);
       const dCurrent = centroidDistSqLambert(current.geom_groupe!, center.x, center.y);
       return dCurrent < dBest ? current : best;
     });
 
-    // Calculer l'aire et l'orientation par anneau en Lambert93
-    const rings = extractRingsLambert(nearest.geom_groupe!);
-
-    // Une entrée par anneau (polygone) : coordonnées WGS84 + aire + orientation
-    const polygonSurfaces = rings.map((ring) => ({
-      polygon: ring.map(([x, y]) => lambert93ToWgs84(x, y)),
-      areaM2: Math.round(ringAreaM2Lambert(ring)),
-      orientation: ringOrientationLambert(ring),
-    }));
-
-    const totalAreaM2 = polygonSurfaces.reduce((sum, s) => sum + s.areaM2, 0);
-
-    return NextResponse.json({
-      batiment: {
-        id: nearest.batiment_groupe_id,
-        anneeConstruction: nearest.annee_construction,
-        surfaceM2: nearest.s_geom_groupe,
-        polygonSurfaces,  // tableau : { polygon, areaM2, orientation }[]
-        totalAreaM2,
-      },
-    });
+    let formatted = formatBdnbBatiment(nearest);
+    if (!formatted) {
+      return NextResponse.json({ batiment: null });
+    }
+    if (formatted.anneeConstruction == null) {
+      const anneeFfo = await fetchAnneeConstructionFromFfo(
+        formatted.id,
+        center
+      );
+      if (anneeFfo != null) {
+        formatted = { ...formatted, anneeConstruction: anneeFfo };
+      }
+    }
+    incrementQuotaAfterSuccess(uid, "bdnb");
+    return NextResponse.json({ batiment: formatted });
   } catch (error) {
     console.error("[BDNB] Erreur fetch:", error);
     return NextResponse.json(

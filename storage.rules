@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Firebase Storage : images des références de panneaux et autres fichiers
+// Firebase Storage : images des références de panneaux et onduleurs
 // À publier dans la console Firebase : Storage → Règles
 service firebase.storage {
   match /b/{bucket}/o {
@@ -9,6 +9,18 @@ service firebase.storage {
     match /panel_references/{fileName} {
       allow read: if true;
       allow write: if true;
+    }
+
+    // Dossier des photos des références d'onduleurs (upload depuis l'app)
+    match /inverter_references/{fileName} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Photos de profil utilisateur : lecture publique (affichage), écriture par le propriétaire uniquement
+    match /user_photos/{userId}/{fileName} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
     }
 
     // Bloquer tout le reste par défaut (optionnel : autoriser d'autres dossiers plus tard)

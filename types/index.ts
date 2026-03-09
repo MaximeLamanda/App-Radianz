@@ -1,3 +1,6 @@
+/** Statut du profil utilisateur pour les quotas API (BDNB, OSM) */
+export type ProfileStatus = "admin" | "premium" | "starter" | "demo";
+
 export interface AddressCoordinates {
   lat: number;
   lng: number;
@@ -126,6 +129,8 @@ export interface Prospect {
   userId?: string;
   /** Année de construction du bâtiment (source BDNB), affichée quand disponible */
   anneeConstruction?: number | null;
+  /** ID du bâtiment BDNB quand le prospect a été créé depuis un clic sur une tuile BDNB */
+  bdnbBatimentId?: string;
 }
 
 export interface Lead {

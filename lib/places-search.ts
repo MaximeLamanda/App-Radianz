@@ -13,14 +13,29 @@ export async function searchPlacesByType(
   placeType: PlaceSearchType,
   radius: number
 ): Promise<PlaceSearchResult[]> {
-  if (!window.google?.maps?.places) {
+  if (!window.google?.maps) {
     throw new Error("Google Maps Places API n'est pas disponible");
   }
 
   const maps = window.google.maps;
+  let places = maps.places;
+  if (!places) {
+    try {
+      places = await (maps as any).importLibrary?.("places");
+    } catch {
+      throw new Error("Google Maps Places API n'est pas disponible");
+    }
+  }
+  if (!places?.PlacesService) {
+    throw new Error(
+      "La recherche par type n'est pas disponible (PlacesService legacy). " +
+      "Utilisez la recherche par adresse ou cliquez sur la carte."
+    );
+  }
+
   let service: google.maps.places.PlacesService;
   try {
-    service = new maps.places.PlacesService(document.createElement("div"));
+    service = new places.PlacesService(document.createElement("div"));
   } catch {
     throw new Error(
       "La recherche par type n'est pas disponible (PlacesService legacy). " +
@@ -37,7 +52,7 @@ export async function searchPlacesByType(
     };
 
     service.nearbySearch(request, (results, status) => {
-      if (status === maps.places.PlacesServiceStatus.OK && results) {
+      if (status === places.PlacesServiceStatus.OK && results) {
         const searchResults: PlaceSearchResult[] = results.map((place) => {
           const location = place.geometry?.location;
           const coordinates: AddressCoordinates = location
@@ -81,7 +96,7 @@ export async function searchPlacesByType(
         });
 
         resolve(searchResults);
-      } else if (status === maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+      } else if (status === places.PlacesServiceStatus.ZERO_RESULTS) {
         resolve([]); // Aucun résultat trouvé, retourner un tableau vide
       } else {
         reject(new Error(`Erreur lors de la recherche: ${status}`));

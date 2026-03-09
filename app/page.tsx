@@ -26,9 +26,11 @@ import { MapPin, Phone, Globe, Sun, Zap, Filter, X, MoreVertical, Link2, Externa
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { getProspectsForPipeline } from "@/lib/firestore";
-import { getPanelReferencesFromFirebase } from "@/lib/firestore-panel-references";
-import { getInverterReferencesFromFirebase } from "@/lib/firestore-inverter-references";
+import {
+  usePanelReferences,
+  useInverterReferences,
+  useProspectsForPipeline,
+} from "@/lib/swr-hooks";
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { getEnergyConsumption } from "@/lib/building-energy-consumption";
 import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
@@ -136,11 +138,22 @@ function HomePage() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
-  const [prospects, setProspects] = useState<Prospect[]>([]);
+  const { data: panelsData } = usePanelReferences();
+  const { data: invertersData } = useInverterReferences();
+  const {
+    data: prospectsData,
+    error: prospectsError,
+    isLoading: prospectsLoading,
+    mutate: mutateProspects,
+  } = useProspectsForPipeline(user?.uid ?? null);
+
+  const prospects = prospectsData ?? [];
+  const panelRef = panelsData?.find((p) => p.recommended) ?? panelsData?.[0] ?? null;
+  const inverterRef = invertersData?.find((i) => i.recommended) ?? invertersData?.[0] ?? null;
+
   const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null);
   const { isDrawerOpen, setIsDrawerOpen, setDrawerContent } = useDrawer();
   const searchParams = useSearchParams();
-  const [loading, setLoading] = useState(true);
 
   // À la fermeture du drawer : retirer prospectId de l'URL (sans recharger) et revenir à la vue table "classique"
   const handleDrawerOpenChange = useCallback(
@@ -153,49 +166,16 @@ function HomePage() {
     },
     [pathname, router, searchParams, setIsDrawerOpen]
   );
-  const [error, setError] = useState<string | null>(null);
-  const [panelRef, setPanelRef] = useState<PanelReference | null>(null);
-  const [inverterRef, setInverterRef] = useState<InverterReference | null>(null);
+  const error = prospectsError ? (prospectsError.message || "Erreur lors du chargement") : null;
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterPlaceType, setFilterPlaceType] = useState<string>("all");
   const [leadPeriod, setLeadPeriod] = useState<"daily" | "weekly" | "yearly" | "all">("weekly");
 
   useEffect(() => {
-    Promise.all([
-      getPanelReferencesFromFirebase(),
-      getInverterReferencesFromFirebase(),
-    ]).then(([panels, inverters]) => {
-      setPanelRef(panels.find((p) => p.recommended) ?? panels[0] ?? null);
-      setInverterRef(inverters.find((i) => i.recommended) ?? inverters[0] ?? null);
-    });
-  }, []);
-
-  const fetchProspects = useCallback(async () => {
-    if (!user) return;
-    try {
-      setError(null);
-      const prospectsData = await getProspectsForPipeline(user.uid);
-      setProspects(prospectsData);
-      setSelectedProspect((prev) => {
-        if (!prev?.id) return prev;
-        return prospectsData.find((p) => p.id === prev.id) ?? prev;
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erreur lors du chargement");
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
-
-  useEffect(() => {
     if (!authLoading && !user) {
       router.replace("/login");
-      return;
     }
-    if (user) {
-      fetchProspects();
-    }
-  }, [authLoading, user, fetchProspects, router]);
+  }, [authLoading, user, router]);
 
   // Ouvrir automatiquement le drawer d'un prospect via ?prospectId= dans l'URL
   useEffect(() => {
@@ -366,7 +346,9 @@ function HomePage() {
       await updateProspect(prospect.id, { shareToken, commercialReferent });
       const updated = { ...prospect, shareToken, commercialReferent };
       setSelectedProspect((prev) => (prev?.id === prospect.id ? updated : prev));
-      setProspects((prev) => prev.map((x) => (x.id === prospect.id ? updated : x)));
+      mutateProspects((prev) =>
+        prev ? prev.map((x) => (x.id === prospect.id ? updated : x)) : prev
+      );
       const url = `${typeof window !== "undefined" ? window.location.origin : ""}/p/${shareToken}`;
       await navigator.clipboard.writeText(url);
       toast.success("Lien copié", { description: "Le lien prospect a été copié dans le presse-papiers." });
@@ -389,7 +371,9 @@ function HomePage() {
       await updateProspect(prospect.id, { shareToken, commercialReferent });
       const updated = { ...prospect, shareToken, commercialReferent };
       setSelectedProspect((prev) => (prev?.id === prospect.id ? updated : prev));
-      setProspects((prev) => prev.map((x) => (x.id === prospect.id ? updated : x)));
+      mutateProspects((prev) =>
+        prev ? prev.map((x) => (x.id === prospect.id ? updated : x)) : prev
+      );
       const url = `${typeof window !== "undefined" ? window.location.origin : ""}/p/${shareToken}`;
       window.open(url, "_blank", "noopener,noreferrer");
     } catch {
@@ -426,7 +410,9 @@ function HomePage() {
           onProspectUpdate={(p) => {
             setSelectedProspect(p);
             if (p.id) {
-              setProspects((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+              mutateProspects((prev) =>
+                prev ? prev.map((x) => (x.id === p.id ? p : x)) : prev
+              );
             }
           }}
           onSurfaceDelete={(surfaceId) => {
@@ -458,17 +444,22 @@ function HomePage() {
               },
             };
             setSelectedProspect(updatedProspect);
-            setProspects((prev) => prev.map((x) => (x.id === prospect.id ? updatedProspect : x)));
+            mutateProspects((prev) =>
+              prev ? prev.map((x) => (x.id === prospect.id ? updatedProspect : x)) : prev
+            );
             if (prospect.id) {
               updateProspectInPipeline(prospect.id, updatedProspect, { estimatedKwp })
-                .then(() => toast.success("Surface supprimée"))
+                .then(() => {
+                  mutateProspects();
+                  toast.success("Surface supprimée");
+                })
                 .catch((err) => {
                   console.error("Erreur Firestore après suppression de surface:", err);
                   toast.error("Erreur lors de la sauvegarde");
                 });
             }
           }}
-          onSaveSuccess={fetchProspects}
+          onSaveSuccess={() => mutateProspects()}
           voirHref={(id) => `/solar-scout?prospectId=${id}`}
         />
       );
@@ -476,9 +467,9 @@ function HomePage() {
       setIsDrawerOpen(false);
       setDrawerContent(null);
     }
-  }, [selectedProspect, setIsDrawerOpen, setDrawerContent, fetchProspects, handleDrawerOpenChange]);
+  }, [selectedProspect, setIsDrawerOpen, setDrawerContent, mutateProspects, handleDrawerOpenChange]);
 
-  if (authLoading || (user && loading)) {
+  if (authLoading || (user && prospectsLoading)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-muted-foreground">Chargement...</div>

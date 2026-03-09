@@ -12,8 +12,17 @@ service cloud.firestore {
     }
 
     // Pipeline prospects (Solar Scout)
+    // Lecture : propriétaire, non réclamés (migration), ou document avec shareToken (lien public)
+    // Écriture : propriétaire uniquement (ou claim si pas encore de userId)
     match /prospects/{prospectId} {
-      allow read, write: if true;
+      allow read: if request.auth != null && (resource.data.userId == request.auth.uid || !('userId' in resource.data))
+        || resource.data.shareToken != null;
+      allow create: if request.auth != null
+        && (request.resource.data.userId == request.auth.uid || !('userId' in request.resource.data));
+      allow update: if request.auth != null
+        && (resource.data.userId == request.auth.uid || !('userId' in resource.data))
+        && (request.resource.data.userId == request.auth.uid || request.resource.data.userId == resource.data.userId);
+      allow delete: if request.auth != null && resource.data.userId == request.auth.uid;
     }
 
     // Leads (boîte de réception)
@@ -24,6 +33,16 @@ service cloud.firestore {
     // Références de panneaux solaires (paramètres)
     match /panel_references/{refId} {
       allow read, write: if true;
+    }
+
+    // Références d'onduleurs (paramètres)
+    match /inverter_references/{refId} {
+      allow read, write: if true;
+    }
+
+    // Profil utilisateur (téléphone, prénom, nom) — lecture/écriture par le propriétaire
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
     // Bloquer tout le reste par défaut

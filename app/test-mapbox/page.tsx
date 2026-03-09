@@ -44,7 +44,7 @@ export default function TestMapboxPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="bg-white p-4 rounded-lg shadow">
+          <div className="bg-white p-4 rounded-lg shadow-sm">
             <h2 className="font-semibold text-gray-800 mb-2">Style Streets (plan)</h2>
             {urlStreets ? (
               <img
@@ -60,7 +60,7 @@ export default function TestMapboxPage() {
             )}
           </div>
 
-          <div className="bg-white p-4 rounded-lg shadow">
+          <div className="bg-white p-4 rounded-lg shadow-sm">
             <h2 className="font-semibold text-gray-800 mb-2">Style Satellite</h2>
             {urlSatellite ? (
               <img

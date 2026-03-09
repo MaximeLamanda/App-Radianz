@@ -95,8 +95,18 @@ npm run update-hourly-consumption
 
 ou `npx tsx scripts/update-hourly-consumption-firebase.ts`. Cela met à jour (merge) uniquement `consumptionKwhPerM2PerHours` pour chaque type de bâtiment.
 
+## Mise à jour des données (ex : modification du type "other")
+
+Après toute modification dans `lib/building-energy-consumption.ts` (par ex. la consommation du type `other`), **ré-exécutez l’initialisation** pour mettre à jour Firebase :
+
+- Interface : [http://localhost:3000/admin/init-energy-data](http://localhost:3000/admin/init-energy-data)
+- API : `GET /api/init-energy-data`
+- Script : `npm run init-energy-data`
+
+Les profils mensuels (`consumptionKwhPerM2ByMonth`) et horaires (`consumptionKwhPerM2PerHours`) sont recalculés automatiquement à partir de la consommation annuelle.
+
 ## Notes importantes
 
 - Cette opération peut être exécutée plusieurs fois sans problème (les données seront mises à jour)
 - Les données sont basées sur des études UK et US - pour une application française, considérez utiliser des données ADEME si disponibles
-- La valeur par défaut pour les types non trouvés est 150 kWh/m²/an
+- Le type `other` (valeur par défaut pour types non spécifiés) : **170 kWh/m²/an** — bureau/magasin retail sans froid

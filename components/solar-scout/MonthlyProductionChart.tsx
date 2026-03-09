@@ -36,13 +36,21 @@ const monthNames = [
 ];
 
 const chartConfig = {
-  production: {
-    label: "Production (kWh)",
+  selfConsumption: {
+    label: "Autoconsommation (kWh)",
     color: "hsl(217, 91%, 60%)", // Bleu principal (blue-500)
+  },
+  excess: {
+    label: "Injection réseau (kWh)",
+    color: "hsl(217, 70%, 78%)", // Bleu pâle
   },
   gridDraw: {
     label: "Tirage réseau (kWh)",
     color: "hsl(0, 0%, 50%)",
+  },
+  production: {
+    label: "Production (kWh)",
+    color: "hsl(217, 91%, 60%)",
   },
   consumption: {
     label: "Consommation (kWh)",
@@ -63,11 +71,15 @@ export function MonthlyProductionChart({ data, dailyData, viewMode: controlledVi
     ? dailyData!.map((item) => {
         const prod = item.production;
         const cons = item.consumption ?? 0;
+        const selfConsumption = hasConsumption ? Math.min(prod, cons) : 0;
+        const excess = hasConsumption ? Math.max(0, prod - cons) : prod;
         const gridDraw = hasConsumption ? Math.max(0, cons - prod) : 0;
         return {
           month: `${item.hour}h`,
           hour: item.hour,
           production: prod,
+          selfConsumption,
+          excess,
           gridDraw,
           consumption: cons,
         };
@@ -75,10 +87,14 @@ export function MonthlyProductionChart({ data, dailyData, viewMode: controlledVi
     : data.map((item) => {
         const prod = item.production;
         const cons = item.consumption ?? 0;
+        const selfConsumption = hasConsumption ? Math.min(prod, cons) : 0;
+        const excess = hasConsumption ? Math.max(0, prod - cons) : prod;
         const gridDraw = hasConsumption ? Math.max(0, cons - prod) : 0;
         return {
           month: monthNames[item.month - 1] || `M${item.month}`,
           production: prod,
+          selfConsumption,
+          excess,
           gridDraw,
           consumption: cons,
         };
@@ -114,31 +130,73 @@ export function MonthlyProductionChart({ data, dailyData, viewMode: controlledVi
                       <span>Production : {p.production} kWh</span>
                     </div>
                     {hasConsumption && (
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="inline-block h-2 w-2 rounded-[2px]"
-                          style={{ backgroundColor: "var(--color-gridDraw)" }}
-                        />
-                        <span>Consommation : {p.consumption} kWh</span>
-                      </div>
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="inline-block h-2 w-2 rounded-[2px]"
+                            style={{ backgroundColor: "var(--color-selfConsumption)" }}
+                          />
+                          <span>Autoconsommation : {p.selfConsumption} kWh</span>
+                        </div>
+                        {p.excess > 0 && (
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="inline-block h-2 w-2 rounded-[2px]"
+                              style={{ backgroundColor: "var(--color-excess)" }}
+                            />
+                            <span>Injection : {p.excess} kWh</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="inline-block h-2 w-2 rounded-[2px]"
+                            style={{ backgroundColor: "var(--color-consumption)" }}
+                          />
+                          <span>Consommation : {p.consumption} kWh</span>
+                        </div>
+                        {p.gridDraw > 0 && (
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="inline-block h-2 w-2 rounded-[2px]"
+                              style={{ backgroundColor: "var(--color-gridDraw)" }}
+                            />
+                            <span>Tirage réseau : {p.gridDraw} kWh</span>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
               );
             }}
           />
-          <Bar
-            dataKey="production"
-            stackId="a"
-            fill="var(--color-production)"
-            name="Production"
-          />
-          {hasConsumption && (
+          {hasConsumption ? (
+            <>
+              <Bar
+                dataKey="selfConsumption"
+                stackId="a"
+                fill="var(--color-selfConsumption)"
+                name="Autoconsommation"
+              />
+              <Bar
+                dataKey="excess"
+                stackId="a"
+                fill="var(--color-excess)"
+                name="Injection"
+              />
+              <Bar
+                dataKey="gridDraw"
+                stackId="a"
+                fill="var(--color-gridDraw)"
+                name="Tirage réseau"
+              />
+            </>
+          ) : (
             <Bar
-              dataKey="gridDraw"
+              dataKey="production"
               stackId="a"
-              fill="var(--color-gridDraw)"
-              name="Tirage réseau"
+              fill="var(--color-production)"
+              name="Production"
             />
           )}
         </BarChart>

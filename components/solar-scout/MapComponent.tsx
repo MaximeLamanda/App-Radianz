@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useOsmBuildings, type MapBounds, type OsmBuildingDisplay } from "@/lib/swr-hooks";
+import { fetchWithAuth } from "@/lib/api-client";
 import { loadProspectSurfaces } from "@/lib/prospect-storage";
 import { getProspectByPlaceId } from "@/lib/firestore";
 import { loadMapPosition, saveMapPosition, getDefaultMapPosition } from "@/lib/map-position-storage";
@@ -62,6 +64,8 @@ function createValidationButtonOverlay() {
 }
 import { convertPlaceType, extractContact } from "@/lib/places";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
+import { searchPoiForPolygon, findNearestOsmBuildingToPoint } from "@/lib/poi-near-polygon";
+import { toast } from "sonner";
 
 interface MapComponentProps {
   onProspectUpdate: (prospect: Prospect | null) => void;
@@ -76,9 +80,16 @@ interface MapComponentProps {
   searchResults?: PlaceSearchResult[];
   onSearchResultClick?: (result: PlaceSearchResult) => void;
   onGetMapCenter?: (getCenterFunc: () => AddressCoordinates | null) => void;
+  onGetMapBounds?: (getBoundsFunc: () => MapBounds | null) => void;
   onBdnbSurface?: (surfaces: RoofSurface[] | null) => void;
   /** Appelé quand les infos BDNB (année, surface) sont disponibles ou réinitialisées */
   onBdnbInfo?: (info: { anneeConstruction: number | null; surfaceM2: number | null }) => void;
+  /** Bounds pour charger les bâtiments OSM (uniquement au clic sur le bouton) */
+  osmBoundsToFetch?: MapBounds | null;
+  /** Appelé au clic sur un polygone OSM pour quitter la vue recherche (vider les résultats) */
+  onOsmPolygonClick?: () => void;
+  /** Appelé au début/fin de l'enrichissement OSM (geocode + BDNB + POI) pour afficher le loading */
+  onOsmEnrichmentChange?: (enriching: boolean) => void;
 }
 
 export function MapComponent({
@@ -94,8 +105,12 @@ export function MapComponent({
   searchResults = [],
   onSearchResultClick,
   onGetMapCenter,
+  onGetMapBounds,
   onBdnbSurface,
   onBdnbInfo,
+  osmBoundsToFetch = null,
+  onOsmPolygonClick,
+  onOsmEnrichmentChange,
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -111,13 +126,24 @@ export function MapComponent({
   onBdnbSurfaceRef.current = onBdnbSurface;
   const onBdnbInfoRef = useRef<((info: { anneeConstruction: number | null; surfaceM2: number | null }) => void) | undefined>(undefined);
   onBdnbInfoRef.current = onBdnbInfo;
-  // Ref vers fetchBdnbBatiment pour éviter les stale closures dans le listener de clic
-  const fetchBdnbBatimentRef = useRef<((coords: AddressCoordinates) => void) | null>(null);
+  const currentProspectRef = useRef<Prospect | null | undefined>(undefined);
+  currentProspectRef.current = currentProspect;
 
-  
   // Fonction pour obtenir le centre de la carte - toujours disponible via ref
   const getMapCenterFunc = useRef<(() => AddressCoordinates | null) | null>(null);
-  
+  const getMapBoundsFunc = useRef<(() => MapBounds | null) | null>(null);
+
+  // Bounds viewport pour bâtiments OSM (zoom >= 16)
+  const [viewBounds, setViewBounds] = useState<MapBounds | null>(null);
+  const boundsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Dernière clé quantifiée (3 décimales) pour éviter setViewBounds si identique → moins de refetch OSM */
+  const lastQuantizedKeyRef = useRef<string | null>(null);
+
+  // Hook SWR pour les bâtiments OSM : chargement UNIQUEMENT au clic sur le bouton (bounds figés)
+  const { data: osmBuildings = [] } = useOsmBuildings(osmBoundsToFetch ?? null);
+  const osmBuildingsRef = useRef<typeof osmBuildings>([]);
+  osmBuildingsRef.current = osmBuildings;
+
   // Stocker le dernier centre connu comme fallback
   const lastKnownCenterRef = useRef<AddressCoordinates | null>(null);
 
@@ -202,8 +228,24 @@ export function MapComponent({
       };
       
       getMapCenterFunc.current = getCenter;
+
+      const getBounds = (): MapBounds | null => {
+        if (!mapInstanceRef.current) return null;
+        const bounds = mapInstanceRef.current.getBounds();
+        const zoom = mapInstanceRef.current.getZoom() ?? 0;
+        if (!bounds || zoom < 16) return null;
+        const ne = bounds.getNorthEast();
+        const sw = bounds.getSouthWest();
+        if (!ne || !sw) return null;
+        const latNe = ne.lat();
+        const lngNe = ne.lng();
+        const latSw = sw.lat();
+        const lngSw = sw.lng();
+        if (!Number.isFinite(latNe) || !Number.isFinite(lngNe) || !Number.isFinite(latSw) || !Number.isFinite(lngSw)) return null;
+        return { ne: { lat: latNe, lng: lngNe }, sw: { lat: latSw, lng: lngSw } };
+      };
+      getMapBoundsFunc.current = getBounds;
       
-      // Exposer la fonction au parent
       if (onGetMapCenter) {
         if (typeof getCenter === 'function') {
           onGetMapCenter(getCenter);
@@ -263,9 +305,52 @@ export function MapComponent({
       // Écouter l'événement "idle" (carte prête après mouvement) pour s'assurer que le centre est à jour et sauvegarder
       maps.event.addListener(map, "idle", () => {
         updateLastKnownCenter();
-        savePosition(); // Sauvegarder la position après chaque mouvement
+        savePosition();
+
+        // Mise à jour des bounds pour bâtiments OSM (debounce 600ms)
+        if (boundsDebounceRef.current) clearTimeout(boundsDebounceRef.current);
+        boundsDebounceRef.current = setTimeout(() => {
+          const bounds = map.getBounds();
+          const zoom = map.getZoom() ?? 0;
+          if (zoom >= 16 && bounds) {
+            const ne = bounds.getNorthEast();
+            const sw = bounds.getSouthWest();
+            const latSw = sw?.lat?.() ?? NaN;
+            const lngSw = sw?.lng?.() ?? NaN;
+            const latNe = ne?.lat?.() ?? NaN;
+            const lngNe = ne?.lng?.() ?? NaN;
+            const valid =
+              typeof latSw === "number" &&
+              typeof lngSw === "number" &&
+              typeof latNe === "number" &&
+              typeof lngNe === "number" &&
+              !isNaN(latSw) &&
+              !isNaN(lngSw) &&
+              !isNaN(latNe) &&
+              !isNaN(lngNe);
+            if (!valid) {
+              boundsDebounceRef.current = null;
+              return;
+            }
+            const q = (n: number) => Math.round(n * 1e2) / 1e2;
+            const key = `${q(latSw)},${q(lngSw)},${q(latNe)},${q(lngNe)}`;
+            if (lastQuantizedKeyRef.current !== key) {
+              lastQuantizedKeyRef.current = key;
+              setViewBounds({
+                ne: { lat: latNe, lng: lngNe },
+                sw: { lat: latSw, lng: lngSw },
+              });
+            }
+          } else {
+            if (lastQuantizedKeyRef.current !== null) {
+              lastQuantizedKeyRef.current = null;
+              setViewBounds(null);
+            }
+          }
+          boundsDebounceRef.current = null;
+        }, 600);
       });
-      
+
       // Écouter une première fois "idle" pour l'initialisation
       maps.event.addListenerOnce(map, "idle", () => {
         updateLastKnownCenter();
@@ -425,7 +510,6 @@ export function MapComponent({
           });
       };
       
-      // Écouter les clics sur la carte (POI et fond de carte)
       maps.event.addListener(map, "click", (event: google.maps.MapMouseEvent | google.maps.IconMouseEvent) => {
         if (!event.latLng) return;
 
@@ -434,27 +518,43 @@ export function MapComponent({
           lng: event.latLng.lng(),
         };
 
-        // Appel BDNB en parallèle via ref pour éviter les stale closures
-        fetchBdnbBatimentRef.current?.(clickCoords);
-
-        // Vérifier si c'est un clic sur un POI (IconMouseEvent avec placeId)
+        // Clic carte vide : ne rien faire (prospect créé uniquement via clic sur polygone OSM)
+        // Clic sur POI Google : mise à jour du prospect si drawer ouvert, sinon nouveau prospect
         const placeId = (event as any).placeId;
-        
         if (placeId) {
-          // Clic sur un POI : utiliser directement le placeId
-          // Stopper le comportement par défaut de Google (ouvrir le panneau d'info)
-          if (event.stop) {
-            event.stop();
+          if (event.stop) event.stop();
+
+          const prospect = currentProspectRef.current;
+          if (prospect) {
+            // Drawer ouvert : mettre à jour name + address du prospect
+            getPlaceDetailsNew(placeId).then((details) => {
+              if (!details) return;
+              const name = details.displayName ?? prospect.name;
+              const address = details.formattedAddress ?? prospect.address ?? "";
+              onProspectUpdateRef.current({
+                ...prospect,
+                name: name ?? undefined,
+                address: address || prospect.address,
+              });
+            });
+          } else {
+            // POI cliqué : chercher le polygone OSM le plus proche (si analysé)
+            const buildings = osmBuildingsRef.current;
+            const nearest = buildings.length > 0 ? findNearestOsmBuildingToPoint(clickCoords, buildings) : null;
+            if (nearest) {
+              handleOsmPolygonClick(nearest);
+            } else {
+              processPlaceDetails(placeId, clickCoords);
+            }
           }
-          
-          // Appeler directement getDetails avec le placeId
-          processPlaceDetails(placeId, clickCoords);
         }
-        // Si pas de placeId, on ne fait rien sur le flux prospect
       });
 
       return () => {
-        // Nettoyage : supprimer les listeners
+        if (boundsDebounceRef.current) {
+          clearTimeout(boundsDebounceRef.current);
+          boundsDebounceRef.current = null;
+        }
         if (mapInstanceRef.current) {
           maps.event.clearInstanceListeners(mapInstanceRef.current);
         }
@@ -465,7 +565,7 @@ export function MapComponent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Ne s'exécute qu'une seule fois au montage
 
-  // Exposer la fonction pour obtenir le centre de la carte quand onGetMapCenter change
+  // Exposer les fonctions pour obtenir le centre et les bounds de la carte
   useEffect(() => {
     if (onGetMapCenter && getMapCenterFunc.current) {
       if (typeof getMapCenterFunc.current === 'function') {
@@ -474,45 +574,12 @@ export function MapComponent({
         console.error("[MapComponent] ERREUR: getMapCenterFunc.current n'est pas une fonction!", typeof getMapCenterFunc.current);
       }
     }
-  }, [onGetMapCenter]);
-
-  // Appel API BDNB : récupère tous les polygones + année + surface + orientation
-  const fetchBdnbBatiment = async (coords: AddressCoordinates) => {
-    try {
-      const res = await fetch(
-        `/api/bdnb?lat=${coords.lat}&lng=${coords.lng}`
-      );
-      if (!res.ok) return;
-
-      const data = await res.json();
-
-      if (!data.batiment || !data.batiment.polygonSurfaces?.length) {
-        onBdnbSurfaceRef.current?.(null);
-        onBdnbInfoRef.current?.({ anneeConstruction: null, surfaceM2: null });
-        return;
+    if (onGetMapBounds && getMapBoundsFunc.current) {
+      if (typeof getMapBoundsFunc.current === 'function') {
+        onGetMapBounds(getMapBoundsFunc.current);
       }
-
-      const { polygonSurfaces, anneeConstruction, surfaceM2 } = data.batiment;
-
-      onBdnbInfoRef.current?.({ anneeConstruction, surfaceM2 });
-
-      // Créer une RoofSurface par polygone BDNB (chacune avec son aire et orientation propres)
-      const bdnbSurfaces: RoofSurface[] = (polygonSurfaces as Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>)
-        .map((s, i) => ({
-          id: `bdnb-${i}`,
-          area: s.areaM2,
-          polygon: s.polygon,
-          orientation: s.orientation ?? undefined,
-        }));
-
-      onBdnbSurfaceRef.current?.(bdnbSurfaces);
-    } catch {
-      // Silencieux : l'API BDNB n'est pas critique
     }
-  };
-
-  // Mettre à jour la ref à chaque render pour éviter les stale closures
-  fetchBdnbBatimentRef.current = fetchBdnbBatiment;
+  }, [onGetMapCenter, onGetMapBounds]);
 
   // Gérer le mode dessin
   useEffect(() => {
@@ -717,6 +784,160 @@ export function MapComponent({
       }
     };
   }, [validationButtonPosition, onValidateDrawing, onDrawingChange]);
+
+  // Polygones OSM (affichage bleu + clic)
+  const osmPolygonsRef = useRef<google.maps.Polygon[]>([]);
+  const onProspectUpdateRef = useRef(onProspectUpdate);
+  onProspectUpdateRef.current = onProspectUpdate;
+  const osmClickIdRef = useRef(0);
+
+  const handleOsmPolygonClick = (osmBuilding: OsmBuildingDisplay) => {
+    onOsmPolygonClick?.();
+    const firstSurf = osmBuilding.polygonSurfaces[0];
+    if (!firstSurf?.polygon?.length || !window.google?.maps) return;
+
+    const myClickId = ++osmClickIdRef.current;
+    onOsmEnrichmentChange?.(true);
+
+    const maps = window.google.maps;
+    const centroid = calculatePolygonCenter(firstSurf.polygon);
+
+    const geocodePromise = new Promise<string>((resolve) => {
+      const geocoder = new maps.Geocoder();
+      geocoder.geocode({ location: centroid }, (results, status) => {
+        resolve(
+          status === "OK" && results?.[0]?.formatted_address
+            ? results[0].formatted_address
+            : `${centroid.lat.toFixed(6)}, ${centroid.lng.toFixed(6)}`
+        );
+      });
+    });
+
+    const bdnbPromise = fetchWithAuth(`/api/bdnb?lat=${centroid.lat}&lng=${centroid.lng}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => (data?.batiment?.anneeConstruction != null ? data.batiment.anneeConstruction : undefined))
+      .catch(() => undefined);
+
+    const poiPromise = searchPoiForPolygon(centroid, firstSurf.polygon).catch(() => null);
+
+    Promise.all([geocodePromise, bdnbPromise, poiPromise])
+      .then(
+        async ([address, anneeConstruction, poi]) => {
+          if (myClickId !== osmClickIdRef.current) return;
+
+          const roofSurfaces: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
+            id: `${osmBuilding.id}-${i}`,
+            area: s.areaM2,
+            polygon: s.polygon,
+            orientation: s.orientation ?? undefined,
+          }));
+          const totalArea = roofSurfaces.reduce((sum, s) => sum + s.area, 0);
+
+          let prospect: Prospect;
+
+          if (poi?.placeId) {
+            const placeDetails = await getPlaceDetailsNew(poi.placeId);
+            if (myClickId !== osmClickIdRef.current) return;
+            const coords = poi.coordinates ?? centroid;
+            const fullAddress = placeDetails?.formattedAddress ?? address;
+            const displayName = placeDetails?.displayName ?? poi.name;
+            const placeType = placeDetails?.primaryTypeDisplayName ?? "other";
+            const contact =
+              placeDetails?.nationalPhoneNumber || placeDetails?.internationalPhoneNumber
+                ? {
+                    nationalPhoneNumber: placeDetails.nationalPhoneNumber ?? undefined,
+                    internationalPhoneNumber: placeDetails.internationalPhoneNumber ?? undefined,
+                    websiteUri: placeDetails.websiteURI ?? undefined,
+                  }
+                : undefined;
+
+            prospect = {
+              name: displayName,
+              address: fullAddress,
+              coordinates: coords,
+              placeId: poi.placeId,
+              roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
+              roofSurfaces,
+              placeType,
+              qualityScore: totalArea > 0 ? Math.min(100, 10 + Math.floor(totalArea / 50)) : 10,
+              anneeConstruction: anneeConstruction ?? undefined,
+              contact,
+            };
+          } else {
+            const finalAddress = poi?.name ?? address;
+            prospect = {
+              address: finalAddress,
+              name: poi?.name ?? undefined,
+              coordinates: centroid,
+              roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
+              roofSurfaces,
+              placeType: "other",
+              qualityScore: 10,
+              anneeConstruction: anneeConstruction ?? undefined,
+            };
+          }
+
+          onProspectUpdateRef.current(prospect);
+          onBdnbSurfaceRef.current?.(roofSurfaces);
+          onBdnbInfoRef.current?.({
+            anneeConstruction: anneeConstruction ?? null,
+            surfaceM2: totalArea,
+          });
+        }
+      )
+      .catch((err) => {
+        console.error("[MapComponent] Erreur enrichissement OSM:", err);
+        toast.error("Impossible de charger les informations du bâtiment");
+      })
+      .finally(() => {
+        if (myClickId === osmClickIdRef.current) {
+          onOsmEnrichmentChange?.(false);
+        }
+      });
+  };
+
+  // Rendre les polygones OSM (bleu) + clic
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return;
+
+    const maps = window.google.maps;
+
+    osmPolygonsRef.current.forEach((p) => p.setMap(null));
+    osmPolygonsRef.current = [];
+
+    osmBuildings.forEach((osmBuilding) => {
+      osmBuilding.polygonSurfaces.forEach((surf) => {
+        if (!surf.polygon || surf.polygon.length === 0) return;
+        const polygon = new maps.Polygon({
+          paths: surf.polygon,
+          fillColor: "#60A5FA",
+          fillOpacity: 0.25,
+          strokeColor: "#2563EB",
+          strokeWeight: 1,
+          clickable: true,
+          zIndex: 0,
+        });
+        (polygon as google.maps.Polygon & { _osmBuilding?: OsmBuildingDisplay })._osmBuilding = osmBuilding;
+        maps.event.addListener(polygon, "click", () => {
+          const b = (polygon as google.maps.Polygon & { _osmBuilding?: OsmBuildingDisplay })._osmBuilding;
+          if (b) handleOsmPolygonClick(b);
+        });
+        polygon.setMap(map);
+        osmPolygonsRef.current.push(polygon);
+      });
+    });
+
+    return () => {
+      osmPolygonsRef.current.forEach((p) => {
+        if (window.google?.maps?.event) {
+          window.google.maps.event.clearInstanceListeners(p);
+        }
+        p.setMap(null);
+      });
+      osmPolygonsRef.current = [];
+    };
+  }, [osmBuildings]);
 
   // Référence pour stocker tous les polygones affichés
   const polygonsRef = useRef<google.maps.Polygon[]>([]);

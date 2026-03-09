@@ -14,8 +14,20 @@ import { loadMapPosition, saveMapPosition, getDefaultMapPosition } from "@/lib/m
 import { getProspectById, getProspectByPlaceId, updateProspectInPipeline } from "@/lib/firestore";
 import { useDrawer } from "@/lib/drawer-context";
 import { useAuth } from "@/lib/auth-context";
+import { fetchWithAuth } from "@/lib/api-client";
 import { toast } from "sonner";
 import type { Prospect, AddressCoordinates, PlaceSearchResult } from "@/types";
+
+type BdnbDataForClick = {
+  surfaceM2?: number | null;
+  anneeConstruction?: number | null;
+  batiment?: {
+    id: string;
+    polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>;
+    totalAreaM2: number;
+    anneeConstruction: number | null;
+  };
+};
 
 // Fonction pour calculer le quality score
 function calculateQualityScore(area: number, placeType: string): number {
@@ -53,13 +65,14 @@ function SolarScoutContent() {
   const pendingBdnbSurfacesRef = useRef<import("@/types").RoofSurface[] | null>(null);
   const { isDrawerOpen, setIsDrawerOpen, setDrawerContent } = useDrawer();
   const [isDrawing, setIsDrawing] = useState(false);
+  const [osmBoundsToFetch, setOsmBoundsToFetch] = useState<{ ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null>(null);
+  const [getMapBoundsFunc, setGetMapBoundsFunc] = useState<(() => { ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null) | null>(null);
 
-  // À la fermeture du drawer : retirer prospectId de l'URL (sans recharger) et revenir à solar-scout "classique"
+  // À la fermeture du drawer : retirer prospectId de l'URL (sans recharger) mais garder le prospect/polygone sélectionné sur la carte
   const handleDrawerOpenChange = useCallback(
     (open: boolean) => {
       setIsDrawerOpen(open);
       if (!open && searchParams.get("prospectId")) {
-        setProspect(null);
         router.replace(pathname ?? "/solar-scout");
       }
     },
@@ -76,6 +89,7 @@ function SolarScoutContent() {
   const [initialAddress, setInitialAddress] = useState<string>(""); // Champ adresse vide par défaut
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
   const [getMapCenterFunc, setGetMapCenterFunc] = useState<(() => AddressCoordinates | null) | null>(null);
+  const [isBdnbEnrichingForProspect, setIsBdnbEnrichingForProspect] = useState(false);
   
   // Wrapper pour setGetMapCenterFunc qui vérifie que c'est bien une fonction
   const handleGetMapCenter = useCallback((func: (() => AddressCoordinates | null) | null) => {
@@ -90,6 +104,19 @@ function SolarScoutContent() {
   // Fallback par défaut si la fonction n'est pas encore disponible
   const defaultCenter: AddressCoordinates = defaultPosition.center;
   
+  const handleGetMapBounds = useCallback((func: (() => { ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null) | null) => {
+    if (func && typeof func === 'function') {
+      setGetMapBoundsFunc(() => func);
+    }
+  }, []);
+
+  const handleAnalyseBuildings = useCallback(() => {
+    if (getMapBoundsFunc && typeof getMapBoundsFunc === 'function') {
+      const bounds = getMapBoundsFunc();
+      if (bounds) setOsmBoundsToFetch(bounds);
+    }
+  }, [getMapBoundsFunc]);
+
   const getMapCenter = useCallback(() => {
     if (getMapCenterFunc && typeof getMapCenterFunc === 'function') {
       const result = getMapCenterFunc();
@@ -129,6 +156,7 @@ function SolarScoutContent() {
       setDrawerContent(
         <ProspectDrawer
           prospect={prospect}
+          bdnbLoading={isBdnbEnrichingForProspect}
           isOpen={true}
           onOpenChange={handleDrawerOpenChange}
           onAddToPipeline={handleAddToPipeline}
@@ -247,7 +275,7 @@ function SolarScoutContent() {
       setIsDrawerOpen(false);
       setDrawerContent(null);
     }
-  }, [prospect, isDrawing, setIsDrawerOpen, setDrawerContent, handleAddToPipeline, handleDrawerOpenChange]);
+  }, [prospect, isDrawing, isBdnbEnrichingForProspect, setIsDrawerOpen, setDrawerContent, handleAddToPipeline, handleDrawerOpenChange]);
 
   // Charger un prospect depuis le pipeline (clic sur une ligne)
   useEffect(() => {
@@ -291,11 +319,10 @@ function SolarScoutContent() {
   };
 
   // Gérer le clic sur un résultat de recherche
-  const handleSearchResultClick = async (result: PlaceSearchResult) => {
-    // Centrer la carte sur le résultat
+  const handleSearchResultClick = async (result: PlaceSearchResult, bdnbData?: BdnbDataForClick) => {
     setCenterCoordinates(result.coordinates);
+    setIsBdnbEnrichingForProspect(false);
 
-    // Obtenir les détails complets (formattedAddress) pour cohérence sidebar ↔ drawer
     const placeDetails = await getPlaceDetailsNew(result.placeId);
     const fullAddress = placeDetails?.formattedAddress || result.address;
     const displayName = placeDetails?.displayName || result.name;
@@ -306,7 +333,7 @@ function SolarScoutContent() {
       return;
     }
 
-    const newProspect: Prospect = {
+    let newProspect: Prospect = {
       name: displayName,
       address: fullAddress,
       coordinates: result.coordinates,
@@ -317,7 +344,61 @@ function SolarScoutContent() {
       contact: result.contact,
     };
 
-    // Charger les surfaces sauvegardées depuis localStorage
+    if (bdnbData?.batiment?.polygonSurfaces?.length) {
+      const roofSurfaces = bdnbData.batiment.polygonSurfaces.map((s, i) => ({
+        id: `bdnb-${bdnbData.batiment!.id}-${i}`,
+        area: s.areaM2,
+        polygon: s.polygon,
+        orientation: s.orientation ?? undefined,
+      }));
+      const totalArea = roofSurfaces.reduce((sum, s) => sum + s.area, 0);
+      newProspect = {
+        ...newProspect,
+        roofSurfaces,
+        roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
+        anneeConstruction: bdnbData.batiment.anneeConstruction ?? undefined,
+        bdnbBatimentId: bdnbData.batiment.id,
+        qualityScore: calculateQualityScore(totalArea, newProspect.placeType),
+      };
+    } else {
+      setIsBdnbEnrichingForProspect(true);
+      const bdnbRes = await fetchWithAuth(
+        `/api/bdnb?lat=${result.coordinates.lat}&lng=${result.coordinates.lng}`
+      );
+      if (bdnbRes.status === 403) {
+        const json = await bdnbRes.json().catch(() => ({}));
+        toast.error(json.message ?? "Quota BDNB atteint. Passez en Premium pour augmenter vos limites.");
+      }
+      if (bdnbRes.ok) {
+        const bdnbJson = await bdnbRes.json();
+        const bat = bdnbJson?.batiment;
+        if (bat?.polygonSurfaces?.length) {
+          const roofSurfaces = bat.polygonSurfaces.map((s: { polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation?: number | null }, i: number) => ({
+            id: `bdnb-${bat.id}-${i}`,
+            area: s.areaM2,
+            polygon: s.polygon,
+            orientation: s.orientation ?? undefined,
+          }));
+          const totalArea = roofSurfaces.reduce((sum: number, s: { area: number }) => sum + s.area, 0);
+          newProspect = {
+            ...newProspect,
+            roofSurfaces,
+            roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
+            anneeConstruction: bat.anneeConstruction ?? undefined,
+            bdnbBatimentId: bat.id,
+            qualityScore: calculateQualityScore(totalArea, newProspect.placeType),
+          };
+        } else if (bat?.anneeConstruction != null) {
+          newProspect = {
+            ...newProspect,
+            anneeConstruction: bat.anneeConstruction,
+            bdnbBatimentId: bat.id,
+          };
+        }
+      }
+      setIsBdnbEnrichingForProspect(false);
+    }
+
     const savedSurfaces = loadProspectSurfaces(newProspect);
     if (savedSurfaces.length > 0) {
       const totalArea = savedSurfaces.reduce((sum, s) => sum + s.area, 0);
@@ -406,6 +487,8 @@ function SolarScoutContent() {
             currentProspect={prospect}
             searchResults={searchResults}
             onSearchResultClick={handleSearchResultClick}
+            onOsmPolygonClick={() => setSearchResults([])}
+            onOsmEnrichmentChange={setIsBdnbEnrichingForProspect}
             onGetMapCenter={handleGetMapCenter}
             onBdnbInfo={(info) => {
               setProspect((prev) => {
@@ -413,15 +496,17 @@ function SolarScoutContent() {
                 return { ...prev, anneeConstruction: info.anneeConstruction };
               });
             }}
+            osmBoundsToFetch={osmBoundsToFetch}
+            onGetMapBounds={handleGetMapBounds}
             onBdnbSurface={(bdnbSurfaces) => {
               // Mémoriser dans le ref pour que onProspectUpdate puisse les réinjecter
               pendingBdnbSurfacesRef.current = bdnbSurfaces && bdnbSurfaces.length > 0 ? bdnbSurfaces : null;
 
               setProspect((prev) => {
                 if (!prev) return prev;
-                // Surfaces manuelles = tout ce qui n'est pas préfixé "bdnb-"
+                // Surfaces manuelles = uniquement les surfaces dessinées (exclure bdnb- et osm-)
                 const manualSurfaces = (prev.roofSurfaces ?? []).filter(
-                  (s) => !s.id?.startsWith("bdnb-")
+                  (s) => !s.id?.startsWith("bdnb-") && !s.id?.startsWith("osm-")
                 );
                 if (!bdnbSurfaces || bdnbSurfaces.length === 0) {
                   // BDNB n'a rien retourné : garder uniquement les surfaces manuelles
@@ -570,8 +655,7 @@ function SolarScoutContent() {
           }}
           onSearchResultSelect={handleSearchResultClick}
           getMapCenter={getMapCenter}
-          // Debug: vérifier que getMapCenter est bien passé
-          // (on peut retirer ce log plus tard)
+          onAnalyseBuildings={handleAnalyseBuildings}
         />
       </div>
     </div>

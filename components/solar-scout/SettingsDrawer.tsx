@@ -6,7 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Image from "next/image";
-import { Plus, X, Zap, FileCheck, ArrowLeft, User, Building2 } from "lucide-react";
+import { Plus, X, Zap, FileCheck, ArrowLeft, User, Building2, MapPin } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -15,18 +15,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { usePanelReferences, useInverterReferences } from "@/lib/swr-hooks";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import {
-  getPanelReferencesFromFirebase,
   savePanelReferenceToFirebase,
   deletePanelReferenceFromFirebase,
-  initializePanelReferencesInFirebase,
 } from "@/lib/firestore-panel-references";
 import {
-  getInverterReferencesFromFirebase,
   saveInverterReferenceToFirebase,
   deleteInverterReferenceFromFirebase,
-  initializeInverterReferencesInFirebase,
 } from "@/lib/firestore-inverter-references";
 import {
   getPanelReferences,
@@ -37,6 +34,10 @@ import {
   saveSolarEquipmentSettings,
 } from "@/lib/solar-settings";
 import { getCommercialReferent, saveCommercialReferent } from "@/lib/commercial-mock";
+import { useAuth } from "@/lib/auth-context";
+import { getUserProfile } from "@/lib/firestore-user-profile";
+import { getQuotaDisplay } from "@/lib/usage-quotas";
+import { Badge } from "@/components/ui/badge";
 import { PanelReferenceForm, InverterReferenceForm } from "./Sidebar";
 import type { PanelReference, InverterReference, CommercialReferent } from "@/types";
 
@@ -45,10 +46,15 @@ interface SettingsDrawerProps {
 }
 
 export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
-  const [panelReferences, setPanelReferences] = useState<PanelReference[]>([]);
+  const { user } = useAuth();
+  const { data: panelsData, mutate: mutatePanels } = usePanelReferences();
+  const { data: invertersData, mutate: mutateInverters } = useInverterReferences();
+  const panelReferences = panelsData ?? [];
+  const inverterReferences = invertersData ?? [];
+
+  const [quotaDisplay, setQuotaDisplay] = useState<ReturnType<typeof getQuotaDisplay> | null>(null);
   const [showAddPanelRef, setShowAddPanelRef] = useState(false);
   const [editingRef, setEditingRef] = useState<PanelReference | null>(null);
-  const [inverterReferences, setInverterReferences] = useState<InverterReference[]>([]);
   const [showAddInverterRef, setShowAddInverterRef] = useState(false);
   const [editingInverterRef, setEditingInverterRef] = useState<InverterReference | null>(null);
   const [mainTab, setMainTab] = useState<"materiel" | "compte">("materiel");
@@ -56,85 +62,22 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
   const [accountInfo, setAccountInfo] = useState<CommercialReferent>(() => getCommercialReferent());
   const [usableRoofRatio, setUsableRoofRatio] = useState<number>(() => getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
 
-  // Charger les références de panneaux (Firebase en priorité, fallback localStorage)
-  useEffect(() => {
-    let cancelled = false;
-    getPanelReferencesFromFirebase()
-      .then(async (fromFirebase) => {
-        if (cancelled) return;
-        if (fromFirebase.length > 0) {
-          setPanelReferences(fromFirebase);
-          savePanelReferences(fromFirebase);
-        } else {
-          await initializePanelReferencesInFirebase().catch(() => {});
-          if (cancelled) return;
-          const afterInit = await getPanelReferencesFromFirebase();
-          if (afterInit.length > 0) {
-            setPanelReferences(afterInit);
-            savePanelReferences(afterInit);
-          } else {
-            const fromLocal = getPanelReferences();
-            if (fromLocal.length > 0) {
-              setPanelReferences(fromLocal);
-            }
-          }
-        }
-      })
-      .catch((e) => {
-        console.error("Erreur chargement références panneaux:", e);
-        if (cancelled) return;
-        const fromLocal = getPanelReferences();
-        if (fromLocal.length > 0) {
-          setPanelReferences(fromLocal);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Charger les références d'onduleur (Firebase en priorité, fallback localStorage)
-  useEffect(() => {
-    let cancelled = false;
-    getInverterReferencesFromFirebase()
-      .then(async (fromFirebase) => {
-        if (cancelled) return;
-        if (fromFirebase.length > 0) {
-          setInverterReferences(fromFirebase);
-          saveInverterReferences(fromFirebase);
-        } else {
-          await initializeInverterReferencesInFirebase().catch(() => {});
-          if (cancelled) return;
-          const afterInit = await getInverterReferencesFromFirebase();
-          if (afterInit.length > 0) {
-            setInverterReferences(afterInit);
-            saveInverterReferences(afterInit);
-          } else {
-            const fromLocal = getInverterReferences();
-            if (fromLocal.length > 0) {
-              setInverterReferences(fromLocal);
-            }
-          }
-        }
-      })
-      .catch((e) => {
-        console.error("Erreur chargement références onduleurs:", e);
-        if (cancelled) return;
-        const fromLocal = getInverterReferences();
-        if (fromLocal.length > 0) {
-          setInverterReferences(fromLocal);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // Charger les infos compte et paramètres au montage
   useEffect(() => {
     setAccountInfo(getCommercialReferent());
     setUsableRoofRatio(getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
   }, []);
+
+  // Charger profil et quotas quand l'utilisateur est connecté
+  useEffect(() => {
+    if (!user?.uid) {
+      setQuotaDisplay(null);
+      return;
+    }
+    getUserProfile(user.uid).then((profile) => {
+      setQuotaDisplay(getQuotaDisplay(profile));
+    });
+  }, [user?.uid]);
 
   const handleAccountChange = (field: keyof CommercialReferent, value: string | undefined) => {
     const next = { ...accountInfo, [field]: value ?? "" };
@@ -195,11 +138,10 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
             onDelete={(id) => {
               const next = panelReferences.filter((r) => r.id !== id);
               if (next.length === 0) return;
-              setPanelReferences(next);
               savePanelReferences(next);
-              deletePanelReferenceFromFirebase(id).catch((e) =>
-                console.error("Firebase delete panel ref:", e)
-              );
+              deletePanelReferenceFromFirebase(id)
+                .then(() => mutatePanels())
+                .catch((e) => console.error("Firebase delete panel ref:", e));
               setShowAddPanelRef(false);
               setEditingRef(null);
             }}
@@ -222,13 +164,10 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                 }
               }
               
-              setPanelReferences(updatedRefs);
               savePanelReferences(updatedRefs);
-              
-              Promise.all(updatedRefs.map(r => savePanelReferenceToFirebase(r))).catch((e) =>
-                console.error("Firebase save panel refs:", e)
-              );
-              
+              Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
+                .then(() => mutatePanels())
+                .catch((e) => console.error("Firebase save panel refs:", e));
               setShowAddPanelRef(false);
               setEditingRef(null);
             }}
@@ -245,11 +184,10 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
             onDelete={(id) => {
               const next = inverterReferences.filter((r) => r.id !== id);
               if (next.length === 0) return;
-              setInverterReferences(next);
               saveInverterReferences(next);
-              deleteInverterReferenceFromFirebase(id).catch((e) =>
-                console.error("Firebase delete inverter ref:", e)
-              );
+              deleteInverterReferenceFromFirebase(id)
+                .then(() => mutateInverters())
+                .catch((e) => console.error("Firebase delete inverter ref:", e));
               setShowAddInverterRef(false);
               setEditingInverterRef(null);
             }}
@@ -272,13 +210,10 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                 }
               }
               
-              setInverterReferences(updatedRefs);
               saveInverterReferences(updatedRefs);
-              
-              Promise.all(updatedRefs.map(r => saveInverterReferenceToFirebase(r))).catch((e) =>
-                console.error("Firebase save inverter refs:", e)
-              );
-              
+              Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
+                .then(() => mutateInverters())
+                .catch((e) => console.error("Firebase save inverter refs:", e));
               setShowAddInverterRef(false);
               setEditingInverterRef(null);
             }}
@@ -416,12 +351,10 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                               );
                             }
                             
-                            setPanelReferences(updatedRefs);
                             savePanelReferences(updatedRefs);
-                            
-                            Promise.all(updatedRefs.map(r => savePanelReferenceToFirebase(r))).catch((e) =>
-                              console.error("Firebase save panel refs:", e)
-                            );
+                            Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
+                              .then(() => mutatePanels())
+                              .catch((e) => console.error("Firebase save panel refs:", e));
                           }}
                           className="h-4 w-8"
                           thumbClassName="h-3 w-3 data-[state=checked]:translate-x-4"
@@ -517,12 +450,10 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                               );
                             }
                             
-                            setInverterReferences(updatedRefs);
                             saveInverterReferences(updatedRefs);
-                            
-                            Promise.all(updatedRefs.map(r => saveInverterReferenceToFirebase(r))).catch((e) =>
-                              console.error("Firebase save inverter refs:", e)
-                            );
+                            Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
+                              .then(() => mutateInverters())
+                              .catch((e) => console.error("Firebase save inverter refs:", e));
                           }}
                           className="h-4 w-8"
                           thumbClassName="h-3 w-3 data-[state=checked]:translate-x-4"
@@ -609,6 +540,54 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                     </div>
                   </div>
                 </div>
+
+                {/* Statut et quotas API */}
+                {user && (
+                  <div className="rounded-xl border border-border bg-white p-4 shadow-xs space-y-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium">Profil et quotas</span>
+                      {quotaDisplay && (
+                        <Badge variant={quotaDisplay.status === "admin" ? "default" : "outline"}>
+                          {quotaDisplay.status === "admin" && "Admin"}
+                          {quotaDisplay.status === "premium" && "Premium"}
+                          {quotaDisplay.status === "starter" && "Starter"}
+                          {quotaDisplay.status === "demo" && "Demo"}
+                        </Badge>
+                      )}
+                    </div>
+                    {quotaDisplay ? (
+                      <div className="space-y-3 text-sm">
+                        <div className="flex items-center gap-2">
+                          <MapPin className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-muted-foreground">BDNB :</span>
+                          <span>
+                            {quotaDisplay.bdnb.current}
+                            {quotaDisplay.bdnb.limit != null
+                              ? ` / ${quotaDisplay.bdnb.limit}`
+                              : " (illimité)"}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Building2 className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-muted-foreground">OSM :</span>
+                          <span>
+                            {quotaDisplay.osm.current}
+                            {quotaDisplay.osm.limit != null
+                              ? ` / ${quotaDisplay.osm.limit}`
+                              : " (illimité)"}
+                          </span>
+                        </div>
+                        {quotaDisplay.bdnb.resetAt && (
+                          <p className="text-xs text-muted-foreground">
+                            Reset : {new Date(quotaDisplay.bdnb.resetAt).toLocaleDateString("fr-FR")}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Chargement…</p>
+                    )}
+                  </div>
+                )}
               </TabsContent>
             </Tabs>
 

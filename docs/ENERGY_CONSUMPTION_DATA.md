@@ -57,6 +57,9 @@ Les valeurs sont basées sur :
 - **Gym / Fitness Center** : 250 kWh/m²/an
 - **Swimming Pool** : 400 kWh/m²/an (chauffage de l'eau)
 
+### Autres / Valeur par défaut
+- **Other** : 170 kWh/m²/an (bureau / magasin retail sans froid — éclairage, équipements, chauffage)
+
 ## Initialisation dans Firebase
 
 Pour initialiser les données dans Firebase, exécutez :
@@ -134,7 +137,7 @@ await updateEnergyConsumptionData("supermarket", {
    - L'âge et l'efficacité énergétique du bâtiment
    - Les heures d'ouverture
 
-2. **Valeurs par défaut** : Si un type de bâtiment n'est pas trouvé, la valeur par défaut est **150 kWh/m²/an** (catégorie "other")
+2. **Valeurs par défaut** : Si un type de bâtiment n'est pas trouvé, la valeur par défaut est **170 kWh/m²/an** (catégorie "other" — bureau/retail sans froid)
 
 3. **Sources** : Les données proviennent principalement de sources UK et US. Pour une application française, il serait recommandé d'utiliser des données ADEME (Agence de l'Environnement et de la Maîtrise de l'Énergie) si disponibles.
 

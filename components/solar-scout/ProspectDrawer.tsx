@@ -19,6 +19,7 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -32,17 +33,6 @@ import { toast } from "sonner";
 import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar } from "lucide-react";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { translatePlaceType } from "@/lib/place-types-translation";
-import {
-  Label,
-  PolarAngleAxis,
-  PolarGrid,
-  PolarRadiusAxis,
-  RadialBar,
-  RadialBarChart,
-} from "recharts";
-import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
-import { getProspectImageCenter } from "@/lib/geometry";
-import { SatelliteImage } from "./SatelliteImage";
 import { MonthlyProductionChart } from "./MonthlyProductionChart";
 import { surfaceToKwp, getUsableRoofAreaM2 } from "@/lib/surface-to-kwp";
 import {
@@ -58,6 +48,7 @@ import {
   getProductionFromPerKwp,
   getProductionPerKwpFromSolarPotential,
 } from "@/lib/pvgis";
+import { usePanelReferences, useInverterReferences } from "@/lib/swr-hooks";
 import {
   getPanelReferences,
   getCountryFlagUrl,
@@ -71,8 +62,6 @@ import {
   estimateEnergyBillEur,
   getBreakEvenYears,
 } from "@/lib/solar-settings";
-import { getPanelReferencesFromFirebase } from "@/lib/firestore-panel-references";
-import { getInverterReferencesFromFirebase } from "@/lib/firestore-inverter-references";
 import { fetchCompanyEnrichment, buildApiGouvSearchUrl } from "@/lib/recherche-entreprises";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { useAuth } from "@/lib/auth-context";
@@ -177,6 +166,8 @@ function PlaceTypeSelect({
 
 interface ProspectDrawerProps {
   prospect: Prospect | null;
+  /** Indique que le fetch BDNB est en cours (clic POI sans données pré-chargées) */
+  bdnbLoading?: boolean;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onAddToPipeline?: () => void;
@@ -192,6 +183,7 @@ interface ProspectDrawerProps {
 
 export function ProspectDrawer({
   prospect,
+  bdnbLoading = false,
   isOpen,
   onOpenChange,
   onAddToPipeline,
@@ -238,6 +230,9 @@ export function ProspectDrawer({
         if (cancelled || !enrichment || !onProspectUpdate) return;
         onProspectUpdate({
           ...prospect,
+          name: !prospect.name?.trim() && enrichment.companyLegalName
+            ? enrichment.companyLegalName
+            : prospect.name,
           siren: enrichment.siren ?? prospect.siren,
           siret: enrichment.siret ?? prospect.siret,
           companyLegalName: enrichment.companyLegalName ?? prospect.companyLegalName,
@@ -293,30 +288,20 @@ export function ProspectDrawer({
     };
   }, [isOpen, prospect?.name, prospect?.address, prospect?.coordinates?.lat, prospect?.coordinates?.lng]);
 
-  // Recharger les références de panneaux quand le drawer s'ouvre pour avoir les dernières dimensions
-  useEffect(() => {
-    if (!isOpen) return;
-    getPanelReferencesFromFirebase()
-      .then((refs) => {
-        const recommended = refs.find(r => r.recommended === true);
-        setUsedPanelRef(recommended ?? refs[0] ?? null);
-      })
-      .catch(() => {
-        const recommended = getRecommendedPanelReferenceSync();
-        setUsedPanelRef(recommended ?? getPanelReferences()[0] ?? null);
-      });
-  }, [isOpen]);
+  const { data: panelsData } = usePanelReferences();
+  const { data: invertersData } = useInverterReferences();
 
   useEffect(() => {
-    getInverterReferencesFromFirebase()
-      .then((refs) => {
-        const recommended = refs.find(r => r.recommended === true);
-        setUsedInverterRef(recommended ?? refs[0] ?? null);
-      })
-      .catch(() => {
-        setUsedInverterRef(getRecommendedInverterReferenceSync());
-      });
-  }, []);
+    if (!isOpen || !panelsData) return;
+    const recommended = panelsData.find((r) => r.recommended === true);
+    setUsedPanelRef(recommended ?? panelsData[0] ?? getPanelReferences()[0] ?? null);
+  }, [isOpen, panelsData]);
+
+  useEffect(() => {
+    if (!invertersData) return;
+    const recommended = invertersData.find((r) => r.recommended === true);
+    setUsedInverterRef(recommended ?? invertersData[0] ?? getRecommendedInverterReferenceSync());
+  }, [invertersData]);
 
   // Mettre à jour l'adresse et le mode de config quand le prospect change
   useEffect(() => {
@@ -807,68 +792,14 @@ export function ProspectDrawer({
             </>
           ) : prospect ? (
             <>
-              {/* Score + Image satellite sur la même ligne */}
+              {/* Score en tag */}
               <div className="flex gap-2">
-                {/* Score de qualité - radial */}
-                <div className="bg-gray-100 rounded-xl flex-1 min-w-0 flex flex-col items-center justify-center overflow-hidden py-1">
-                  <span className="text-[10px] uppercase tracking-wide text-gray-500 self-start pl-3">Score</span>
-                  <ChartContainer
-                    config={{
-                      score: { label: "Score", color: "hsl(var(--chart-2))" },
-                    } satisfies ChartConfig}
-                    className="aspect-square max-h-[140px] min-h-0! w-full max-w-[140px] h-[140px]"
-                  >
-                    <RadialBarChart
-                      data={[{ score: prospect.qualityScore }]}
-                      startAngle={90}
-                      endAngle={90 - 360}
-                      innerRadius={40}
-                      outerRadius={48}
-                    >
-                      <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
-                      <PolarGrid
-                        gridType="circle"
-                        radialLines={false}
-                        stroke="none"
-                        className="first:fill-muted last:fill-gray-100"
-                        polarRadius={[41, 49]}
-                      />
-                      <RadialBar dataKey="score" background fill="var(--chart-2)" />
-                      <PolarRadiusAxis tick={false} tickLine={false} axisLine={false}>
-                        <Label
-                          content={({ viewBox }) => {
-                            if (viewBox && "cx" in viewBox && "cy" in viewBox) {
-                              return (
-                                <text x={viewBox.cx} y={viewBox.cy} textAnchor="middle" dominantBaseline="central" className="fill-foreground text-xl font-bold">
-                                  {prospect.qualityScore}
-                                </text>
-                              );
-                            }
-                          }}
-                        />
-                      </PolarRadiusAxis>
-                    </RadialBarChart>
-                  </ChartContainer>
-                </div>
-
-                {/* Image satellite */}
-                {prospect.coordinates && (() => {
-                  const imageCenter = getProspectImageCenter(prospect);
-                  return (
-                <div className="flex-1 min-w-0 overflow-hidden rounded-xl min-h-[140px] flex">
-                  <SatelliteImage
-                    key={`sat-${imageCenter.lat.toFixed(4)}-${imageCenter.lng.toFixed(4)}`}
-                    coordinates={imageCenter}
-                    address={prospect.address}
-                    zoom={17}
-                    width={220}
-                    height={140}
-                    className="rounded-xl border-0 w-full h-full flex-1"
-                    showOverlays={false}
-                  />
-                </div>
-                  );
-                })()}
+                <Badge
+                  variant="secondary"
+                  className="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider bg-gray-100 text-gray-800 border-gray-200"
+                >
+                  Score {prospect.qualityScore}
+                </Badge>
               </div>
 
               <Tabs value={drawerTab} onValueChange={(v) => setDrawerTab(v as "prospect" | "projet")} className="w-full">
@@ -907,9 +838,11 @@ export function ProspectDrawer({
                     )}
                     </div>
 
-                    {/* Type + Surface + Année */}
-                    <div className="rounded-lg px-3 py-2 bg-white/10 flex gap-4">
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
+                    <Separator className="bg-white/20 my-2" />
+
+                    {/* Type | Surface | Année (séparateurs verticaux) */}
+                    <div className="rounded-lg px-3 py-2 bg-white/10 flex items-stretch gap-0">
+                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1">
                         <span className="text-[10px] uppercase tracking-wide text-white/60">Type</span>
                         <PlaceTypeSelect
                           variant="dark"
@@ -922,26 +855,52 @@ export function ProspectDrawer({
                           disabled={!onProspectUpdate}
                         />
                       </div>
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
+                      <Separator orientation="vertical" className="bg-white/20 h-auto my-1" />
+                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1">
                         <span className="text-[10px] uppercase tracking-wide text-white/60">Surface</span>
-                        <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
-                          {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0).toFixed(0)} m²
-                        </div>
+                        {bdnbLoading ? (
+                          <Skeleton className="h-6 w-12 bg-white/20 rounded" />
+                        ) : (
+                          <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
+                            {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0).toFixed(0)} m²
+                          </div>
+                        )}
                       </div>
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
+                      <Separator orientation="vertical" className="bg-white/20 h-auto my-1" />
+                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1">
                         <span className="text-[10px] uppercase tracking-wide text-white/60" title="Année de construction (BDNB)">Année</span>
-                        <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
-                          {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
-                        </div>
+                        {bdnbLoading ? (
+                          <Skeleton className="h-6 w-10 bg-white/20 rounded" />
+                        ) : (
+                          <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
+                            {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
+                          </div>
+                        )}
                       </div>
                     </div>
+
+                    <Separator className="bg-white/20 my-2" />
 
                     {/* Entreprise (api.gouv) */}
                     <div>
                       {companyEnrichmentLoading ? (
-                        <div className="flex items-center gap-2 text-xs text-white/70">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          <span>Recherche entreprise…</span>
+                        <div className="space-y-3 text-xs pt-3">
+                          <div className="flex items-center gap-4 min-w-0">
+                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
+                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                          </div>
+                          <div className="flex items-center gap-4 min-w-0">
+                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
+                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                          </div>
+                          <div className="flex items-center gap-4 min-w-0">
+                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
+                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                          </div>
+                          <div className="flex items-center gap-4 min-w-0">
+                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
+                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                          </div>
                         </div>
                       ) : prospect.siren || prospect.companyLegalName || prospect.companyManagerName || prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber ? (
                         <div className="space-y-3 text-xs pt-3">
@@ -1019,7 +978,7 @@ export function ProspectDrawer({
                           )}
                         </div>
                       ) : (
-                        <p className="text-xs text-white/60">Aucune entreprise trouvée</p>
+                        <p className="text-xs text-white/60">No data</p>
                       )}
                     </div>
 
@@ -1225,15 +1184,13 @@ export function ProspectDrawer({
                     return surfaces.map((surface, index) => {
                       const surfaceId = surface.id || `surface-${index}`;
                       const surfaceKwp = surfaceToKwp(surface.area);
-                      const usableArea = getUsableRoofAreaM2(surface.area);
-                      const panelCount = calculatePanelCount(usableArea, undefined, usedPanelRef ?? getRecommendedPanelReferenceSync());
                       return (
                         <div
                           key={surfaceId}
                           className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3"
                         >
                           <div className="shrink-0 flex items-center">
-                            <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
+                            <div className="w-2.5 h-2.5 rounded-full bg-[#E4FE55]" />
                           </div>
                           <div className="flex-1 min-w-0 flex flex-col justify-center">
                             <div className="font-semibold text-xs text-foreground">
@@ -1246,14 +1203,6 @@ export function ProspectDrawer({
                               <span className="text-muted-foreground/40 text-xs">|</span>
                               <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-600">
                                 {surfaceKwp.toFixed(2)} kWp
-                              </span>
-                              <span className="text-muted-foreground/40 text-xs">|</span>
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                {panelCount} panneaux
-                              </span>
-                              <span className="text-muted-foreground/40 text-xs">|</span>
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={surface.orientation != null ? "Écart au Sud (0° = face sud)" : "Orientation non calculée"}>
-                                {surface.orientation != null ? `${Math.abs(surface.orientation).toFixed(1)}°` : "—"}
                               </span>
                             </div>
                           </div>

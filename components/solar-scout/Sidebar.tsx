@@ -29,17 +29,16 @@ import { SatelliteImage } from "./SatelliteImage";
 import type { AddressCoordinates, PlaceSearchResult, PlaceSearchType, Prospect, SolarPanelType, InverterType, SolarEquipmentSettings, PanelReference, InverterReference } from "@/types";
 import { getPanelReferences, savePanelReferences, getInverterReferences, saveInverterReferences, PANEL_TYPE_CHARACTERISTICS, getCountryFlagUrl } from "@/lib/solar-settings";
 import {
-  getPanelReferencesFromFirebase,
   savePanelReferenceToFirebase,
   deletePanelReferenceFromFirebase,
   initializePanelReferencesInFirebase,
 } from "@/lib/firestore-panel-references";
 import {
-  getInverterReferencesFromFirebase,
   saveInverterReferenceToFirebase,
   deleteInverterReferenceFromFirebase,
   initializeInverterReferencesInFirebase,
 } from "@/lib/firestore-inverter-references";
+import { fetchWithAuth } from "@/lib/api-client";
 
 export function PanelReferenceForm({
   initialRef,
@@ -722,12 +721,14 @@ interface SidebarProps {
   onValidateDrawing?: () => void;
   searchResults?: PlaceSearchResult[];
   onSearchResults?: (results: PlaceSearchResult[]) => void;
-  onSearchResultSelect?: (result: PlaceSearchResult) => void;
+  onSearchResultSelect?: (result: PlaceSearchResult, bdnbData?: { surfaceM2?: number | null; anneeConstruction?: number | null; batiment?: { id: string; polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>; totalAreaM2: number; anneeConstruction: number | null } }) => void;
   getMapCenter?: () => AddressCoordinates | null;
+  /** Appelé quand l'utilisateur clique sur "Analyser les bâtiments" */
+  onAnalyseBuildings?: () => void;
 }
 
-export function Sidebar({ 
-  onAddressSelect, 
+export function Sidebar({
+  onAddressSelect,
   initialAddress,
   isDrawing = false,
   onDrawingChange,
@@ -738,7 +739,8 @@ export function Sidebar({
   searchResults = [],
   onSearchResults,
   onSearchResultSelect,
-  getMapCenter
+  getMapCenter,
+  onAnalyseBuildings,
 }: SidebarProps) {
   const [address, setAddress] = useState(initialAddress || ""); // Champ vide par défaut
   const inputRef = useRef<HTMLInputElement>(null);
@@ -750,9 +752,18 @@ export function Sidebar({
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // Données BDNB (surface, année) par placeId pour les résultats de recherche
+  // Données BDNB (surface, année, batiment complet) par placeId pour les résultats de recherche
   const [bdnbByPlaceId, setBdnbByPlaceId] = useState<
-    Record<string, { surfaceM2?: number | null; anneeConstruction?: number | null }>
+    Record<string, {
+      surfaceM2?: number | null;
+      anneeConstruction?: number | null;
+      batiment?: {
+        id: string;
+        polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>;
+        totalAreaM2: number;
+        anneeConstruction: number | null;
+      };
+    }>
   >({});
 
   const [panelType, setPanelType] = useState<SolarPanelType>("monocrystalline");
@@ -930,10 +941,15 @@ export function Sidebar({
     const fetchBdnbForResult = async (
       result: PlaceSearchResult,
       signal: AbortSignal
-    ): Promise<{ placeId: string; surfaceM2?: number | null; anneeConstruction?: number | null } | null> => {
+    ): Promise<{
+      placeId: string;
+      surfaceM2?: number | null;
+      anneeConstruction?: number | null;
+      batiment?: { id: string; polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>; totalAreaM2: number; anneeConstruction: number | null };
+    } | null> => {
       if (signal.aborted) return null;
       try {
-        const res = await fetch(
+        const res = await fetchWithAuth(
           `/api/bdnb?lat=${result.coordinates.lat}&lng=${result.coordinates.lng}`,
           { signal }
         );
@@ -944,7 +960,15 @@ export function Sidebar({
         }
         const surfaceM2 = data.batiment.totalAreaM2 ?? data.batiment.surfaceM2 ?? null;
         const anneeConstruction = data.batiment.anneeConstruction ?? null;
-        return { placeId: result.placeId, surfaceM2, anneeConstruction };
+        const batiment = data.batiment.polygonSurfaces?.length > 0
+          ? {
+              id: data.batiment.id,
+              polygonSurfaces: data.batiment.polygonSurfaces,
+              totalAreaM2: data.batiment.totalAreaM2 ?? 0,
+              anneeConstruction: data.batiment.anneeConstruction ?? null,
+            }
+          : undefined;
+        return { placeId: result.placeId, surfaceM2, anneeConstruction, batiment };
       } catch {
         if (signal.aborted) return null;
         return { placeId: result.placeId, surfaceM2: null, anneeConstruction: null };
@@ -968,6 +992,7 @@ export function Sidebar({
               out[item.placeId] = {
                 surfaceM2: item.surfaceM2 ?? null,
                 anneeConstruction: item.anneeConstruction ?? null,
+                batiment: item.batiment,
               };
             }
           }
@@ -996,6 +1021,17 @@ export function Sidebar({
 
   return (
     <div className="w-96 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+      {/* Bouton Analyser les bâtiments (affichage bleu OSM) - réactivable à chaque clic */}
+      {onAnalyseBuildings && (
+        <Button
+          variant="default"
+          size="sm"
+          onClick={onAnalyseBuildings}
+          className="w-full"
+        >
+          Analyser les bâtiments
+        </Button>
+      )}
       {/* Partie 1: Recherche avec onglets */}
       <Tabs defaultValue="address" className="w-full">
         <div className="mb-4 flex">
@@ -1118,7 +1154,7 @@ export function Sidebar({
                         <div
                           key={result.placeId}
                           className="rounded-xl px-3 py-2 bg-gray-100 cursor-pointer overflow-hidden transition-colors hover:bg-gray-200/80 flex items-center gap-3 min-h-[80px]"
-                          onClick={() => onSearchResultSelect?.(result)}
+                          onClick={() => onSearchResultSelect?.(result, bdnbByPlaceId[result.placeId])}
                         >
                           <div className="shrink-0 w-24 h-24 overflow-hidden rounded-xl">
                             <SatelliteImage 
@@ -1129,7 +1165,7 @@ export function Sidebar({
                               height={96}
                               showOverlays={false}
                               className="rounded-xl h-full"
-                              onClick={() => onSearchResultSelect?.(result)}
+                              onClick={() => onSearchResultSelect?.(result, bdnbByPlaceId[result.placeId])}
                             />
                           </div>
                           <div className="flex-1 min-w-0 pl-1 flex flex-col justify-center">

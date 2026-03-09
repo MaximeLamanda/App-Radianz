@@ -83,7 +83,7 @@ export function getEnergyConsumptionForHour(
   hour0to23: number
 ): number {
   const data = getBuildingEnergyData(googlePlaceType);
-  const annualPerM2 = data?.consumptionKwhPerM2 ?? 150;
+  const annualPerM2 = data?.consumptionKwhPerM2 ?? 170;
   const dailyPerM2 = annualPerM2 / 365;
   const h = Math.max(0, Math.min(23, Math.floor(hour0to23)));
   const fraction = HOURLY_CONSUMPTION_PROFILE[h] ?? 1 / 24;
@@ -96,7 +96,7 @@ export function getEnergyConsumptionForHour(
 export function getHourlyConsumptionProfileKwhPerM2(googlePlaceType: string): number[] {
   const data = getBuildingEnergyData(googlePlaceType);
   if (data?.consumptionKwhPerM2PerHours?.length === 24) return data.consumptionKwhPerM2PerHours;
-  const annualPerM2 = data?.consumptionKwhPerM2 ?? 150;
+  const annualPerM2 = data?.consumptionKwhPerM2 ?? 170;
   return annualToHourlyBreakdown(annualPerM2);
 }
 
@@ -353,10 +353,10 @@ const RAW_BUILDING_ENERGY_DATA: Omit<
   {
     googlePlaceType: "other",
     category: "other",
-    consumptionKwhPerM2: 150,
-    consumptionKwhPerM2PerMonth: monthlyFromAnnual(150),
-    source: "Moyenne générale",
-    notes: "Valeur par défaut pour types non spécifiés"
+    consumptionKwhPerM2: 170,
+    consumptionKwhPerM2PerMonth: monthlyFromAnnual(170),
+    source: "UK BEES Survey 2024 - Moyenne bureau/retail sans froid",
+    notes: "Bureau / magasin retail sans réfrigération (éclairage, équipements, chauffage). Valeur par défaut pour types non spécifiés"
   }
 ];
 
@@ -381,7 +381,7 @@ export function getEnergyConsumption(googlePlaceType: string): number {
   const defaultData = BUILDING_ENERGY_CONSUMPTION_DATA.find(
     (data) => data.googlePlaceType === "other"
   );
-  return defaultData?.consumptionKwhPerM2 || 150;
+  return defaultData?.consumptionKwhPerM2 || 170;
 }
 
 /**
@@ -395,7 +395,7 @@ export function getEnergyConsumptionMonthly(googlePlaceType: string): number {
   const defaultData = BUILDING_ENERGY_CONSUMPTION_DATA.find(
     (data) => data.googlePlaceType === "other"
   );
-  return defaultData?.consumptionKwhPerM2PerMonth ?? 12.5;
+  return defaultData?.consumptionKwhPerM2PerMonth ?? 14.2;
 }
 
 /**
@@ -443,9 +443,14 @@ export function getBuildingEnergyData(googlePlaceType: string): BuildingEnergyCo
   );
   if (exact) return exact;
   const canonical = normalizePlaceTypeForConsumption(googlePlaceType);
-  return BUILDING_ENERGY_CONSUMPTION_DATA.find(
+  const canonicalMatch = BUILDING_ENERGY_CONSUMPTION_DATA.find(
     (data) => data.googlePlaceType === canonical
-  ) || null;
+  );
+  if (canonicalMatch) return canonicalMatch;
+  // Pour les types inconnus (ex: "health"), utiliser "other" avec son profil complet (mensuel + horaire)
+  return BUILDING_ENERGY_CONSUMPTION_DATA.find(
+    (data) => data.googlePlaceType === "other"
+  ) ?? null;
 }
 
 /**
@@ -461,7 +466,7 @@ export function getEnergyConsumptionForMonth(
   if (data?.consumptionKwhPerM2ByMonth?.length === 12) {
     return data.consumptionKwhPerM2ByMonth[monthIndex] ?? data.consumptionKwhPerM2PerMonth;
   }
-  return data?.consumptionKwhPerM2PerMonth ?? 12.5;
+  return data?.consumptionKwhPerM2PerMonth ?? 14.2;
 }
 
 /**
@@ -472,7 +477,7 @@ export function getAverageConsumptionByCategory(category: string): number {
     (data) => data.category === category
   );
   
-  if (categoryData.length === 0) return 150;
+  if (categoryData.length === 0) return 170;
   
   const total = categoryData.reduce((sum, data) => sum + data.consumptionKwhPerM2, 0);
   return Math.round(total / categoryData.length);

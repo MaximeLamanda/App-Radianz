@@ -10,7 +10,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2 } from "lucide-react";
-import { getProspectByShareToken } from "@/lib/firestore";
+import {
+  usePanelReferences,
+  useInverterReferences,
+  useProspectByShareToken,
+} from "@/lib/swr-hooks";
 import { getProspectImageCenter } from "@/lib/geometry";
 import { SatelliteImage } from "@/components/solar-scout/SatelliteImage";
 import { translatePlaceType } from "@/lib/place-types-translation";
@@ -29,8 +33,6 @@ import {
   surfaceToKwp,
   getUsableRoofAreaM2,
 } from "@/lib/surface-to-kwp";
-import { getPanelReferencesFromFirebase } from "@/lib/firestore-panel-references";
-import { getInverterReferencesFromFirebase } from "@/lib/firestore-inverter-references";
 import {
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
@@ -49,41 +51,26 @@ import { toast } from "sonner";
 export default function ProspectSharePage() {
   const params = useParams();
   const { user } = useAuth();
-  const shareToken = params?.shareToken as string;
-  const [prospect, setProspect] = useState<Prospect | null>(null);
-  const [loading, setLoading] = useState(true);
+  const shareToken = (params?.shareToken as string) ?? null;
+  const { data: prospectData } = useProspectByShareToken(shareToken);
+  const { data: panelsData } = usePanelReferences();
+  const { data: invertersData } = useInverterReferences();
+
+  const prospect = prospectData ?? null;
+  const loading = prospectData === undefined && shareToken != null;
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
-  const [usedPanelRef, setUsedPanelRef] = useState<PanelReference | null>(null);
-  const [usedInverterRef, setUsedInverterRef] = useState<InverterReference | null>(null);
   const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
-  useEffect(() => {
-    if (!shareToken) return;
-    getProspectByShareToken(shareToken).then((p) => {
-      setProspect(p ?? null);
-      if (p?.configurationMode) setConfigurationMode(p.configurationMode);
-      if (p?.annualConsumptionKwhOverride != null) setAnnualConsumptionOverride(p.annualConsumptionKwhOverride);
-      setLoading(false);
-    });
-  }, [shareToken]);
+
+  const usedPanelRef =
+    panelsData?.find((r) => r.recommended) ?? panelsData?.[0] ?? getRecommendedPanelReferenceSync();
+  const usedInverterRef =
+    invertersData?.find((r) => r.recommended) ?? invertersData?.[0] ?? getRecommendedInverterReferenceSync();
 
   useEffect(() => {
-    getPanelReferencesFromFirebase()
-      .then((refs) => {
-        const recommended = refs.find((r) => r.recommended);
-        setUsedPanelRef(recommended ?? refs[0] ?? null);
-      })
-      .catch(() => setUsedPanelRef(getRecommendedPanelReferenceSync()));
-  }, []);
-
-  useEffect(() => {
-    getInverterReferencesFromFirebase()
-      .then((refs) => {
-        const recommended = refs.find((r) => r.recommended);
-        setUsedInverterRef(recommended ?? refs[0] ?? null);
-      })
-      .catch(() => setUsedInverterRef(getRecommendedInverterReferenceSync()));
-  }, []);
+    if (prospect?.configurationMode) setConfigurationMode(prospect.configurationMode);
+    if (prospect?.annualConsumptionKwhOverride != null) setAnnualConsumptionOverride(prospect.annualConsumptionKwhOverride);
+  }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride]);
 
   /** production = productionPerKwp × kWp. kWp = surfaceToKwp(surface). */
   const effectiveConfig = useMemo(() => {

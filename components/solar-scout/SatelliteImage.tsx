@@ -76,7 +76,7 @@ export function SatelliteImage({
 
   if (!imageUrl) {
     return (
-      <div className={`flex h-48 w-full items-center justify-center rounded-md bg-gray-200 ${className}`}>
+      <div className={`flex w-full items-center justify-center rounded-md bg-gray-200 ${className}`} style={{ height: `${height}px` }}>
         <p className="text-center text-sm text-gray-500">Clé API manquante (Google ou Mapbox)</p>
       </div>
     );
@@ -84,7 +84,7 @@ export function SatelliteImage({
 
   if (hasError) {
     return (
-      <div className={`flex h-48 w-full items-center justify-center rounded-md bg-gray-200 ${className}`}>
+      <div className={`flex w-full items-center justify-center rounded-md bg-gray-200 ${className}`} style={{ height: `${height}px` }}>
         <div className="flex flex-col items-center gap-2 px-4 text-center">
           <AlertCircle className="h-8 w-8 text-red-500" />
           <p className="text-sm font-medium text-red-600">Aperçu carte indisponible</p>
@@ -102,7 +102,8 @@ export function SatelliteImage({
 
   return (
     <div
-      className={`relative h-48 w-full overflow-hidden rounded-md border border-gray-200 ${className}`}
+      className={`relative w-full overflow-hidden rounded-md border border-gray-200 ${className}`}
+      style={className.includes("h-full") ? undefined : { height: `${height}px` }}
       onClick={onClick}
       role="button"
       tabIndex={0}

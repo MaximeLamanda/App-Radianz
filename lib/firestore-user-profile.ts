@@ -6,13 +6,22 @@
  *   firebase deploy --only firestore:rules
  */
 
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, increment } from "firebase/firestore";
 import { db } from "./firebase";
+import type { ProfileStatus } from "@/types";
 
 export interface UserProfile {
   phone?: string;
   firstName?: string;
   lastName?: string;
+  /** Nombre de requêtes BDNB dans la période courante (mois ou jour selon statut) */
+  bdnbRequestCount?: number;
+  /** Statut du profil : admin, premium, starter, demo. Défaut: starter */
+  status?: ProfileStatus;
+  /** Nombre de requêtes OSM dans la période courante (mois ou jour selon statut) */
+  osmRequestCount?: number;
+  /** Début de la période courante (réinitialisation mensuelle ou quotidienne selon statut) */
+  creditsResetAt?: { seconds: number; nanoseconds: number };
 }
 
 const COLLECTION = "users";
@@ -55,5 +64,33 @@ export async function setUserProfile(uid: string, data: Partial<UserProfile>): P
       throw new Error("Règles Firestore non déployées. Exécutez : firebase deploy --only firestore:rules");
     }
     throw error;
+  }
+}
+
+/** Incrémente le compteur de requêtes BDNB pour l'utilisateur (fire-and-forget, ne bloque pas l'UI) */
+export async function incrementBdnbRequestCount(uid: string): Promise<void> {
+  try {
+    const ref = doc(db, COLLECTION, uid);
+    await setDoc(ref, { bdnbRequestCount: increment(1) }, { merge: true });
+  } catch (error) {
+    if (isPermissionError(error)) {
+      console.warn("[BDNB] Incrément compteur: règles Firestore ou accès refusé");
+    } else {
+      console.warn("[BDNB] Incrément compteur:", error);
+    }
+  }
+}
+
+/** Incrémente le compteur de requêtes OSM pour l'utilisateur (fire-and-forget, ne bloque pas l'UI) */
+export async function incrementOsmRequestCount(uid: string): Promise<void> {
+  try {
+    const ref = doc(db, COLLECTION, uid);
+    await setDoc(ref, { osmRequestCount: increment(1) }, { merge: true });
+  } catch (error) {
+    if (isPermissionError(error)) {
+      console.warn("[OSM] Incrément compteur: règles Firestore ou accès refusé");
+    } else {
+      console.warn("[OSM] Incrément compteur:", error);
+    }
   }
 }
