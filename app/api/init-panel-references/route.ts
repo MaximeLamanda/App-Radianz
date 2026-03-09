@@ -5,6 +5,8 @@ import {
   savePanelReferenceToFirebase,
 } from "@/lib/firestore-panel-references";
 
+export const dynamic = "force-dynamic";
+
 /** Dimensions cible du panneau en mm, converties en m pour Firestore */
 const PANEL_WIDTH_MM = 1762;
 const PANEL_LENGTH_MM = 1134;
