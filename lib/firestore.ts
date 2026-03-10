@@ -160,7 +160,7 @@ export async function addProspectToPipeline(
 ): Promise<string> {
   try {
     const prospectData = prepareProspectForFirestore(prospect, options, userId);
-    const cleanData = stripUndefinedDeep(prospectData) as Record<string, unknown>;
+    const cleanData = stripUndefinedDeep(prospectData) as unknown as Record<string, unknown>;
 
     const docRef = await addDoc(collection(db, "prospects"), cleanData);
     return docRef.id;
