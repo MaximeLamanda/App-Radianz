@@ -230,9 +230,6 @@ export function ProspectDrawer({
         if (cancelled || !enrichment || !onProspectUpdate) return;
         onProspectUpdate({
           ...prospect,
-          name: !prospect.name?.trim() && enrichment.companyLegalName
-            ? enrichment.companyLegalName
-            : prospect.name,
           siren: enrichment.siren ?? prospect.siren,
           siret: enrichment.siret ?? prospect.siret,
           companyLegalName: enrichment.companyLegalName ?? prospect.companyLegalName,
@@ -694,7 +691,7 @@ export function ProspectDrawer({
     const perKwp = getProductionPerKwpFromSolarPotential(prospect?.solarPotential, legacyKwp);
 
     if (!prospect || surfaceM2 <= 0 || !panelRef || !perKwp) {
-      return { perfectFit: { panelCount: 0, inverterCount: 0 }, highestProduction: { panelCount: 0, inverterCount: 0 } };
+      return { perfectFit: { panelCount: 0, inverterCount: 0, kwp: 0 }, highestProduction: { panelCount: 0, inverterCount: 0, kwp: 0 } };
     }
 
     const fullKwp = surfaceToKwp(surfaceM2, undefined, undefined, panelRef);
@@ -719,8 +716,8 @@ export function ProspectDrawer({
     const perfectFitInverterCount = calculateInverterCount(cappedKwp, inverterRef);
 
     const config = {
-      perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount },
-      highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount },
+      perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount, kwp: cappedKwp },
+      highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount, kwp: fullKwp },
     };
     if (process.env.NODE_ENV === "development") {
       console.log("[Production]", {
@@ -796,7 +793,7 @@ export function ProspectDrawer({
               <div className="flex gap-2">
                 <Badge
                   variant="secondary"
-                  className="inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider bg-gray-100 text-gray-800 border-gray-200"
+                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-wider bg-gray-100 text-gray-800 border-gray-200 h-5"
                 >
                   Score {prospect.qualityScore}
                 </Badge>
@@ -1200,10 +1197,6 @@ export function ProspectDrawer({
                               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                                 {surface.area.toFixed(2)} m²
                               </span>
-                              <span className="text-muted-foreground/40 text-xs">|</span>
-                              <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-600">
-                                {surfaceKwp.toFixed(2)} kWp
-                              </span>
                             </div>
                           </div>
                           {/* Bouton de suppression */}
@@ -1289,16 +1282,19 @@ export function ProspectDrawer({
                     }`}
                   >
                     <div className="text-sm font-semibold text-foreground">Perfect fit</div>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
+                    <div className="text-xs font-mono font-medium text-blue-600 mt-0.5">
+                      {choiceCardsConfig.perfectFit.kwp.toFixed(2)} kWp
+                    </div>
+                    <div className="flex flex-wrap gap-1 mt-2">
                       <Badge
                         variant="secondary"
-                        className={`text-xs font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
+                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
                       >
                         {choiceCardsConfig.perfectFit.panelCount} panneaux
                       </Badge>
                       <Badge
                         variant="secondary"
-                        className={`text-xs font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
+                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
                       >
                         {choiceCardsConfig.perfectFit.inverterCount} onduleur{choiceCardsConfig.perfectFit.inverterCount > 1 ? "s" : ""}
                       </Badge>
@@ -1314,16 +1310,19 @@ export function ProspectDrawer({
                     }`}
                   >
                     <div className="text-sm font-semibold text-foreground">Highest production</div>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
+                    <div className="text-xs font-mono font-medium text-blue-600 mt-0.5">
+                      {choiceCardsConfig.highestProduction.kwp.toFixed(2)} kWp
+                    </div>
+                    <div className="flex flex-wrap gap-1 mt-2">
                       <Badge
                         variant="secondary"
-                        className={`text-xs font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
+                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
                       >
                         {choiceCardsConfig.highestProduction.panelCount} panneaux
                       </Badge>
                       <Badge
                         variant="secondary"
-                        className={`text-xs font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
+                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
                       >
                         {choiceCardsConfig.highestProduction.inverterCount} onduleur{choiceCardsConfig.highestProduction.inverterCount > 1 ? "s" : ""}
                       </Badge>

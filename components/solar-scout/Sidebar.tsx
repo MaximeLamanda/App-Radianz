@@ -19,9 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import Image from "next/image";
-import { Search, Plus, Loader2, MapPin, X, Trash2, Zap, FileCheck, MoreVertical, Pencil, ImagePlus, ArrowLeft } from "lucide-react";
+import { Search, Plus, Loader2, MapPin, X, Trash2, Zap, FileCheck, MoreVertical, Pencil, ImagePlus, ArrowLeft, Building2 } from "lucide-react";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import { searchPlacesByType } from "@/lib/places-search";
@@ -725,6 +724,8 @@ interface SidebarProps {
   getMapCenter?: () => AddressCoordinates | null;
   /** Appelé quand l'utilisateur clique sur "Analyser les bâtiments" */
   onAnalyseBuildings?: () => void;
+  /** Chargement en cours de l'analyse OSM des bâtiments */
+  isAnalysingBuildings?: boolean;
 }
 
 export function Sidebar({
@@ -741,6 +742,7 @@ export function Sidebar({
   onSearchResultSelect,
   getMapCenter,
   onAnalyseBuildings,
+  isAnalysingBuildings = false,
 }: SidebarProps) {
   const [address, setAddress] = useState(initialAddress || ""); // Champ vide par défaut
   const inputRef = useRef<HTMLInputElement>(null);
@@ -748,7 +750,8 @@ export function Sidebar({
   
   // États pour la recherche par type
   const [selectedPlaceType, setSelectedPlaceType] = useState<PlaceSearchType | "">("");
-  const [selectedDistance, setSelectedDistance] = useState<number[]>([1000]);
+  const DISTANCE_OPTIONS = [1000, 2000, 5000, 10000, 20000] as const;
+  const [selectedDistance, setSelectedDistance] = useState<number>(1000);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
@@ -891,7 +894,7 @@ export function Sidebar({
       return;
     }
 
-    if (!getMapCenter || typeof getMapCenter !== 'function') {
+    if (!getMapCenter || typeof getMapCenter !== "function") {
       setSearchError("La fonction de récupération du centre de la carte n'est pas disponible");
       return;
     }
@@ -900,24 +903,16 @@ export function Sidebar({
     setSearchError(null);
 
     try {
-      // Obtenir le centre de la carte actuelle en utilisant la méthode native getCenter()
       const coordinates = getMapCenter();
-
       if (!coordinates) {
-        console.error("[Sidebar] ERREUR: coordinates est null ou undefined");
         throw new Error("Impossible d'obtenir le centre de la carte");
       }
-      
       if (!coordinates.lat || !coordinates.lng) {
-        console.error("[Sidebar] ERREUR: coordinates n'a pas lat ou lng:", coordinates);
         throw new Error("Coordonnées invalides obtenues du centre de la carte");
       }
-      
 
-      // Rechercher les lieux
-      const radius = selectedDistance[0];
+      const radius = selectedDistance;
       const results = await searchPlacesByType(coordinates, selectedPlaceType as PlaceSearchType, radius);
-      
       if (onSearchResults) {
         onSearchResults(results);
       }
@@ -1020,31 +1015,62 @@ export function Sidebar({
 
 
   return (
-    <div className="w-96 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
-      {/* Bouton Analyser les bâtiments (affichage bleu OSM) - réactivable à chaque clic */}
-      {onAnalyseBuildings && (
-        <Button
-          variant="default"
-          size="sm"
-          onClick={onAnalyseBuildings}
-          className="w-full"
-        >
-          Analyser les bâtiments
-        </Button>
-      )}
-      {/* Partie 1: Recherche avec onglets */}
-      <Tabs defaultValue="address" className="w-full">
+    <div className="w-80 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+      <Tabs defaultValue={onAnalyseBuildings ? "analyser" : "recherche"} className="w-full">
         <div className="mb-4 flex">
-          <TabsList className="grid grid-cols-2 gap-1 rounded-xl p-1 h-auto! w-48">
-            <TabsTrigger value="address" className="rounded-lg px-3 py-1 text-xs">Par adresse</TabsTrigger>
-            <TabsTrigger value="type" className="rounded-lg px-3 py-1 text-xs">Par type</TabsTrigger>
+          <TabsList className={`grid gap-1 rounded-xl p-1 h-auto! w-48 ${onAnalyseBuildings ? "grid-cols-2" : "grid-cols-1"}`}>
+            {onAnalyseBuildings && (
+              <TabsTrigger value="analyser" className="rounded-lg px-3 py-1 text-xs">Analyser</TabsTrigger>
+            )}
+            <TabsTrigger value="recherche" className="rounded-lg px-3 py-1 text-xs">Recherche</TabsTrigger>
           </TabsList>
         </div>
-            
-            {/* Onglet Recherche par adresse */}
-            <TabsContent value="address" className="mt-0">
-              <Card>
-                <CardContent className="p-4">
+
+            {/* Onglet Analyser : même structure que Recherche, zone insights */}
+            {onAnalyseBuildings && (
+              <TabsContent value="analyser" className="mt-0">
+                <Card className="rounded-xl">
+                  <CardContent className="space-y-4 p-4">
+                    {/* Zone réservée : insights sur les bâtiments analysés */}
+                    <div className="rounded-xl border border-dashed border-muted-foreground/25 bg-muted/30 min-h-[140px] flex flex-col items-center justify-center p-4 text-center">
+                      <div className="rounded-full bg-muted/60 p-3 mb-3">
+                        <Building2 className="h-6 w-6 text-muted-foreground" />
+                      </div>
+                      <p className="text-sm font-medium text-foreground mb-1">Insights bâtiments</p>
+                      <p className="text-xs text-muted-foreground max-w-[260px]">
+                        Statistiques et insights sur les bâtiments sélectionnés — affichés après l&apos;analyse.
+                      </p>
+                    </div>
+
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={onAnalyseBuildings}
+                      disabled={isAnalysingBuildings}
+                      className="w-full cursor-pointer relative overflow-hidden disabled:opacity-100 disabled:bg-[#b8d93d] disabled:text-[#0f0f0f] disabled:hover:bg-[#b8d93d]"
+                    >
+                      {isAnalysingBuildings ? (
+                        <>
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                          <span>Analyse en cours…</span>
+                          <div className="absolute inset-x-0 bottom-0 h-0.5 bg-white/30 overflow-hidden rounded-b-xl">
+                            <div className="h-full w-1/4 bg-white/90 animate-[progress-slide_1.5s_ease-in-out_infinite]" />
+                          </div>
+                        </>
+                      ) : (
+                        "Analyser les bâtiments"
+                      )}
+                    </Button>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            )}
+
+            {/* Onglet Recherche : adresse en premier, par type en dessous (une seule carte) */}
+            <TabsContent value="recherche" className="mt-0">
+              <Card className="rounded-xl">
+                <CardContent className="space-y-4 p-4">
+                  {/* Par adresse */}
                   <InputGroup>
                     <InputGroupInput
                       ref={inputRef}
@@ -1075,16 +1101,9 @@ export function Sidebar({
                       <Search className="h-4 w-4" />
                     </InputGroupAddon>
                   </InputGroup>
-                </CardContent>
-              </Card>
-            </TabsContent>
 
-            {/* Onglet Recherche par type */}
-            <TabsContent value="type" className="mt-0">
-              <Card className="rounded-xl">
-                <CardContent className="space-y-4 p-4">
+                  {/* Par type */}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Type de lieu</label>
                     <Select value={selectedPlaceType} onValueChange={(value) => setSelectedPlaceType(value as PlaceSearchType)}>
                       <SelectTrigger>
                         <SelectValue placeholder="Sélectionnez un type de lieu" />
@@ -1099,28 +1118,30 @@ export function Sidebar({
                     </Select>
                   </div>
 
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium">Distance</label>
-                      <span className="text-sm text-muted-foreground">
-                        {selectedDistance[0] >= 1000 
-                          ? `${(selectedDistance[0] / 1000).toFixed(selectedDistance[0] % 1000 === 0 ? 0 : 1)} km`
-                          : `${selectedDistance[0]} m`}
-                      </span>
-                    </div>
-                    <Slider
-                      value={selectedDistance}
-                      onValueChange={setSelectedDistance}
-                      min={500}
-                      max={10000}
-                      step={100}
-                      className="w-full"
-                    />
+                  <div className="flex flex-wrap gap-2">
+                    {DISTANCE_OPTIONS.map((d) => {
+                      const label = d >= 1000 ? `${d / 1000} km` : `${d} m`;
+                      const isSelected = selectedDistance === d;
+                      return (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setSelectedDistance(d)}
+                          className={`cursor-pointer rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+                            isSelected
+                              ? "border-0 bg-[#E4FE55] text-[#171717]"
+                              : "border-0 bg-muted/60 text-muted-foreground hover:bg-muted/80"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
                   </div>
 
                   <Button 
                     onClick={handleSearchByType} 
-                    className="w-full"
+                    className="w-full cursor-pointer"
                     disabled={isSearching || !selectedPlaceType}
                   >
                     {isSearching ? (
@@ -1199,7 +1220,7 @@ export function Sidebar({
                 </CardContent>
               </Card>
             </TabsContent>
-        </Tabs>
+      </Tabs>
 
     </div>
   );

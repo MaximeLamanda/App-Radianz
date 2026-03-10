@@ -11,8 +11,8 @@ const EXCLUDED_TYPES = new Set([
   "political",
 ]);
 
-/** Rayon minimum en mètres pour Nearby Search */
-const MIN_RADIUS_M = 30;
+/** Rayon minimum en mètres pour Nearby Search (inclut POI proches du bâtiment) */
+const MIN_RADIUS_M = 100;
 
 /**
  * Calcule la distance Haversine entre deux points en mètres.
@@ -120,18 +120,28 @@ export async function searchPoiForPolygon(
   centroid: AddressCoordinates,
   polygon: Array<{ lat: number; lng: number }>
 ): Promise<PoiNearPolygonResult | null> {
-  if (!window.google?.maps?.places) return null;
+  const maps = window.google?.maps;
+  if (!maps) return null;
 
-  const maps = window.google.maps;
+  let places = maps.places;
+  if (!places) {
+    try {
+      places = await (maps as any).importLibrary?.("places");
+    } catch {
+      return null;
+    }
+  }
+  if (!places?.PlacesService) return null;
+
   let service: google.maps.places.PlacesService;
   try {
-    service = new maps.places.PlacesService(document.createElement("div"));
+    service = new places.PlacesService(document.createElement("div"));
   } catch {
     return null;
   }
 
   const diagonal = polygonBoundingBoxDiagonalMeters(polygon);
-  const radius = Math.max(diagonal / 2, MIN_RADIUS_M);
+  const radius = Math.max(diagonal * 1.5, MIN_RADIUS_M);
 
   return new Promise((resolve) => {
     const request: google.maps.places.PlaceSearchRequest = {
@@ -141,7 +151,7 @@ export async function searchPoiForPolygon(
     };
 
     service.nearbySearch(request, (results, status) => {
-      if (status !== maps.places.PlacesServiceStatus.OK || !results?.length) {
+      if (status !== places!.PlacesServiceStatus.OK || !results?.length) {
         resolve(null);
         return;
       }

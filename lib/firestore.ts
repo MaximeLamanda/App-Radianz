@@ -29,6 +29,21 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   ) as Partial<T>;
 }
 
+/** Retire récursivement les champs undefined (Firestore les rejette). */
+function stripUndefinedDeep<T>(value: T): T {
+  if (value === undefined || value === null) return value;
+  if (value instanceof Timestamp || value instanceof Date) return value;
+  if (Array.isArray(value)) return value.map(stripUndefinedDeep) as T;
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, stripUndefinedDeep(v)])
+    ) as T;
+  }
+  return value;
+}
+
 /**
  * Récupère un prospect par son placeId Google (si déjà enregistré dans le pipeline).
  * Si options.name ou options.address sont fournis, le prospect n’est retourné que si
@@ -145,8 +160,9 @@ export async function addProspectToPipeline(
 ): Promise<string> {
   try {
     const prospectData = prepareProspectForFirestore(prospect, options, userId);
+    const cleanData = stripUndefinedDeep(prospectData) as Record<string, unknown>;
 
-    const docRef = await addDoc(collection(db, "prospects"), prospectData);
+    const docRef = await addDoc(collection(db, "prospects"), cleanData);
     return docRef.id;
   } catch (error) {
     console.error("Erreur lors de l'ajout du prospect:", error);
@@ -172,18 +188,13 @@ export async function createLeadFromProspect(
 
     const prospectData = prospectDoc.data() as { qualityScore: number; thumbnailUrl?: string };
     
-    const leadData: Omit<Lead, "id"> = {
+    const docRef = await addDoc(collection(db, "leads"), {
       prospectId,
       name,
       qualityScore: prospectData.qualityScore,
-      contactName,
-      thumbnailUrl: prospectData.thumbnailUrl,
-      createdAt: new Date(),
-    };
-
-    const docRef = await addDoc(collection(db, "leads"), {
-      ...leadData,
       createdAt: Timestamp.now(),
+      ...(contactName != null && { contactName }),
+      ...(prospectData.thumbnailUrl != null && { thumbnailUrl: prospectData.thumbnailUrl }),
     });
     
     return docRef.id;

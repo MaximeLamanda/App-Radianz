@@ -219,7 +219,6 @@ export default function ProspectSharePage() {
   const imageCenter = getProspectImageCenter(prospect);
   const commercialReferent = prospect.commercialReferent;
   const isOwner = Boolean(user && prospect.userId === user.uid);
-  const isAdminView = Boolean(user);
 
   const copyShareLink = () => {
     const url = typeof window !== "undefined" ? window.location.href : "";
@@ -233,8 +232,8 @@ export default function ProspectSharePage() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <div className="max-w-7xl mx-auto p-4 sm:p-5 flex flex-col flex-1 min-h-0 w-full gap-4">
-        {/* Barre admin : visible uniquement pour les utilisateurs connectés */}
-        {isAdminView && (
+        {/* Barre admin : visible uniquement pour le compte ayant généré la page */}
+        {isOwner && (
           <div className="flex items-center justify-between shrink-0">
             <Button variant="secondary" size="icon" className="h-9 w-9 shrink-0" asChild>
               <Link href="/" title="Retour" aria-label="Retour">

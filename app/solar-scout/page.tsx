@@ -66,6 +66,7 @@ function SolarScoutContent() {
   const { isDrawerOpen, setIsDrawerOpen, setDrawerContent } = useDrawer();
   const [isDrawing, setIsDrawing] = useState(false);
   const [osmBoundsToFetch, setOsmBoundsToFetch] = useState<{ ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null>(null);
+  const [isAnalysingBuildings, setIsAnalysingBuildings] = useState(false);
   const [getMapBoundsFunc, setGetMapBoundsFunc] = useState<(() => { ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null) | null>(null);
 
   // À la fermeture du drawer : retirer prospectId de l'URL (sans recharger) mais garder le prospect/polygone sélectionné sur la carte
@@ -418,8 +419,6 @@ function SolarScoutContent() {
           <GoogleMapsLoader>
             <MapComponent
             onProspectUpdate={(newProspect) => {
-              // Réinitialiser les surfaces BDNB en attente : le nouveau clic BDNB
-              // arrivera après et mettra à jour via onBdnbSurface (qui sera appelé en parallèle).
               pendingBdnbSurfacesRef.current = null;
               setProspect(newProspect);
             }}
@@ -497,6 +496,7 @@ function SolarScoutContent() {
               });
             }}
             osmBoundsToFetch={osmBoundsToFetch}
+            onOsmBuildingsLoadingChange={setIsAnalysingBuildings}
             onGetMapBounds={handleGetMapBounds}
             onBdnbSurface={(bdnbSurfaces) => {
               // Mémoriser dans le ref pour que onProspectUpdate puisse les réinjecter
@@ -656,6 +656,7 @@ function SolarScoutContent() {
           onSearchResultSelect={handleSearchResultClick}
           getMapCenter={getMapCenter}
           onAnalyseBuildings={handleAnalyseBuildings}
+          isAnalysingBuildings={isAnalysingBuildings}
         />
       </div>
     </div>

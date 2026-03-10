@@ -4,7 +4,7 @@ import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { SWRConfig } from "swr";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { AppSidebar } from "@/components/app-sidebar";
+import { ConditionalAppSidebar } from "@/components/conditional-app-sidebar";
 import { AuthProvider } from "@/lib/auth-context";
 import { DrawerProvider } from "@/lib/drawer-context";
 import { DrawerWrapper } from "@/components/drawer-wrapper";
@@ -41,7 +41,7 @@ export default function RootLayout({
               } as React.CSSProperties
             }
           >
-            <AppSidebar />
+            <ConditionalAppSidebar />
             <DrawerWrapper>{children}</DrawerWrapper>
           </SidebarProvider>
         </DrawerProvider>

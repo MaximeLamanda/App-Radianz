@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, MapPin, Settings, LogOut, Palette } from "lucide-react";
+import { LayoutDashboard, Map, Settings, LogOut } from "lucide-react";
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
@@ -29,17 +29,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     {
       title: "Home",
       url: "/",
-      icon: Home,
+      icon: LayoutDashboard,
     },
     {
       title: "Solar Scout",
       url: "/solar-scout",
-      icon: MapPin,
-    },
-    {
-      title: "Design",
-      url: "/design",
-      icon: Palette,
+      icon: Map,
     },
   ];
 

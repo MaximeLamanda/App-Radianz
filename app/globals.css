@@ -82,6 +82,11 @@
       height: 0;
     }
   }
+  @keyframes progress-slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+  --animate-progress-slide: progress-slide 1.5s ease-in-out infinite;
 }
 
 /*

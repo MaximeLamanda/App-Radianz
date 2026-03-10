@@ -746,7 +746,7 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                         .then(() => mutatePanels())
                                         .catch(() => {});
                                     }}
-                                    className="h-4 w-8"
+                                    size="sm"
                                   />
                                 </div>
                               </li>
@@ -829,7 +829,7 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                         .then(() => mutateInverters())
                                         .catch(() => {});
                                     }}
-                                    className="h-4 w-8"
+                                    size="sm"
                                   />
                                 </div>
                               </li>

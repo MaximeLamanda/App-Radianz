@@ -86,6 +86,8 @@ interface MapComponentProps {
   onBdnbInfo?: (info: { anneeConstruction: number | null; surfaceM2: number | null }) => void;
   /** Bounds pour charger les bâtiments OSM (uniquement au clic sur le bouton) */
   osmBoundsToFetch?: MapBounds | null;
+  /** Appelé quand le chargement OSM des bâtiments démarre ou se termine */
+  onOsmBuildingsLoadingChange?: (loading: boolean) => void;
   /** Appelé au clic sur un polygone OSM pour quitter la vue recherche (vider les résultats) */
   onOsmPolygonClick?: () => void;
   /** Appelé au début/fin de l'enrichissement OSM (geocode + BDNB + POI) pour afficher le loading */
@@ -109,6 +111,7 @@ export function MapComponent({
   onBdnbSurface,
   onBdnbInfo,
   osmBoundsToFetch = null,
+  onOsmBuildingsLoadingChange,
   onOsmPolygonClick,
   onOsmEnrichmentChange,
 }: MapComponentProps) {
@@ -140,9 +143,13 @@ export function MapComponent({
   const lastQuantizedKeyRef = useRef<string | null>(null);
 
   // Hook SWR pour les bâtiments OSM : chargement UNIQUEMENT au clic sur le bouton (bounds figés)
-  const { data: osmBuildings = [] } = useOsmBuildings(osmBoundsToFetch ?? null);
+  const { data: osmBuildings = [], isLoading: osmBuildingsLoading } = useOsmBuildings(osmBoundsToFetch ?? null);
   const osmBuildingsRef = useRef<typeof osmBuildings>([]);
   osmBuildingsRef.current = osmBuildings;
+
+  useEffect(() => {
+    onOsmBuildingsLoadingChange?.(osmBoundsToFetch != null && osmBuildingsLoading);
+  }, [osmBoundsToFetch, osmBuildingsLoading, onOsmBuildingsLoadingChange]);
 
   // Stocker le dernier centre connu comme fallback
   const lastKnownCenterRef = useRef<AddressCoordinates | null>(null);
@@ -878,11 +885,6 @@ export function MapComponent({
           }
 
           onProspectUpdateRef.current(prospect);
-          onBdnbSurfaceRef.current?.(roofSurfaces);
-          onBdnbInfoRef.current?.({
-            anneeConstruction: anneeConstruction ?? null,
-            surfaceM2: totalArea,
-          });
         }
       )
       .catch((err) => {
@@ -992,10 +994,10 @@ export function MapComponent({
 
       const polygon = new maps.Polygon({
         paths: surface.polygon,
-        fillColor: "#E4FE55",
+        fillColor: "#84CC16",
         fillOpacity: 0.35,
         strokeWeight: 2,
-        strokeColor: "#E4FE55",
+        strokeColor: "#84CC16",
         clickable: false,
         editable: false,
         zIndex: 1,

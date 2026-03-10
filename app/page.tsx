@@ -621,7 +621,7 @@ function HomePage() {
                   <TableHead className="min-w-[100px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Nom</TableHead>
                   <TableHead className="min-w-[160px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Adresse</TableHead>
                   <TableHead className="min-w-[80px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Type</TableHead>
-                  <TableHead className="min-w-[110px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Contact</TableHead>
+                  <TableHead className="min-w-[95px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Statut</TableHead>
                   <TableHead className="text-right w-14 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0">kWp</TableHead>
                   <TableHead className="w-[100px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Score</TableHead>
                   <TableHead className="w-12 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40" title="Panneau">
@@ -635,7 +635,7 @@ function HomePage() {
                   <TableHead className="text-right w-16 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0" title="Consommation annuelle estimée">Conso.</TableHead>
                   <TableHead className="text-right min-w-[80px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Prix</TableHead>
                   <TableHead className="text-right w-16 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0">B-E</TableHead>
-                  <TableHead className="min-w-[80px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Statut</TableHead>
+                  <TableHead className="min-w-[110px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Contact</TableHead>
                   <TableHead className="text-right w-20 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0">Ajouté</TableHead>
                   <TableHead className="w-12 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0" />
                 </TableRow>
@@ -716,15 +716,13 @@ function HomePage() {
                           {translatePlaceType(prospect.placeType)}
                         </span>
                       </TableCell>
-                      <TableCell className="p-2.5 max-w-[110px]">
-                        {contactDisplay ? (
-                          <span className="truncate flex items-center gap-1.5" title={String(contactDisplay)}>
-                            {contactPhone ? <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-                            <span className="truncate">{contactPhone || contactWeb}</span>
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
+                      <TableCell className="p-2.5 min-w-[95px]">
+                        <Badge
+                          variant="default"
+                          className="text-[11px] px-2 py-0.5 h-5 font-medium shrink-0"
+                        >
+                          {STATUS_LABELS[status]}
+                        </Badge>
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
                         {kwp > 0 ? `${kwp.toFixed(1)}` : "—"}
@@ -755,19 +753,15 @@ function HomePage() {
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
                         {breakEvenLabel}
                       </TableCell>
-                      <TableCell className="p-2.5">
-                        <Badge
-                          variant={
-                            status === "converti"
-                              ? "default"
-                              : status === "perdu"
-                                ? "destructive"
-                                : "secondary"
-                          }
-                          className="text-[11px] px-2 py-0.5 h-5 font-medium"
-                        >
-                          {STATUS_LABELS[status]}
-                        </Badge>
+                      <TableCell className="p-2.5 max-w-[110px]">
+                        {contactDisplay ? (
+                          <span className="truncate flex items-center gap-1.5" title={String(contactDisplay)}>
+                            {contactPhone ? <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                            <span className="truncate">{contactPhone || contactWeb}</span>
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground p-2.5 whitespace-nowrap text-xs">
                         {createdAt}

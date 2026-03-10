@@ -356,8 +356,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                               .then(() => mutatePanels())
                               .catch((e) => console.error("Firebase save panel refs:", e));
                           }}
-                          className="h-4 w-8"
-                          thumbClassName="h-3 w-3 data-[state=checked]:translate-x-4"
+                          size="sm"
                         />
                       </div>
                     </li>
@@ -455,8 +454,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                               .then(() => mutateInverters())
                               .catch((e) => console.error("Firebase save inverter refs:", e));
                           }}
-                          className="h-4 w-8"
-                          thumbClassName="h-3 w-3 data-[state=checked]:translate-x-4"
+                          size="sm"
                         />
                       </div>
                     </li>
