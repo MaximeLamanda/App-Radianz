@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -53,10 +52,10 @@ export default function ProspectSharePage() {
   const { user } = useAuth();
   const shareToken = (params?.shareToken as string) ?? null;
   const { data: prospectData } = useProspectByShareToken(shareToken);
-  const { data: panelsData } = usePanelReferences();
-  const { data: invertersData } = useInverterReferences();
-
   const prospect = prospectData ?? null;
+  const ownerUserId = prospect?.userId ?? null;
+  const { data: panelsData } = usePanelReferences(ownerUserId);
+  const { data: invertersData } = useInverterReferences(ownerUserId);
   const loading = prospectData === undefined && shareToken != null;
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
@@ -138,7 +137,7 @@ export default function ProspectSharePage() {
     const perKwp = getProductionPerKwpFromSolarPotential(prospect?.solarPotential, legacyKwp);
 
     if (!prospect || surfaceM2 <= 0 || !panelRef || !perKwp) {
-      return { perfectFit: { panelCount: 0, inverterCount: 0 }, highestProduction: { panelCount: 0, inverterCount: 0 } };
+      return { perfectFit: { panelCount: 0, inverterCount: 0, kwp: 0 }, highestProduction: { panelCount: 0, inverterCount: 0, kwp: 0 } };
     }
 
     const fullKwp = surfaceToKwp(surfaceM2, undefined, undefined, panelRef);
@@ -162,8 +161,8 @@ export default function ProspectSharePage() {
     const perfectFitInverterCount = calculateInverterCount(perfectFitPowerKW, inverterRef);
 
     return {
-      perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount },
-      highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount },
+      perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount, kwp: cappedKwp },
+      highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount, kwp: fullKwp },
     };
   }, [prospect, annualConsumptionOverride, usedPanelRef, usedInverterRef]);
 
@@ -231,7 +230,7 @@ export default function ProspectSharePage() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      <div className="max-w-7xl mx-auto p-4 sm:p-5 flex flex-col flex-1 min-h-0 w-full gap-4">
+      <div className="max-w-7xl mx-auto p-4 sm:p-5 flex flex-col w-full gap-4">
         {/* Barre admin : visible uniquement pour le compte ayant généré la page */}
         {isOwner && (
           <div className="flex items-center justify-between shrink-0">
@@ -253,17 +252,32 @@ export default function ProspectSharePage() {
           </div>
         )}
 
-        {/* Grille bento : 3 colonnes × 4 lignes, blocs qui s'étendent (placement explicite sur md+) */}
-        <div
-          className="grid grid-cols-1 md:grid-cols-3 md:grid-rows-4 gap-3 sm:gap-4 flex-1 min-h-0 w-full auto-rows-fr"
-          style={{
-            minHeight: "min(560px, calc(100vh - 8rem))",
-          }}
-        >
-          {/* [1,1] Carte adresse / type / surface / orientation */}
-          <div className="min-h-0 flex flex-col md:col-start-1 md:row-start-1">
+        {/* Grille bento : 3 colonnes × 8 lignes ; mobile : compact (hauteur contenu), md : hauteur fixe (pas adaptée à l'écran) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 md:grid-rows-8 gap-2 sm:gap-3 md:gap-4 w-full auto-rows-min md:auto-rows-fr md:h-[720px] shrink-0">
+          {/* [1,1] Logo + Nom entreprise — 1 ligne (au-dessus de la carte) */}
+          {commercialReferent && (commercialReferent.logoUrl || commercialReferent.company) && (
+            <div className="order-1 flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 shadow-xs min-h-0 overflow-hidden md:order-none md:col-start-1 md:row-start-1">
+              {commercialReferent.logoUrl && (
+                <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50">
+                  <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-1" />
+                </div>
+              )}
+              <p className="font-medium text-zinc-800 truncate">
+                {commercialReferent.company || "Entreprise"}
+              </p>
+            </div>
+          )}
+
+          {/* [1,2-4] ou [1,1-3] Carte adresse / type / surface / orientation */}
+          <div
+            className={`order-2 min-h-0 flex flex-col overflow-hidden md:order-none md:col-start-1 md:row-span-3 ${
+              commercialReferent && (commercialReferent.logoUrl || commercialReferent.company)
+                ? "md:row-start-2"
+                : "md:row-start-1"
+            }`}
+          >
             <Card className="bg-black border-0 text-white overflow-hidden rounded-xl h-full flex flex-col">
-              <CardContent className="p-4 flex-1 flex flex-col justify-center">
+              <CardContent className="p-4 flex-1 flex flex-col justify-start">
                 <div className="mb-3">
                   <h1 className="text-xl font-semibold truncate">{prospect.name || prospect.address}</h1>
                   {prospect.address && (
@@ -284,16 +298,6 @@ export default function ProspectSharePage() {
                     </div>
                   </div>
                   <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
-                    <span className="text-[10px] uppercase tracking-wide text-white/60" title="Écart au Sud (0° = face sud)">Orientation</span>
-                    <div className="px-3 py-1.5 rounded-md text-[10px] uppercase text-white/80 min-w-fit">
-                      {(() => {
-                        const surfaces = prospect.roofSurfaces ?? (prospect.roofSurface?.area ? [prospect.roofSurface] : []);
-                        const firstOrientation = surfaces[0]?.orientation;
-                        return firstOrientation != null ? `${Math.abs(firstOrientation).toFixed(1)}°` : "—";
-                      })()}
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
                     <span className="text-[10px] uppercase tracking-wide text-white/60" title="Année de construction (BDNB)">Année</span>
                     <div className="px-3 py-1.5 rounded-md text-[10px] uppercase text-white/80 min-w-fit">
                       {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
@@ -306,62 +310,46 @@ export default function ProspectSharePage() {
 
           {/* [2,1] Perfect fit / Highest production */}
           {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) && surfaceM2 > 0 && (
-            <div className="grid grid-cols-2 gap-2 min-h-0 md:col-start-2 md:row-start-1">
+            <div className="order-3 grid grid-cols-2 gap-2 min-h-0 overflow-hidden md:order-none md:col-start-2 md:row-start-1">
               <button
                 type="button"
                 onClick={() => setConfigurationMode("perfect_fit")}
-                className={`rounded-xl border p-3 text-left transition-colors h-full flex flex-col ${
+                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between bg-gray-100 overflow-hidden ${
                   configurationMode === "perfect_fit"
-                    ? "border-blue-500 bg-blue-50/80 shadow-xs"
-                    : "border-border bg-white hover:bg-gray-50"
+                    ? "border-2 border-blue-500 shadow-xs"
+                    : "border border-transparent hover:bg-gray-200/80"
                 }`}
               >
-                <div className="text-sm font-semibold text-foreground">Perfect fit</div>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                  >
-                    {choiceCardsConfig.perfectFit.panelCount} panneaux
-                  </Badge>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                  >
-                    {choiceCardsConfig.perfectFit.inverterCount} onduleur{choiceCardsConfig.perfectFit.inverterCount > 1 ? "s" : ""}
-                  </Badge>
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-gray-500">Perfect fit</span>
+                </div>
+                <div className="text-lg font-normal text-gray-700 mt-auto">
+                  {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
+                  <span className="text-sm font-light text-gray-400 ml-0.5">kWp</span>
                 </div>
               </button>
               <button
                 type="button"
                 onClick={() => setConfigurationMode("highest_production")}
-                className={`rounded-xl border p-3 text-left transition-colors h-full flex flex-col ${
+                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between bg-gray-100 overflow-hidden ${
                   configurationMode === "highest_production"
-                    ? "border-blue-500 bg-blue-50/80 shadow-xs"
-                    : "border-border bg-white hover:bg-gray-50"
+                    ? "border-2 border-blue-500 shadow-xs"
+                    : "border border-transparent hover:bg-gray-200/80"
                 }`}
               >
-                <div className="text-sm font-semibold text-foreground">Highest production</div>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                  >
-                    {choiceCardsConfig.highestProduction.panelCount} panneaux
-                  </Badge>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                  >
-                    {choiceCardsConfig.highestProduction.inverterCount} onduleur{choiceCardsConfig.highestProduction.inverterCount > 1 ? "s" : ""}
-                  </Badge>
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-gray-500">Highest production</span>
+                </div>
+                <div className="text-lg font-normal text-gray-700 mt-auto">
+                  {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
+                  <span className="text-sm font-light text-gray-400 ml-0.5">kWp</span>
                 </div>
               </button>
             </div>
           )}
 
           {/* [3,1] Prix projet estimé */}
-          <div className="rounded-xl px-4 py-4 min-h-[100px] flex flex-col justify-between bg-gray-100 md:col-start-3 md:row-start-1">
+          <div className="order-6 rounded-xl px-4 py-4 min-h-0 flex flex-col justify-between bg-gray-100 overflow-hidden md:order-none md:col-start-2 md:row-start-7 md:row-span-2 md:min-h-[100px]">
             <div className="flex items-center justify-between gap-1">
               <span className="text-[10px] uppercase tracking-wide text-gray-500">Estimated project price</span>
               <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" title="Fourchette du coût total d'installation" />
@@ -375,9 +363,9 @@ export default function ProspectSharePage() {
             </div>
           </div>
 
-          {/* [1,2-3] Image satellite — span 2 rows */}
+          {/* [1,5-8] Image satellite — span 4 rows */}
           {prospect.coordinates && (
-            <div className="rounded-xl overflow-hidden border shadow-xs min-h-0 flex flex-col md:col-start-1 md:row-start-2 md:row-span-2">
+            <div className="order-7 rounded-xl overflow-hidden border shadow-xs min-h-0 flex flex-col md:order-none md:col-start-1 md:row-start-5 md:row-span-4">
               <SatelliteImage
                 key={`sat-${imageCenter.lat}-${imageCenter.lng}`}
                 coordinates={imageCenter}
@@ -385,15 +373,15 @@ export default function ProspectSharePage() {
                 zoom={17}
                 width={600}
                 height={320}
-                className="w-full h-full min-h-[180px] object-cover"
+                className="w-full h-full min-h-[140px] md:min-h-[180px] object-cover"
                 showOverlays={false}
               />
             </div>
           )}
 
-          {/* [2,2-3] Graphique production — 2 lignes de hauteur, span 2 rows */}
+          {/* [2,2-5] Graphique production — 4 lignes */}
           {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) && surfaceM2 > 0 && (
-            <div className="bg-gray-100 rounded-xl py-3 px-4 pb-2 min-h-0 flex flex-col md:col-start-2 md:row-start-2 md:row-span-2 overflow-hidden h-full">
+            <div className="order-4 min-h-[280px] bg-gray-100 rounded-xl py-3 px-4 pb-2 flex flex-col overflow-hidden h-full max-h-[260px] md:max-h-none md:order-none md:col-start-2 md:row-start-2 md:row-span-4 md:min-h-0">
               <div className="flex flex-col gap-1.5 mb-2 shrink-0">
                 {/* Ligne 1 : label Production + onglets */}
                 <div className="flex items-center justify-between gap-2">
@@ -509,11 +497,11 @@ export default function ProspectSharePage() {
             </div>
           )}
 
-          {/* [2,4] Energy Bill + Savings — en dessous du bloc Production */}
-          <div className="flex flex-row gap-2 min-h-0 md:col-start-2 md:row-start-4">
-            <div className="rounded-xl px-4 py-3 flex flex-col justify-between bg-gray-100 flex-1 min-w-0 min-h-[80px]">
+          {/* [2,6] Energy Bill + Savings — en dessous du bloc Production, une seule ligne de grille */}
+          <div className="order-5 flex flex-row gap-2 min-h-0 overflow-hidden md:order-none md:col-start-2 md:row-start-6">
+            <div className="rounded-xl px-4 py-3 flex flex-col justify-between bg-gray-100 flex-1 min-w-0 md:min-h-[80px]">
               <div className="flex items-center justify-between gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-gray-500">Energy Bill</span>
+                <span className="text-[10px] uppercase tracking-wide text-gray-500">EST. Energy bill</span>
                 <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" title="Facture énergétique annuelle estimée" />
               </div>
               <div className="text-xl font-normal text-gray-700">
@@ -521,7 +509,7 @@ export default function ProspectSharePage() {
                 <span className="text-sm font-light text-gray-400 ml-0.5">€</span>
               </div>
             </div>
-            <div className="bg-gray-100 rounded-xl px-4 py-3 flex flex-col justify-between flex-1 min-w-0 min-h-[80px]">
+            <div className="rounded-xl px-4 py-3 flex flex-col justify-between bg-gray-100 flex-1 min-w-0 md:min-h-[80px]">
               <div className="flex items-center justify-between gap-1">
                 <span className="text-[10px] uppercase tracking-wide text-gray-500">Savings</span>
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" title="Économies annuelles estimées" />
@@ -533,9 +521,9 @@ export default function ProspectSharePage() {
             </div>
           </div>
 
-          {/* [3,3-4] Équipement — 1 colonne × 2 lignes (row-span-2) */}
+          {/* [3,2-3] Équipement — colonne 3, 2 lignes */}
           {(usedPanelRef || usedInverterRef) && (
-            <div className="bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:col-start-3 md:row-start-3 md:row-span-2">
+            <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-3">
               <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
               <div className="space-y-2">
                 {usedPanelRef && (
@@ -614,44 +602,72 @@ export default function ProspectSharePage() {
             </div>
           )}
 
-          {/* [1,4] Référent (personne qui a généré le lien) — données du commercialReferent */}
+          {/* [3,4-7] Référent — colonne 3, 4 lignes (design aligné sur IllustrationContactCard) */}
           {commercialReferent && (commercialReferent.name || commercialReferent.email || commercialReferent.phone) && (
-            <div className="rounded-xl px-4 py-3 flex flex-col items-stretch justify-start bg-gray-100 min-h-[80px] min-w-0 md:col-start-1 md:row-start-4">
-              <div className="flex items-center justify-between gap-1 shrink-0">
-                <span className="text-[10px] uppercase tracking-wide text-gray-500">Votre référent</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" title="Personne qui a généré le lien" />
+            <div className="order-9 flex min-h-[200px] min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50 md:order-none md:col-start-3 md:row-start-6 md:row-span-3">
+              <div className="flex w-full items-center justify-between">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                  Votre référent
+                </p>
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  Disponible
+                </span>
               </div>
-              <div className="flex items-start gap-3 min-w-0 mt-2">
-                <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-gray-200">
-                  {commercialReferent.photoURL ? (
-                    <img src={commercialReferent.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <User className="h-5 w-5 text-gray-500" />
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0 space-y-0.5">
-                  {commercialReferent.name && (
-                    <div className="text-sm font-medium text-gray-700 truncate">{commercialReferent.name}</div>
-                  )}
-                  {commercialReferent.email && (
-                    <a href={`mailto:${commercialReferent.email}`} className="text-xs text-blue-600 hover:underline truncate block">
-                      <span className="truncate">{commercialReferent.email}</span>
-                    </a>
-                  )}
-                  <div className="text-xs text-gray-600">
-                    {commercialReferent.phone ? (
-                      <a
-                        href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
-                        className="text-blue-600 hover:underline"
-                      >
-                        {commercialReferent.phone}
-                      </a>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
+              <div className="relative mx-auto mt-3 size-24 shrink-0 overflow-hidden rounded-xl bg-zinc-200 dark:bg-zinc-600">
+                {commercialReferent.photoURL ? (
+                  <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center">
+                    <User className="size-8 text-zinc-400" />
                   </div>
+                )}
+              </div>
+              <div className="mt-3 flex w-full flex-1 flex-col gap-1.5 text-center">
+                {commercialReferent.name && (
+                  <p className="truncate font-mono text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                    {commercialReferent.name}
+                  </p>
+                )}
+                {(commercialReferent.logoUrl || commercialReferent.company) && (
+                  <div className="flex items-center justify-center gap-2">
+                    {commercialReferent.logoUrl && (
+                      <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-600 dark:bg-zinc-800">
+                        <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-0.5" />
+                      </div>
+                    )}
+                    <p className="truncate font-mono text-xs text-zinc-600 dark:text-zinc-400">
+                      {commercialReferent.company || "Entreprise"}
+                    </p>
+                  </div>
+                )}
+                <div className="mt-auto flex gap-2 pt-2">
+                  {commercialReferent.phone ? (
+                    <a
+                      href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-200 py-1.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300"
+                    >
+                      <Phone className="size-3 shrink-0" />
+                      <span className="truncate font-mono">{commercialReferent.phone}</span>
+                    </a>
+                  ) : (
+                    <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-200 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
+                      —
+                    </span>
+                  )}
+                  {commercialReferent.email ? (
+                    <a
+                      href={`mailto:${commercialReferent.email}`}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-900 py-1.5 text-[11px] font-medium text-white hover:bg-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                    >
+                      <Mail className="size-3 shrink-0" />
+                      Email
+                    </a>
+                  ) : (
+                    <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-300 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-600 dark:text-zinc-400">
+                      —
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
