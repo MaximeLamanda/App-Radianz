@@ -8,10 +8,11 @@ import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2 } from "lucide-react";
+import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery } from "lucide-react";
 import {
   usePanelReferences,
   useInverterReferences,
+  useBatteryReferences,
   useProspectByShareToken,
 } from "@/lib/swr-hooks";
 import { getProspectImageCenter } from "@/lib/geometry";
@@ -27,7 +28,10 @@ import {
 import {
   getProductionFromPerKwp,
   getProductionPerKwpFromSolarPotential,
+  buildTypicalDayForMonth,
 } from "@/lib/pvgis";
+import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
+import { runBatterySimulation, runBatterySimulationOneDayWithCarryOver } from "@/lib/battery-simulation";
 import {
   surfaceToKwp,
   getUsableRoofAreaM2,
@@ -35,16 +39,19 @@ import {
 import {
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
+  getRecommendedBatteryReferenceSync,
+  getSolarEquipmentSettings,
   calculatePanelCount,
   calculateInverterCount,
   estimateInstallationPriceEur,
   estimateTotalPriceRangeEur,
   estimateAnnualSavingsEur,
+  estimateAnnualSavingsEurWithBattery,
   estimateEnergyBillEur,
   getBreakEvenYears,
 } from "@/lib/solar-settings";
 import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProductionChart";
-import type { Prospect, PanelReference, InverterReference } from "@/types";
+import type { Prospect, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { toast } from "sonner";
 
 export default function ProspectSharePage() {
@@ -56,15 +63,20 @@ export default function ProspectSharePage() {
   const ownerUserId = prospect?.userId ?? null;
   const { data: panelsData } = usePanelReferences(ownerUserId);
   const { data: invertersData } = useInverterReferences(ownerUserId);
+  const { data: batteriesData } = useBatteryReferences(ownerUserId);
   const loading = prospectData === undefined && shareToken != null;
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
   const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
+  const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(0);
 
   const usedPanelRef =
     panelsData?.find((r) => r.recommended) ?? panelsData?.[0] ?? getRecommendedPanelReferenceSync();
   const usedInverterRef =
     invertersData?.find((r) => r.recommended) ?? invertersData?.[0] ?? getRecommendedInverterReferenceSync();
+  const usedBatteryRef: BatteryReference | null =
+    batteriesData?.find((r) => r.recommended) ?? batteriesData?.[0] ?? getRecommendedBatteryReferenceSync();
+  const includeBatteryEffective = prospect?.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true;
 
   useEffect(() => {
     if (prospect?.configurationMode) setConfigurationMode(prospect.configurationMode);
@@ -175,19 +187,57 @@ export default function ProspectSharePage() {
   const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
   const consoAnnuelleKwh = annualConsumptionOverride ?? consoFromType;
   const energyBillEur = estimateEnergyBillEur(consoAnnuelleKwh);
-  const annualSavings = estimateAnnualSavingsEur(effectiveConfig.effectiveAnnualProductionKwh, undefined, consoAnnuelleKwh);
-  const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
-  const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
-  const inverterCount = calculateInverterCount(effectiveConfig.effectiveKwp, recommendedInverter);
-  const equipmentEur = estimateInstallationPriceEur(
-    effectiveConfig.effectivePanelCount,
-    inverterCount,
-    recommendedPanel,
-    recommendedInverter
-  );
-  const priceRange = estimateTotalPriceRangeEur(effectiveConfig.effectiveKwp, equipmentEur);
-  const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
-  const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
+
+  const financialSummary = useMemo(() => {
+    if (!prospect || surfaceM2 <= 0) return null;
+    const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
+    const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
+    const panelCount = effectiveConfig.effectivePanelCount;
+    const totalPowerKW = effectiveConfig.effectiveKwp;
+    const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
+    let equipmentEur: number;
+    let annualSavings: number;
+    let batteryByMonth: { selfConsumptionDirectKwh: number; selfConsumptionViaBatteryKwh: number; injectionBatteryKwh: number; injectionReseauKwh: number; excessKwh: number; gridDrawKwh: number }[] | undefined;
+    if (includeBatteryEffective && usedBatteryRef && effectiveConfig.productionPerKwp?.productionPerKwpMonthly?.length === 12) {
+      const productionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
+        buildTypicalDayForMonth(effectiveConfig.productionPerKwp!.productionPerKwpMonthly, m, totalPowerKW)
+      );
+      const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
+        buildTypicalConsumptionDayForMonth(placeType, m, surfaceM2)
+      );
+      const simulationResult = runBatterySimulation({
+        productionTypicalDayByMonth,
+        consumptionTypicalDayByMonth,
+        battery: usedBatteryRef,
+      });
+      annualSavings = estimateAnnualSavingsEurWithBattery(simulationResult);
+      equipmentEur = estimateInstallationPriceEur(
+        panelCount,
+        inverterCount,
+        recommendedPanel,
+        recommendedInverter,
+        usedBatteryRef
+      );
+      batteryByMonth = simulationResult.byMonth;
+    } else {
+      annualSavings = estimateAnnualSavingsEur(effectiveConfig.effectiveAnnualProductionKwh, undefined, consoAnnuelleKwh);
+      equipmentEur = estimateInstallationPriceEur(
+        panelCount,
+        inverterCount,
+        recommendedPanel,
+        recommendedInverter
+      );
+    }
+    const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
+    const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
+    const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
+    return { equipmentEur, priceRange, annualSavings, breakEvenMin, breakEvenMax, batteryByMonth };
+  }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, includeBatteryEffective]);
+
+  const annualSavings = financialSummary?.annualSavings ?? 0;
+  const priceRange = financialSummary?.priceRange ?? { equipmentEur: 0, totalMinEur: 0, totalMaxEur: 0 };
+  const breakEvenMin = financialSummary?.breakEvenMin ?? null;
+  const breakEvenMax = financialSummary?.breakEvenMax ?? null;
   const breakEvenLabel =
     breakEvenMin != null && breakEvenMax != null
       ? breakEvenMin === breakEvenMax
@@ -465,6 +515,8 @@ export default function ProspectSharePage() {
                   key={configurationMode}
                   viewMode={chartViewMode}
                   onViewModeChange={setChartViewMode}
+                  selectedMonthIndex={chartSelectedMonthIndex}
+                  onSelectedMonthIndexChange={setChartSelectedMonthIndex}
                   data={(() => {
                     if (!effectiveConfig.productionPerKwp) return [];
                     const { monthlyProduction } = getProductionFromPerKwp(
@@ -472,24 +524,52 @@ export default function ProspectSharePage() {
                       effectiveConfig.productionPerKwp.productionPerKwpMonthly,
                       effectiveConfig.effectiveKwp
                     );
-                    return monthlyProduction.map((m) => ({
-                      month: m.month,
-                      production: m.production,
-                      consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
-                    }));
+                    const byMonth = financialSummary?.batteryByMonth;
+                    return monthlyProduction.map((m) => {
+                      const base = {
+                        month: m.month,
+                        production: m.production,
+                        consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
+                      };
+                      if (byMonth?.[m.month - 1]) {
+                        const b = byMonth[m.month - 1]!;
+                        return {
+                          ...base,
+                          selfConsumptionDirect: b.selfConsumptionDirectKwh,
+                          selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
+                          injectionBattery: b.injectionBatteryKwh,
+                          excess: b.injectionReseauKwh,
+                          gridDraw: b.gridDrawKwh,
+                        };
+                      }
+                      return base;
+                    });
                   })()}
                   dailyData={(() => {
                     if (!effectiveConfig.productionPerKwp) return undefined;
-                    const { dailyTypical } = getProductionFromPerKwp(
-                      effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+                    const prodDay = buildTypicalDayForMonth(
                       effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+                      chartSelectedMonthIndex,
                       effectiveConfig.effectiveKwp
                     );
-                    const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
+                    const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
+                    if (financialSummary?.batteryByMonth && usedBatteryRef) {
+                      const hourly = runBatterySimulationOneDayWithCarryOver(prodDay, consDay, usedBatteryRef);
+                      return hourly.map((h, hour) => ({
+                        hour,
+                        production: prodDay[hour] ?? 0,
+                        consumption: consDay[hour] ?? 0,
+                        selfConsumptionDirect: h.selfConsumptionDirectKwh,
+                        selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
+                        injectionBattery: h.injectionBatteryKwh,
+                        excess: h.injectionReseauKwh,
+                        gridDraw: h.gridDrawKwh,
+                      }));
+                    }
                     return Array.from({ length: 24 }, (_, hour) => ({
                       hour,
-                      production: dailyTypical[hour] ?? 0,
-                      consumption: Math.round((hourlyConsumptionPerM2[hour] ?? 0) * surfaceM2),
+                      production: prodDay[hour] ?? 0,
+                      consumption: consDay[hour] ?? 0,
                     }));
                   })()}
                 />
@@ -521,8 +601,8 @@ export default function ProspectSharePage() {
             </div>
           </div>
 
-          {/* [3,2-3] Équipement — colonne 3, 2 lignes */}
-          {(usedPanelRef || usedInverterRef) && (
+          {/* [3,2-3] Équipement — colonne 3, 2 lignes (panneau, onduleur, batterie) */}
+          {(usedPanelRef || usedInverterRef || usedBatteryRef) && (
             <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-3">
               <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
               <div className="space-y-2">
@@ -587,6 +667,59 @@ export default function ProspectSharePage() {
                               <span className="inline-flex items-center shrink-0" title={usedInverterRef.countryOfOrigin}>
                                 <img
                                   src={getCountryFlagUrl(usedInverterRef.countryCode)}
+                                  alt=""
+                                  className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                />
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {usedBatteryRef && includeBatteryEffective && (
+                  <div>
+                    <div className="flex justify-end items-center gap-1.5 mb-1">
+                      {usedBatteryRef.recommended && (
+                        <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                      )}
+                      <span className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800" title="Paramètres utilisés dans les calculs (injection / tirage batterie)">
+                        Calculs
+                      </span>
+                    </div>
+                    <div className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3">
+                      <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100 flex items-center justify-center">
+                        {usedBatteryRef.imageUrl ? (
+                          <Image src={usedBatteryRef.imageUrl} alt={usedBatteryRef.name} width={48} height={48} className="w-full h-full object-cover" unoptimized />
+                        ) : (
+                          <Battery className="h-6 w-6 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <div className="font-semibold text-xs text-foreground truncate">{usedBatteryRef.name}</div>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
+                          €{usedBatteryRef.costEur}
+                          <span className="text-muted-foreground/40">·</span>
+                          <span title="Capacité utilisée dans la simulation">{usedBatteryRef.capacityKwh} kWh</span>
+                          <span className="text-muted-foreground/40">·</span>
+                          <span title="Puissance de charge">{usedBatteryRef.powerChargeKw} kW charge</span>
+                          <span className="text-muted-foreground/40">·</span>
+                          <span title="Puissance de décharge">{usedBatteryRef.powerDischargeKw} kW décharge</span>
+                          <span className="text-muted-foreground/40">·</span>
+                          <span title="Rendement aller-retour">{usedBatteryRef.roundTripEfficiencyPercent} %</span>
+                          {usedBatteryRef.warrantyYears != null && (
+                            <>
+                              <span className="text-muted-foreground/40">·</span>
+                              <span>{usedBatteryRef.warrantyYears}y</span>
+                            </>
+                          )}
+                          {usedBatteryRef.countryCode && (
+                            <>
+                              <span className="text-muted-foreground/40">|</span>
+                              <span className="inline-flex items-center shrink-0" title={usedBatteryRef.countryOfOrigin}>
+                                <img
+                                  src={getCountryFlagUrl(usedBatteryRef.countryCode)}
                                   alt=""
                                   className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
                                 />

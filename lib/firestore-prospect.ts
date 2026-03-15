@@ -55,6 +55,8 @@ export interface ProspectDocument {
   userId?: string;
   /** Année de construction (BDNB) */
   anneeConstruction?: number | null;
+  /** Override : inclure batterie pour ce prospect (si absent, réglage global) */
+  includeBatteryOverride?: boolean;
 }
 
 /** Valeurs calculées par le drawer, stockées telles quelles (pas de recalcul) */
@@ -200,6 +202,7 @@ export function prepareProspectForFirestore(
   if (prospect.annualConsumptionKwhOverride != null) doc.annualConsumptionKwhOverride = prospect.annualConsumptionKwhOverride;
   if (userId) doc.userId = userId;
   if (prospect.anneeConstruction != null) doc.anneeConstruction = prospect.anneeConstruction;
+  if (prospect.includeBatteryOverride != null) doc.includeBatteryOverride = prospect.includeBatteryOverride;
 
   return doc;
 }
@@ -276,5 +279,6 @@ export function prospectFromFirestore(
   if (data.annualConsumptionKwhOverride != null) result.annualConsumptionKwhOverride = data.annualConsumptionKwhOverride;
   if (data.userId) result.userId = data.userId;
   if (data.anneeConstruction != null) result.anneeConstruction = data.anneeConstruction;
+  if (data.includeBatteryOverride != null) result.includeBatteryOverride = data.includeBatteryOverride;
   return result;
 }

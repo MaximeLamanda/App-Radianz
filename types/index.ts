@@ -131,6 +131,8 @@ export interface Prospect {
   anneeConstruction?: number | null;
   /** ID du bâtiment BDNB quand le prospect a été créé depuis un clic sur une tuile BDNB */
   bdnbBatimentId?: string;
+  /** Override : inclure batterie pour ce prospect (si absent, réglage global settings.includeBattery). */
+  includeBatteryOverride?: boolean;
 }
 
 export interface Lead {
@@ -242,6 +244,27 @@ export interface InverterReference {
 }
 
 /**
+ * Référence de batterie (marque/modèle) pour les paramètres
+ * Stockée dans Firebase Firestore : users/{userId}/battery_references
+ */
+export interface BatteryReference {
+  id: string;
+  name: string;
+  capacityKwh: number;
+  powerChargeKw: number;
+  powerDischargeKw: number;
+  roundTripEfficiencyPercent: number;
+  costEur: number;
+  countryOfOrigin: string;
+  countryCode?: string;
+  imageUrl?: string;
+  warrantyYears?: number;
+  recommended?: boolean;
+  /** kWp max recommandé pour cette batterie (ex. 100 pour 215-2S10) */
+  maxKwpRecommended?: number;
+}
+
+/**
  * Configuration des équipements solaires
  */
 export interface SolarEquipmentSettings {
@@ -251,4 +274,6 @@ export interface SolarEquipmentSettings {
   panelEfficiency?: number; // Rendement du panneau en % (optionnel)
   /** Taux d'utilisation du toit (0–1) : part de la surface couverte par les panneaux. 0,75 = 75 %. */
   usableRoofRatio?: number;
+  /** Inclure la batterie dans les calculs par défaut pour les nouveaux prospects. Défaut true. */
+  includeBattery?: boolean;
 }

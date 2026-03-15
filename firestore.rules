@@ -43,6 +43,12 @@ service cloud.firestore {
       allow write: if request.auth != null && request.auth.uid == userId;
     }
 
+    // Références de batteries (par utilisateur)
+    match /users/{userId}/battery_references/{refId} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Profil utilisateur (téléphone, prénom, nom) — lecture/écriture par le propriétaire
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;

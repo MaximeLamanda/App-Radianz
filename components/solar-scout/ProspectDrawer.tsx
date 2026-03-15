@@ -20,7 +20,8 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -30,7 +31,7 @@ import {
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
-import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar } from "lucide-react";
+import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar, Battery } from "lucide-react";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { MonthlyProductionChart } from "./MonthlyProductionChart";
@@ -47,18 +48,24 @@ import {
 import {
   getProductionFromPerKwp,
   getProductionPerKwpFromSolarPotential,
+  buildTypicalDayForMonth,
 } from "@/lib/pvgis";
-import { usePanelReferences, useInverterReferences } from "@/lib/swr-hooks";
+import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
+import { runBatterySimulation, runBatterySimulationOneDayWithCarryOver } from "@/lib/battery-simulation";
+import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import {
   getPanelReferences,
   getCountryFlagUrl,
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
+  getRecommendedBatteryReferenceSync,
+  getSolarEquipmentSettings,
   calculatePanelCount,
   calculateInverterCount,
   estimateInstallationPriceEur,
   estimateTotalPriceRangeEur,
   estimateAnnualSavingsEur,
+  estimateAnnualSavingsEurWithBattery,
   estimateEnergyBillEur,
   getBreakEvenYears,
 } from "@/lib/solar-settings";
@@ -67,7 +74,7 @@ import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/co
 import { useAuth } from "@/lib/auth-context";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import type { ScoredCandidate } from "@/lib/find-local-siren";
-import type { Prospect, SolarPotential, PanelReference, InverterReference, CommercialReferent } from "@/types";
+import type { Prospect, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 
 /** Options du select : types canoniques (sans doublons) + type actuel si inconnu */
 function getPlaceTypeOptions(currentValue: string): { value: string; label: string }[] {
@@ -205,14 +212,15 @@ export function ProspectDrawer({
   const [isLoadingPVGIS, setIsLoadingPVGIS] = useState(false);
   const [pvgisError, setPvgisError] = useState<string | null>(null);
   const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
+  const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(0);
   const [usedPanelRef, setUsedPanelRef] = useState<PanelReference | null>(null);
   const [usedInverterRef, setUsedInverterRef] = useState<InverterReference | null>(null);
+  const [usedBatteryRef, setUsedBatteryRef] = useState<BatteryReference | null>(null);
   /** "highest_production" = max surface utilisée | "perfect_fit" = production ≈ consommation */
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [companyEnrichmentLoading, setCompanyEnrichmentLoading] = useState(false);
   const [phase2Scoring, setPhase2Scoring] = useState<ScoredCandidate[] | null>(null);
   const [phase2ScoringLoading, setPhase2ScoringLoading] = useState(false);
-  const [drawerTab, setDrawerTab] = useState<"prospect" | "projet">("prospect");
   const [prospectDetailsOpen, setProspectDetailsOpen] = useState(false);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
   const { user } = useAuth();
@@ -287,6 +295,7 @@ export function ProspectDrawer({
 
   const { data: panelsData } = usePanelReferences(user?.uid ?? null);
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
+  const { data: batteriesData } = useBatteryReferences(user?.uid ?? null);
 
   useEffect(() => {
     if (!isOpen || !panelsData) return;
@@ -299,6 +308,12 @@ export function ProspectDrawer({
     const recommended = invertersData.find((r) => r.recommended === true);
     setUsedInverterRef(recommended ?? invertersData[0] ?? getRecommendedInverterReferenceSync());
   }, [invertersData]);
+
+  useEffect(() => {
+    if (!batteriesData) return;
+    const recommended = batteriesData.find((r) => r.recommended === true);
+    setUsedBatteryRef(recommended ?? batteriesData[0] ?? getRecommendedBatteryReferenceSync());
+  }, [batteriesData]);
 
   // Mettre à jour l'adresse et le mode de config quand le prospect change
   useEffect(() => {
@@ -432,35 +447,12 @@ export function ProspectDrawer({
         breakEvenMaxYears?: number | null;
       } = {};
       if (totalArea > 0) {
-        const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
-        const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
-        const panelCount = effectiveConfig.effectivePanelCount;
-        const totalPowerKW = effectiveConfig.effectiveKwp;
-        const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
-        if (totalPowerKW > 0) {
-          pipelineOptions.estimatedKwp = totalPowerKW;
-          const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
-          const equipmentEur = estimateInstallationPriceEur(
-            panelCount,
-            inverterCount,
-            recommendedPanel,
-            recommendedInverter
-          );
-          const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
-          pipelineOptions.priceRangeMinEur = priceRange.totalMinEur;
-          pipelineOptions.priceRangeMaxEur = priceRange.totalMaxEur;
-          if (annualProductionKWh > 0) {
-            const totalConsumptionKwh = totalArea > 0 ? getEnergyConsumption(prospect.placeType || "other") * totalArea : 0;
-            const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
-            pipelineOptions.breakEvenMinYears = getBreakEvenYears(
-              priceRange.totalMinEur,
-              annualSavings
-            );
-            pipelineOptions.breakEvenMaxYears = getBreakEvenYears(
-              priceRange.totalMaxEur,
-              annualSavings
-            );
-          }
+        if (financialSummary && effectiveConfig.effectiveKwp > 0) {
+          pipelineOptions.estimatedKwp = effectiveConfig.effectiveKwp;
+          pipelineOptions.priceRangeMinEur = financialSummary.priceRange.totalMinEur;
+          pipelineOptions.priceRangeMaxEur = financialSummary.priceRange.totalMaxEur;
+          pipelineOptions.breakEvenMinYears = financialSummary.breakEvenMin;
+          pipelineOptions.breakEvenMaxYears = financialSummary.breakEvenMax;
         }
       }
 
@@ -517,37 +509,12 @@ export function ProspectDrawer({
         breakEvenMinYears?: number | null;
         breakEvenMaxYears?: number | null;
       } = {};
-      if (totalArea > 0) {
-        const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
-        const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
-        const panelCount = effectiveConfig.effectivePanelCount;
-        const totalPowerKW = effectiveConfig.effectiveKwp;
-        const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
-        if (totalPowerKW > 0) {
-          pipelineOptions.estimatedKwp = totalPowerKW;
-          const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
-          const equipmentEur = estimateInstallationPriceEur(
-            panelCount,
-            inverterCount,
-            recommendedPanel,
-            recommendedInverter
-          );
-          const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
-          pipelineOptions.priceRangeMinEur = priceRange.totalMinEur;
-          pipelineOptions.priceRangeMaxEur = priceRange.totalMaxEur;
-          if (annualProductionKWh > 0) {
-            const totalConsumptionKwh = totalArea > 0 ? getEnergyConsumption(prospect.placeType || "other") * totalArea : 0;
-            const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
-            pipelineOptions.breakEvenMinYears = getBreakEvenYears(
-              priceRange.totalMinEur,
-              annualSavings
-            );
-            pipelineOptions.breakEvenMaxYears = getBreakEvenYears(
-              priceRange.totalMaxEur,
-              annualSavings
-            );
-          }
-        }
+      if (totalArea > 0 && financialSummary && effectiveConfig.effectiveKwp > 0) {
+        pipelineOptions.estimatedKwp = effectiveConfig.effectiveKwp;
+        pipelineOptions.priceRangeMinEur = financialSummary.priceRange.totalMinEur;
+        pipelineOptions.priceRangeMaxEur = financialSummary.priceRange.totalMaxEur;
+        pipelineOptions.breakEvenMinYears = financialSummary.breakEvenMin;
+        pipelineOptions.breakEvenMaxYears = financialSummary.breakEvenMax;
       }
 
       const updatedProspect: Prospect = {
@@ -735,6 +702,71 @@ export function ProspectDrawer({
     : choiceCardsConfig.highestProduction.inverterCount;
   const inverterCountExceedsLimit = effectiveInverterCount > MAX_INVERTER_COUNT;
 
+  const includeBatteryEffective = prospect?.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true;
+
+  /** Résumé financier (équipement, fourchette prix, économies, break-even) avec ou sans batterie */
+  const financialSummary = useMemo(() => {
+    const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+    if (!prospect || totalArea <= 0) return null;
+    const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
+    const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
+    const panelCount = effectiveConfig.effectivePanelCount;
+    const totalPowerKW = effectiveConfig.effectiveKwp;
+    const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
+    const placeType = prospect.placeType || "other";
+    const totalConsumptionKwh = getEnergyConsumption(placeType) * totalArea;
+
+    let equipmentEur: number;
+    let annualSavings: number;
+
+    let batteryByMonth: { selfConsumptionDirectKwh: number; selfConsumptionViaBatteryKwh: number; injectionBatteryKwh: number; injectionReseauKwh: number; excessKwh: number; gridDrawKwh: number }[] | undefined;
+    if (includeBatteryEffective && usedBatteryRef && effectiveConfig.productionPerKwp?.productionPerKwpMonthly?.length === 12) {
+      const productionPerKwpMonthly = effectiveConfig.productionPerKwp.productionPerKwpMonthly;
+      const kwp = effectiveConfig.effectiveKwp;
+      const productionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
+        buildTypicalDayForMonth(productionPerKwpMonthly, m, kwp)
+      );
+      const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
+        buildTypicalConsumptionDayForMonth(placeType, m, totalArea)
+      );
+      const simulationResult = runBatterySimulation({
+        productionTypicalDayByMonth,
+        consumptionTypicalDayByMonth,
+        battery: usedBatteryRef,
+      });
+      annualSavings = estimateAnnualSavingsEurWithBattery(simulationResult);
+      equipmentEur = estimateInstallationPriceEur(
+        panelCount,
+        inverterCount,
+        recommendedPanel,
+        recommendedInverter,
+        usedBatteryRef
+      );
+      batteryByMonth = simulationResult.byMonth;
+    } else {
+      const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
+      annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
+      equipmentEur = estimateInstallationPriceEur(
+        panelCount,
+        inverterCount,
+        recommendedPanel,
+        recommendedInverter
+      );
+    }
+
+    const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
+    const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
+    const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
+    return { equipmentEur, priceRange, annualSavings, breakEvenMin, breakEvenMax, batteryByMonth };
+  }, [
+    prospect,
+    effectiveConfig,
+    usedPanelRef,
+    usedInverterRef,
+    usedBatteryRef,
+    includeBatteryEffective,
+  ]);
+
   return (
     <div className="h-full w-full bg-white border border-border shadow-xl flex flex-col rounded-2xl overflow-hidden">
         <div className="p-4 rounded-t-2xl">
@@ -799,13 +831,8 @@ export function ProspectDrawer({
                 </Badge>
               </div>
 
-              <Tabs value={drawerTab} onValueChange={(v) => setDrawerTab(v as "prospect" | "projet")} className="w-full">
-                <TabsList className="grid w-full grid-cols-2 gap-1 rounded-xl p-1.5 my-2 bg-black h-auto!">
-                  <TabsTrigger value="prospect" className="rounded-lg px-4 py-2 bg-transparent text-white/70 data-[state=active]:bg-white/10 data-[state=active]:text-white data-[state=inactive]:hover:text-white data-[state=inactive]:hover:bg-white/10">Prospect</TabsTrigger>
-                  <TabsTrigger value="projet" className="rounded-lg px-4 py-2 bg-transparent text-white/70 data-[state=active]:bg-white/10 data-[state=active]:text-white data-[state=inactive]:hover:text-white data-[state=inactive]:hover:bg-white/10">Projet</TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="prospect" className="mt-0 space-y-2">
+              <div className="w-full space-y-2">
+                <div className="space-y-2">
               {/* Bloc prospect : nom, adresse, type, lat/lon */}
               <Card className="bg-black border-0 text-white overflow-hidden rounded-xl">
                 <CardContent className="py-3 px-4">
@@ -1264,9 +1291,9 @@ export function ProspectDrawer({
                   <span>{pvgisError}</span>
                 </div>
               )}
-                </TabsContent>
+                </div>
 
-                <TabsContent value="projet" className="mt-0 space-y-2">
+                <div className="space-y-2">
               {/* Choice cards : Perfect fit / Highest production — au-dessus de Production */}
               {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) &&
                !isLoadingPVGIS &&
@@ -1275,59 +1302,71 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => setConfigurationMode("perfect_fit")}
-                    className={`rounded-xl border p-3 text-left transition-colors ${
+                    className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                       configurationMode === "perfect_fit"
-                        ? "border-blue-500 bg-blue-50/80 shadow-xs"
-                        : "border-border bg-white hover:bg-gray-50"
+                        ? "border border-blue-200 bg-blue-50 shadow-xs"
+                        : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
                     }`}
                   >
-                    <div className="text-sm font-semibold text-foreground">Perfect fit</div>
-                    <div className="text-xs font-mono font-medium text-blue-600 mt-0.5">
-                      {choiceCardsConfig.perfectFit.kwp.toFixed(2)} kWp
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-gray-500">Perfect fit</span>
                     </div>
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      <Badge
-                        variant="secondary"
-                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                      >
-                        {choiceCardsConfig.perfectFit.panelCount} panneaux
-                      </Badge>
-                      <Badge
-                        variant="secondary"
-                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "perfect_fit" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                      >
-                        {choiceCardsConfig.perfectFit.inverterCount} onduleur{choiceCardsConfig.perfectFit.inverterCount > 1 ? "s" : ""}
-                      </Badge>
+                    <div className="mt-auto">
+                      <div className={`text-base font-normal ${configurationMode === "perfect_fit" ? "text-blue-600" : "text-gray-700"}`}>
+                        {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
+                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        <span className="text-[10px] text-muted-foreground">{choiceCardsConfig.perfectFit.panelCount} panneaux</span>
+                        <span className="text-[10px] text-muted-foreground">·</span>
+                        <span className="text-[10px] text-muted-foreground">{choiceCardsConfig.perfectFit.inverterCount} onduleur{choiceCardsConfig.perfectFit.inverterCount > 1 ? "s" : ""}</span>
+                      </div>
                     </div>
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfigurationMode("highest_production")}
-                    className={`rounded-xl border p-3 text-left transition-colors ${
+                    className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                       configurationMode === "highest_production"
-                        ? "border-blue-500 bg-blue-50/80 shadow-xs"
-                        : "border-border bg-white hover:bg-gray-50"
+                        ? "border border-blue-200 bg-blue-50 shadow-xs"
+                        : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
                     }`}
                   >
-                    <div className="text-sm font-semibold text-foreground">Highest production</div>
-                    <div className="text-xs font-mono font-medium text-blue-600 mt-0.5">
-                      {choiceCardsConfig.highestProduction.kwp.toFixed(2)} kWp
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-gray-500">Highest production</span>
                     </div>
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      <Badge
-                        variant="secondary"
-                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                      >
-                        {choiceCardsConfig.highestProduction.panelCount} panneaux
-                      </Badge>
-                      <Badge
-                        variant="secondary"
-                        className={`text-[10px] px-1.5 py-0 h-4 font-mono font-medium ${configurationMode === "highest_production" ? "bg-blue-100 text-blue-800 border-blue-200" : "bg-gray-100 text-gray-700 border-gray-200"}`}
-                      >
-                        {choiceCardsConfig.highestProduction.inverterCount} onduleur{choiceCardsConfig.highestProduction.inverterCount > 1 ? "s" : ""}
-                      </Badge>
+                    <div className="mt-auto">
+                      <div className={`text-base font-normal ${configurationMode === "highest_production" ? "text-blue-600" : "text-gray-700"}`}>
+                        {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
+                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        <span className="text-[10px] text-muted-foreground">{choiceCardsConfig.highestProduction.panelCount} panneaux</span>
+                        <span className="text-[10px] text-muted-foreground">·</span>
+                        <span className="text-[10px] text-muted-foreground">{choiceCardsConfig.highestProduction.inverterCount} onduleur{choiceCardsConfig.highestProduction.inverterCount > 1 ? "s" : ""}</span>
+                      </div>
                     </div>
                   </button>
+                </div>
+              )}
+
+              {/* Switch batterie : valeur effective = prospect.includeBatteryOverride ?? settings.includeBattery (défaut true) */}
+              {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 && (
+                <div className="flex items-center justify-between rounded-xl border border-border bg-white p-3">
+                  <div className="flex items-center gap-2">
+                    <Battery className="h-4 w-4 text-muted-foreground" />
+                    <Label htmlFor="include-battery" className="text-sm font-medium cursor-pointer">Inclure batterie</Label>
+                  </div>
+                  <Switch
+                    id="include-battery"
+                    className="data-[state=checked]:bg-[#0000FF]"
+                    checked={prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true}
+                    onCheckedChange={(checked) => {
+                      if (onProspectUpdate) {
+                        onProspectUpdate({ ...prospect, includeBatteryOverride: checked });
+                      }
+                    }}
+                  />
                 </div>
               )}
 
@@ -1336,7 +1375,7 @@ export function ProspectDrawer({
                !isLoadingPVGIS &&
                ((prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0) && (
                 <>
-                  <div className="flex flex-col bg-gray-100 rounded-xl py-3 px-4 pb-2 min-h-[280px]">
+                  <div className="flex flex-col bg-gray-100 rounded-xl py-3 px-4 pb-2">
                     <div className="flex shrink-0 items-start justify-between gap-2 mb-3">
                       <div className="flex flex-col gap-0.5">
                         <span className="text-[10px] uppercase tracking-wide text-gray-500">Production</span>
@@ -1424,11 +1463,13 @@ export function ProspectDrawer({
                         </button>
                       </div>
                     </div>
-                    <div className="h-[200px] min-w-0 w-full">
+                    <div className="h-[260px] min-w-0 w-full">
                       <MonthlyProductionChart
                         key={configurationMode}
                         viewMode={chartViewMode}
                         onViewModeChange={setChartViewMode}
+                        selectedMonthIndex={chartSelectedMonthIndex}
+                        onSelectedMonthIndexChange={setChartSelectedMonthIndex}
                         data={(() => {
                           const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
                           const placeType = prospect.placeType || "other";
@@ -1438,26 +1479,54 @@ export function ProspectDrawer({
                             effectiveConfig.productionPerKwp.productionPerKwpMonthly,
                             effectiveConfig.effectiveKwp
                           );
-                          return monthlyProduction.map((m) => ({
-                            month: m.month,
-                            production: m.production,
-                            consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
-                          }));
+                          const byMonth = financialSummary?.batteryByMonth;
+                          return monthlyProduction.map((m) => {
+                            const base = {
+                              month: m.month,
+                              production: m.production,
+                              consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
+                            };
+                            if (byMonth?.[m.month - 1]) {
+                              const b = byMonth[m.month - 1]!;
+                              return {
+                                ...base,
+                                selfConsumptionDirect: b.selfConsumptionDirectKwh,
+                                selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
+                                injectionBattery: b.injectionBatteryKwh,
+                                excess: b.injectionReseauKwh,
+                                gridDraw: b.gridDrawKwh,
+                              };
+                            }
+                            return base;
+                          });
                         })()}
                         dailyData={(() => {
                           const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
                           if (surfaceM2 <= 0 || !effectiveConfig.productionPerKwp) return undefined;
                           const placeType = prospect.placeType || "other";
-                          const { dailyTypical } = getProductionFromPerKwp(
-                            effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+                          const prodDay = buildTypicalDayForMonth(
                             effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+                            chartSelectedMonthIndex,
                             effectiveConfig.effectiveKwp
                           );
-                          const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
+                          const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
+                          if (financialSummary?.batteryByMonth && usedBatteryRef) {
+                            const hourly = runBatterySimulationOneDayWithCarryOver(prodDay, consDay, usedBatteryRef);
+                            return hourly.map((h, hour) => ({
+                              hour,
+                              production: prodDay[hour] ?? 0,
+                              consumption: consDay[hour] ?? 0,
+                              selfConsumptionDirect: h.selfConsumptionDirectKwh,
+                              selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
+                              injectionBattery: h.injectionBatteryKwh,
+                              excess: h.injectionReseauKwh,
+                              gridDraw: h.gridDrawKwh,
+                            }));
+                          }
                           return Array.from({ length: 24 }, (_, hour) => ({
                             hour,
-                            production: dailyTypical[hour] ?? 0,
-                            consumption: Math.round((hourlyConsumptionPerM2[hour] ?? 0) * surfaceM2),
+                            production: prodDay[hour] ?? 0,
+                            consumption: consDay[hour] ?? 0,
                           }));
                         })()}
                       />
@@ -1466,22 +1535,12 @@ export function ProspectDrawer({
                   {/* Energy Bill + Savings + Estimated price (sous Production) */}
                   {(() => {
                     const totalArea = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
-                    if (totalArea <= 0) return null;
+                    if (totalArea <= 0 || !financialSummary) return null;
                     const placeType = prospect.placeType || "other";
                     const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
                     const totalConsumptionKwh = surfaceM2 > 0 ? getEnergyConsumption(placeType) * surfaceM2 : 0;
                     const energyBillEur = estimateEnergyBillEur(totalConsumptionKwh);
-                    const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
-                    const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
-                    const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
-                    const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
-                    const panelCount = effectiveConfig.effectivePanelCount;
-                    const totalPowerKW = effectiveConfig.effectiveKwp;
-                    const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
-                    const equipmentEur = estimateInstallationPriceEur(panelCount, inverterCount, recommendedPanel, recommendedInverter);
-                    const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
-                    const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
-                    const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
+                    const { priceRange, annualSavings, breakEvenMin, breakEvenMax } = financialSummary;
                     const breakEvenLabel =
                       breakEvenMin != null && breakEvenMax != null
                         ? breakEvenMin === breakEvenMax
@@ -1528,8 +1587,8 @@ export function ProspectDrawer({
                       </>
                     );
                   })()}
-                  {/* Équipement (Panneau + Onduleur) */}
-                  {(usedPanelRef || usedInverterRef) && (
+                  {/* Équipement (Panneau + Onduleur + Batterie) */}
+                  {(usedPanelRef || usedInverterRef || usedBatteryRef) && (
                   <div className="bg-gray-100 rounded-xl py-3 px-4">
                     <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
                     <div className="space-y-2">
@@ -1655,36 +1714,86 @@ export function ProspectDrawer({
                             </div>
                           </div>
                         )}
+                        {usedBatteryRef && includeBatteryEffective && (
+                          <div>
+                            <div className="flex justify-end items-center gap-1.5 mb-1">
+                              {usedBatteryRef.recommended && (
+                                <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                              )}
+                              <span className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800" title="Paramètres utilisés dans les calculs (injection / tirage batterie)">
+                                Calculs
+                              </span>
+                            </div>
+                            <div className="rounded-xl border border-border bg-white p-3 flex items-stretch gap-3">
+                              <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100 flex items-center justify-center">
+                                {usedBatteryRef.imageUrl ? (
+                                  <Image
+                                    src={usedBatteryRef.imageUrl}
+                                    alt={usedBatteryRef.name}
+                                    width={48}
+                                    height={48}
+                                    className="w-full h-full object-cover"
+                                    unoptimized
+                                  />
+                                ) : (
+                                  <Battery className="h-6 w-6 text-muted-foreground" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                <div className="font-semibold text-xs text-foreground truncate">{usedBatteryRef.name}</div>
+                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{usedBatteryRef.costEur}</span>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title="Capacité utilisée dans la simulation">
+                                    <Battery className="h-3 w-3 text-muted-foreground/80" />
+                                    {usedBatteryRef.capacityKwh} kWh
+                                  </span>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="text-xs text-muted-foreground">{usedBatteryRef.powerChargeKw} kW charge</span>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="text-xs text-muted-foreground">{usedBatteryRef.powerDischargeKw} kW décharge</span>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="text-xs text-muted-foreground">{usedBatteryRef.roundTripEfficiencyPercent} %</span>
+                                  {usedBatteryRef.warrantyYears != null && (
+                                    <>
+                                      <span className="text-muted-foreground/40 text-xs">|</span>
+                                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                        <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                                        {usedBatteryRef.warrantyYears}y
+                                      </span>
+                                    </>
+                                  )}
+                                  {usedBatteryRef.countryCode && (
+                                    <>
+                                      <span className="text-muted-foreground/40 text-xs">|</span>
+                                      <span className="inline-flex items-center shrink-0" title={usedBatteryRef.countryOfOrigin}>
+                                        <img
+                                          src={getCountryFlagUrl(usedBatteryRef.countryCode)}
+                                          alt=""
+                                          className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                          width={12}
+                                          height={12}
+                                        />
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                     </div>
                   </div>
                   )}
                 </>
               )}
-                </TabsContent>
-              </Tabs>
+                </div>
+              </div>
 
               {/* Données financières (en dernier) */}
               {(() => {
                 const totalArea = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
-                if (totalArea <= 0) return null;
-                const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
-                const recommendedInverter = usedInverterRef ?? getRecommendedInverterReferenceSync();
-                const panelCount = effectiveConfig.effectivePanelCount;
-                const totalPowerKW = effectiveConfig.effectiveKwp;
-                const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
-                const annualProductionKWh = effectiveConfig.effectiveAnnualProductionKwh;
-                const totalConsumptionKwh = getEnergyConsumption(prospect.placeType || "other") * totalArea;
-                const equipmentEur = estimateInstallationPriceEur(panelCount, inverterCount, recommendedPanel, recommendedInverter);
-                const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
-                const annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
-                const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
-                const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
-                const breakEvenLabel =
-                  breakEvenMin != null && breakEvenMax != null
-                    ? breakEvenMin === breakEvenMax
-                      ? `${breakEvenMin} an${breakEvenMin > 1 ? "s" : ""}`
-                      : `${breakEvenMin} – ${breakEvenMax} ans`
-                    : "—";
+                if (totalArea <= 0 || !financialSummary) return null;
                 return null;
               })()}
             </>

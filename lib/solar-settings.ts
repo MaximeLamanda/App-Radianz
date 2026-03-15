@@ -4,9 +4,11 @@
  * pour les calculs de potentiel solaire
  */
 
-import type { SolarEquipmentSettings, SolarPanelType, InverterType, PanelReference, InverterReference } from "@/types";
+import type { SolarEquipmentSettings, SolarPanelType, InverterType, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { getPanelReferencesFromFirebase } from "./firestore-panel-references";
 import { getInverterReferencesFromFirebase } from "./firestore-inverter-references";
+import { getBatteryReferencesFromFirebase } from "./firestore-battery-references";
+import type { BatterySimulationResult } from "./battery-simulation";
 
 const STORAGE_KEY = "solarEquipmentSettings";
 const STORAGE_KEY_PANEL_REFERENCES = "solarPanelReferences";
@@ -27,6 +29,7 @@ export const DEFAULT_SOLAR_SETTINGS: SolarEquipmentSettings = {
   panelPowerW: 400,
   panelEfficiency: 20,
   usableRoofRatio: 0.75,
+  includeBattery: true,
 };
 
 /**
@@ -118,6 +121,69 @@ export const DEFAULT_INVERTER_REFERENCES: InverterReference[] = [
     costEur: 150,
     warrantyYears: 25,
     recommended: false,
+  },
+];
+
+/**
+ * Références de batterie par défaut (gamme LUNA2000)
+ * 7/14/21-S1 pour < 100 kWp, 215-2S10 pour ≥ 100 kWp
+ */
+export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
+  {
+    id: "battery-luna2000-7-s1",
+    name: "LUNA2000-7-S1",
+    capacityKwh: 7,
+    powerChargeKw: 10.5,
+    powerDischargeKw: 10.5,
+    roundTripEfficiencyPercent: 90,
+    costEur: 4500,
+    countryOfOrigin: "Chine",
+    countryCode: "cn",
+    warrantyYears: 10,
+    recommended: true,
+    maxKwpRecommended: 100,
+  },
+  {
+    id: "battery-luna2000-14-s1",
+    name: "LUNA2000-14-S1",
+    capacityKwh: 14,
+    powerChargeKw: 10.5,
+    powerDischargeKw: 10.5,
+    roundTripEfficiencyPercent: 90,
+    costEur: 8000,
+    countryOfOrigin: "Chine",
+    countryCode: "cn",
+    warrantyYears: 10,
+    recommended: false,
+    maxKwpRecommended: 100,
+  },
+  {
+    id: "battery-luna2000-21-s1",
+    name: "LUNA2000-21-S1",
+    capacityKwh: 21,
+    powerChargeKw: 10.5,
+    powerDischargeKw: 10.5,
+    roundTripEfficiencyPercent: 90,
+    costEur: 11000,
+    countryOfOrigin: "Chine",
+    countryCode: "cn",
+    warrantyYears: 10,
+    recommended: false,
+    maxKwpRecommended: 100,
+  },
+  {
+    id: "battery-luna2000-215-2s10",
+    name: "LUNA2000-215-2S10",
+    capacityKwh: 215,
+    powerChargeKw: 108,
+    powerDischargeKw: 108,
+    roundTripEfficiencyPercent: 90,
+    costEur: 95000,
+    countryOfOrigin: "Chine",
+    countryCode: "cn",
+    warrantyYears: 10,
+    recommended: false,
+    maxKwpRecommended: 9999,
   },
 ];
 
@@ -233,6 +299,33 @@ export async function getRecommendedInverterReference(userId?: string | null): P
     // Ignorer l'erreur et utiliser le fallback
   }
   return getRecommendedInverterReferenceSync();
+}
+
+/**
+ * Récupère la batterie recommandée (celle avec recommended: true, ou la première)
+ * Version synchrone pour utilisation côté client (fallback sur DEFAULT_BATTERY_REFERENCES)
+ */
+export function getRecommendedBatteryReferenceSync(batteryRefs?: BatteryReference[]): BatteryReference | null {
+  const refs = batteryRefs ?? DEFAULT_BATTERY_REFERENCES;
+  return refs.find(r => r.recommended === true) ?? refs[0] ?? null;
+}
+
+/**
+ * Récupère la batterie recommandée (celle avec recommended: true)
+ * Version async pour utilisation avec Firebase
+ * @param userId - UID de l'utilisateur (propriétaire des références)
+ */
+export async function getRecommendedBatteryReference(userId?: string | null): Promise<BatteryReference | null> {
+  if (!userId) return getRecommendedBatteryReferenceSync();
+  try {
+    const refs = await getBatteryReferencesFromFirebase(userId);
+    const recommended = refs.find(r => r.recommended === true);
+    if (recommended) return recommended;
+    if (refs.length > 0) return refs[0];
+  } catch {
+    // Ignorer l'erreur et utiliser le fallback
+  }
+  return getRecommendedBatteryReferenceSync();
 }
 
 /**
@@ -420,6 +513,24 @@ export interface SavingsBreakdown {
   annualSavingsEur: number;
 }
 
+export type { BatterySimulationResult };
+
+/**
+ * Économies annuelles avec batterie (sorties simulation).
+ * Autoconsommation directe + via batterie × prix retail, injection × tarif rachat.
+ */
+export function estimateAnnualSavingsEurWithBattery(
+  simulationResult: BatterySimulationResult,
+  retailPriceEurPerKwh: number = DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH,
+  feedInPriceEurPerKwh: number = DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH
+): number {
+  const selfKwh =
+    simulationResult.selfConsumptionDirectKwh + simulationResult.selfConsumptionViaBatteryKwh;
+  return Math.round(
+    selfKwh * retailPriceEurPerKwh + simulationResult.excessKwh * feedInPriceEurPerKwh
+  );
+}
+
 /**
  * Calcule les économies annuelles en distinguant autoconsommation et injection.
  * - Autoconsommation : valorisée au prix de détail (économie sur la facture)
@@ -440,17 +551,19 @@ export function estimateAnnualSavingsEurWithBreakdown(
 }
 
 /**
- * Estime le coût d'installation en € (équipement : panneaux + onduleurs)
+ * Estime le coût d'installation en € (équipement : panneaux + onduleurs + batterie optionnelle)
  */
 export function estimateInstallationPriceEur(
   panelCount: number,
   inverterCount: number,
   recommendedPanel?: PanelReference | null,
-  recommendedInverter?: InverterReference | null
+  recommendedInverter?: InverterReference | null,
+  recommendedBattery?: BatteryReference | null
 ): number {
   const panelCost = (recommendedPanel?.costEur ?? 150) * panelCount;
   const inverterCost = (recommendedInverter?.costEur ?? 2000) * inverterCount;
-  return Math.round(panelCost + inverterCost);
+  const batteryCost = recommendedBattery?.costEur ?? 0;
+  return Math.round(panelCost + inverterCost + batteryCost);
 }
 
 /**

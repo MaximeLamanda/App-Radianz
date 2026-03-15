@@ -262,6 +262,30 @@ export function validateCoordinates(coordinates: AddressCoordinates): boolean {
 const HOURLY_SOLAR = [0,0,0,0,0,0,0.02,0.05,0.08,0.1,0.11,0.12,0.12,0.11,0.1,0.08,0.06,0.04,0.02,0.01,0,0,0,0];
 const SOLAR_SUM = HOURLY_SOLAR.reduce((a,b)=>a+b,0);
 
+/** Nombre de jours dans un mois (monthIndex 0 = janvier, 11 = décembre). */
+export function getDaysInMonth(monthIndex: number): number {
+  return new Date(2000, monthIndex + 1, 0).getDate();
+}
+
+/**
+ * Jour type production (24h) pour un mois donné.
+ * Total journalier = production mensuelle du mois / jours du mois × kwp.
+ * @param productionPerKwpMonthly Production mensuelle pour 1 kWp (mois 1–12)
+ * @param monthIndex Mois 0 = janvier, 11 = décembre
+ * @param kwp Puissance crête (kW)
+ */
+export function buildTypicalDayForMonth(
+  productionPerKwpMonthly: Array<{ month: number; production: number }>,
+  monthIndex: number,
+  kwp: number
+): number[] {
+  const monthNum = monthIndex + 1;
+  const prodMonth = productionPerKwpMonthly.find((m) => m.month === monthNum)?.production ?? 0;
+  const daysInMonth = getDaysInMonth(monthIndex);
+  const dailyKwh = daysInMonth > 0 ? (prodMonth / daysInMonth) * kwp : 0;
+  return HOURLY_SOLAR.map((f) => Math.round((dailyKwh * (f / SOLAR_SUM)) * 100) / 100);
+}
+
 /**
  * Jour type production (24h) à partir des productions mensuelles PVGIS.
  * @param monthly Production mensuelle (kWh/mois) — peut être pour 1 kWp ou déjà scalée.

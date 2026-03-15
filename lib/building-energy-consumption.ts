@@ -469,6 +469,29 @@ export function getEnergyConsumptionForMonth(
   return data?.consumptionKwhPerM2PerMonth ?? 14.2;
 }
 
+/** Nombre de jours dans un mois (monthIndex 0 = janvier, 11 = décembre). */
+export function getDaysInMonth(monthIndex: number): number {
+  return new Date(2000, monthIndex + 1, 0).getDate();
+}
+
+/**
+ * Jour type consommation (24h) pour un mois donné (kWh par heure).
+ * Total journalier = (consommation mensuelle kWh/m² / jours du mois) × surfaceM2, réparti selon le profil horaire.
+ * @param placeType - Type de lieu (Google Place type)
+ * @param monthIndex - 0 = janvier, 11 = décembre
+ * @param surfaceM2 - Surface du bâtiment en m²
+ */
+export function buildTypicalConsumptionDayForMonth(
+  placeType: string,
+  monthIndex: number,
+  surfaceM2: number
+): number[] {
+  const consumptionKwhPerM2 = getEnergyConsumptionForMonth(placeType, monthIndex as MonthIndex);
+  const daysInMonth = getDaysInMonth(monthIndex);
+  const dailyTotalKwh = daysInMonth > 0 ? (consumptionKwhPerM2 / daysInMonth) * surfaceM2 : 0;
+  return HOURLY_CONSUMPTION_PROFILE.map((f) => Math.round(dailyTotalKwh * f * 1000) / 1000);
+}
+
 /**
  * Obtient la consommation moyenne par catégorie
  */

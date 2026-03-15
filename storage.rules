@@ -17,6 +17,12 @@ service firebase.storage {
       allow create, update, delete: if request.auth != null && request.auth.uid == userId;
     }
 
+    // Photos des références de batteries (par utilisateur)
+    match /users/{userId}/battery_references/{fileName} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
     // Logo entreprise (onboarding, profil)
     match /users/{userId}/{fileName} {
       allow read: if true;

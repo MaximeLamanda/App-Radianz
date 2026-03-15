@@ -25,7 +25,7 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import { searchPlacesByType } from "@/lib/places-search";
 import { SatelliteImage } from "./SatelliteImage";
-import type { AddressCoordinates, PlaceSearchResult, PlaceSearchType, Prospect, SolarPanelType, InverterType, SolarEquipmentSettings, PanelReference, InverterReference } from "@/types";
+import type { AddressCoordinates, PlaceSearchResult, PlaceSearchType, Prospect, SolarPanelType, InverterType, SolarEquipmentSettings, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { getPanelReferences, savePanelReferences, getInverterReferences, saveInverterReferences, PANEL_TYPE_CHARACTERISTICS, getCountryFlagUrl } from "@/lib/solar-settings";
 import {
   savePanelReferenceToFirebase,
@@ -710,6 +710,197 @@ export function InverterReferenceForm({
           >
             <Trash2 className="h-4 w-4 mr-2" />
             Supprimer
+          </Button>
+        )}
+        <Button type="submit" className="flex-1">{isEdit ? "Enregistrer" : "Ajouter"}</Button>
+        <Button type="button" variant="outline" onClick={onCancel}>Annuler</Button>
+      </div>
+    </form>
+  );
+}
+
+export function BatteryReferenceForm({
+  initialRef,
+  onSave,
+  onCancel,
+  allReferences = [],
+  onDelete,
+  userId,
+}: {
+  initialRef?: BatteryReference | null;
+  onSave: (ref: BatteryReference) => void;
+  onCancel: () => void;
+  allReferences?: BatteryReference[];
+  onDelete?: (id: string) => void;
+  userId?: string | null;
+}) {
+  const isEdit = Boolean(initialRef);
+  const [name, setName] = useState(initialRef?.name ?? "");
+  const [capacityKwh, setCapacityKwh] = useState(initialRef?.capacityKwh != null ? String(initialRef.capacityKwh) : "");
+  const [powerChargeKw, setPowerChargeKw] = useState(initialRef?.powerChargeKw != null ? String(initialRef.powerChargeKw) : "");
+  const [powerDischargeKw, setPowerDischargeKw] = useState(initialRef?.powerDischargeKw != null ? String(initialRef.powerDischargeKw) : "");
+  const [roundTripEfficiencyPercent, setRoundTripEfficiencyPercent] = useState(initialRef?.roundTripEfficiencyPercent != null ? String(initialRef.roundTripEfficiencyPercent) : "90");
+  const [costEur, setCostEur] = useState(initialRef?.costEur != null ? String(initialRef.costEur) : "");
+  const [countryOfOrigin, setCountryOfOrigin] = useState(initialRef?.countryOfOrigin ?? "");
+  const [countryCode, setCountryCode] = useState(initialRef?.countryCode ?? "");
+  const [imageUrl, setImageUrl] = useState(initialRef?.imageUrl ?? "");
+  const [warrantyYears, setWarrantyYears] = useState(initialRef?.warrantyYears != null ? String(initialRef.warrantyYears) : "");
+  const [recommended, setRecommended] = useState(initialRef?.recommended ?? false);
+  const [maxKwpRecommended, setMaxKwpRecommended] = useState(initialRef?.maxKwpRecommended != null ? String(initialRef.maxKwpRecommended) : "");
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (nameInputRef.current) nameInputRef.current.focus();
+  }, []);
+
+  const uploadImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      setUploadError("Veuillez sélectionner une image (JPEG, PNG, etc.).");
+      return;
+    }
+    setUploadError(null);
+    setIsUploading(true);
+    try {
+      const path = userId
+        ? `users/${userId}/battery_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`
+        : `battery_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
+      const storageRef = ref(storage, path);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setImageUrl(url);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Erreur lors de l'upload.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cap = parseFloat(capacityKwh);
+    const pCh = parseFloat(powerChargeKw);
+    const pDch = parseFloat(powerDischargeKw);
+    const eff = parseFloat(roundTripEfficiencyPercent);
+    const cost = parseFloat(costEur);
+    const warranty = warrantyYears ? parseInt(warrantyYears, 10) : undefined;
+    const maxKwp = maxKwpRecommended.trim() ? parseFloat(maxKwpRecommended) : undefined;
+    if (!name.trim() || Number.isNaN(cap) || cap <= 0 || Number.isNaN(pCh) || pCh < 0 || Number.isNaN(pDch) || pDch < 0 || Number.isNaN(eff) || eff <= 0 || Number.isNaN(cost) || cost < 0) return;
+
+    const updatedRef: BatteryReference = {
+      id: initialRef?.id ?? `battery-ref-${Date.now()}`,
+      name: name.trim(),
+      capacityKwh: cap,
+      powerChargeKw: pCh,
+      powerDischargeKw: pDch,
+      roundTripEfficiencyPercent: eff,
+      costEur: cost,
+      countryOfOrigin: countryOfOrigin.trim() || "—",
+      countryCode: countryCode.trim() || undefined,
+      imageUrl: imageUrl.trim() || undefined,
+      warrantyYears: warranty && warranty > 0 ? warranty : undefined,
+      recommended: recommended || undefined,
+      maxKwpRecommended: maxKwp != null && !Number.isNaN(maxKwp) && maxKwp > 0 ? maxKwp : undefined,
+    };
+    onSave(updatedRef);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="space-y-2">
+        <Label>Photo</Label>
+        <div className="flex items-start gap-3">
+          <div
+            role="button"
+            tabIndex={0}
+            onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) uploadImage(f); }}
+            onDragOver={(e) => e.preventDefault()}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInputRef.current?.click(); } }}
+            className="group relative shrink-0 w-24 h-24 rounded-lg border-2 border-dashed border-muted-foreground/30 flex flex-col items-center justify-center gap-1 bg-muted/30 hover:bg-muted/50 cursor-pointer overflow-hidden"
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="absolute inset-0 z-10 w-full h-full cursor-pointer opacity-0 text-[0]"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadImage(f); e.target.value = ""; }}
+              disabled={isUploading}
+            />
+            {isUploading ? (
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground relative z-0 pointer-events-none" />
+            ) : imageUrl ? (
+              <Image src={imageUrl} alt="Batterie" fill className="object-cover pointer-events-none" unoptimized />
+            ) : (
+              <ImagePlus className="h-6 w-6 text-muted-foreground relative z-0 pointer-events-none" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0 space-y-2">
+            {imageUrl && !isUploading && (
+              <Button type="button" variant="outline" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => setImageUrl("")}>Supprimer</Button>
+            )}
+            {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+            <Input placeholder="Ou coller une URL" value={imageUrl} onChange={(e) => { setImageUrl(e.target.value); setUploadError(null); }} />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="battery-name">Nom / modèle</Label>
+        <Input ref={nameInputRef} id="battery-name" placeholder="Ex. LUNA2000-7-S1" value={name} onChange={(e) => setName(e.target.value)} />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="capacity">Capacité (kWh)</Label>
+          <Input id="capacity" type="number" placeholder="7" value={capacityKwh} onChange={(e) => setCapacityKwh(e.target.value)} min={0.1} step={0.1} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="cost">Coût (€)</Label>
+          <Input id="cost" type="number" placeholder="4500" value={costEur} onChange={(e) => setCostEur(e.target.value)} min={0} />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="powerCharge">Puissance charge (kW)</Label>
+          <Input id="powerCharge" type="number" placeholder="10.5" value={powerChargeKw} onChange={(e) => setPowerChargeKw(e.target.value)} min={0} step={0.1} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="powerDischarge">Puissance décharge (kW)</Label>
+          <Input id="powerDischarge" type="number" placeholder="10.5" value={powerDischargeKw} onChange={(e) => setPowerDischargeKw(e.target.value)} min={0} step={0.1} />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="efficiency">Rendement aller-retour (%)</Label>
+          <Input id="efficiency" type="number" placeholder="90" value={roundTripEfficiencyPercent} onChange={(e) => setRoundTripEfficiencyPercent(e.target.value)} min={50} max={100} step={0.5} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="maxKwp">kWp max recommandé</Label>
+          <Input id="maxKwp" type="number" placeholder="100" value={maxKwpRecommended} onChange={(e) => setMaxKwpRecommended(e.target.value)} min={0} />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="country">Pays d&apos;origine</Label>
+          <Input id="country" placeholder="Ex. Chine" value={countryOfOrigin} onChange={(e) => setCountryOfOrigin(e.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="countryCode">Code pays</Label>
+          <Input id="countryCode" placeholder="Ex. cn" value={countryCode} onChange={(e) => setCountryCode(e.target.value)} maxLength={2} />
+        </div>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="warranty">Garantie (ans)</Label>
+        <Input id="warranty" type="number" placeholder="10" value={warrantyYears} onChange={(e) => setWarrantyYears(e.target.value)} min={0} max={30} />
+      </div>
+      <div className="flex items-center space-x-2">
+        <Switch id="battery-recommended" checked={recommended} onCheckedChange={setRecommended} />
+        <Label htmlFor="battery-recommended" className="cursor-pointer">Recommandé</Label>
+      </div>
+      <div className="flex gap-2 pt-4">
+        {isEdit && onDelete && (
+          <Button type="button" variant="outline" onClick={() => initialRef?.id && onDelete(initialRef.id)} className="text-destructive hover:text-destructive hover:bg-destructive/10">
+            <Trash2 className="h-4 w-4 mr-2" /> Supprimer
           </Button>
         )}
         <Button type="submit" className="flex-1">{isEdit ? "Enregistrer" : "Ajouter"}</Button>

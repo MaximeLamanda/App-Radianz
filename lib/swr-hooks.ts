@@ -11,8 +11,13 @@ import {
   initializeInverterReferencesInFirebase,
 } from "@/lib/firestore-inverter-references";
 import {
+  getBatteryReferencesFromFirebase,
+  initializeBatteryReferencesInFirebase,
+} from "@/lib/firestore-battery-references";
+import {
   getPanelReferences,
   getInverterReferences,
+  DEFAULT_BATTERY_REFERENCES,
 } from "@/lib/solar-settings";
 import { getProspectsForPipeline } from "@/lib/firestore";
 import { getProspectByShareToken } from "@/lib/firestore";
@@ -23,6 +28,7 @@ import { db } from "@/lib/firebase";
 import type {
   PanelReference,
   InverterReference,
+  BatteryReference,
   Prospect,
   Lead,
 } from "@/types";
@@ -64,6 +70,20 @@ async function fetchInverterReferences(userId: string): Promise<InverterReferenc
     // Fallback sur localStorage
   }
   return getInverterReferences();
+}
+
+async function fetchBatteryReferences(userId: string): Promise<BatteryReference[]> {
+  try {
+    let refs = await getBatteryReferencesFromFirebase(userId);
+    if (refs.length === 0) {
+      await initializeBatteryReferencesInFirebase(userId);
+      refs = await getBatteryReferencesFromFirebase(userId);
+    }
+    if (refs.length > 0) return refs;
+  } catch {
+    // Fallback sur références par défaut
+  }
+  return DEFAULT_BATTERY_REFERENCES;
 }
 
 async function fetchLeads(): Promise<Lead[]> {
@@ -114,6 +134,23 @@ export function useInverterReferences(userId: string | null): {
 
 /** Alias pour charger les refs d'un utilisateur donné (ex. propriétaire du prospect sur la page partagée) */
 export const useInverterReferencesForUser = useInverterReferences;
+
+export function useBatteryReferences(userId: string | null): {
+  data: BatteryReference[] | undefined;
+  error: Error | undefined;
+  isLoading: boolean;
+  mutate: KeyedMutator<BatteryReference[]>;
+} {
+  const { data, error, isLoading, mutate } = useSWR(
+    userId ? ["battery-references", userId] : null,
+    () => fetchBatteryReferences(userId!),
+    SWR_OPTIONS_IMMUTABLE
+  );
+  return { data, error, isLoading, mutate };
+}
+
+/** Alias pour charger les refs batterie d'un utilisateur donné */
+export const useBatteryReferencesForUser = useBatteryReferences;
 
 export function useUserProfile(userId: string | null): {
   data: UserProfile | null | undefined;

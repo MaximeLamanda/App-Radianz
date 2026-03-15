@@ -11,7 +11,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, X, Zap, FileCheck, ArrowLeft, User, Settings, Sun, Building2, LogOut, Loader2, Camera, Sparkles } from "lucide-react";
+import { Plus, X, Zap, FileCheck, ArrowLeft, User, Settings, Sun, Building2, LogOut, Loader2, Camera, Sparkles, Battery } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { usePanelReferences, useInverterReferences } from "@/lib/swr-hooks";
+import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import {
   savePanelReferenceToFirebase,
@@ -31,6 +31,10 @@ import {
   deleteInverterReferenceFromFirebase,
 } from "@/lib/firestore-inverter-references";
 import {
+  saveBatteryReferenceToFirebase,
+  deleteBatteryReferenceFromFirebase,
+} from "@/lib/firestore-battery-references";
+import {
   getPanelReferences,
   savePanelReferences,
   getInverterReferences,
@@ -40,12 +44,12 @@ import {
 } from "@/lib/solar-settings";
 import { getCommercialReferent, saveCommercialReferent } from "@/lib/commercial-mock";
 import { getUserProfile, setUserProfile, type UserProfile } from "@/lib/firestore-user-profile";
-import { PanelReferenceForm, InverterReferenceForm } from "./Sidebar";
+import { PanelReferenceForm, InverterReferenceForm, BatteryReferenceForm } from "./Sidebar";
 import { useAuth } from "@/lib/auth-context";
 import { signOut, updateProfile } from "firebase/auth";
 import { auth, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import type { PanelReference, InverterReference, CommercialReferent } from "@/types";
+import type { PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 import { Badge } from "@/components/ui/badge";
 type MenuItem = "compte" | "parametres";
 
@@ -59,15 +63,19 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
   const userId = user?.uid ?? null;
   const { data: panelsData, mutate: mutatePanels } = usePanelReferences(userId);
   const { data: invertersData, mutate: mutateInverters } = useInverterReferences(userId);
+  const { data: batteriesData, mutate: mutateBatteries } = useBatteryReferences(userId);
   const panelReferences = panelsData ?? [];
   const inverterReferences = invertersData ?? [];
+  const batteryReferences = batteriesData ?? [];
 
   const [activeMenu, setActiveMenu] = useState<MenuItem>("compte");
   const [showAddPanelRef, setShowAddPanelRef] = useState(false);
   const [editingRef, setEditingRef] = useState<PanelReference | null>(null);
   const [showAddInverterRef, setShowAddInverterRef] = useState(false);
   const [editingInverterRef, setEditingInverterRef] = useState<InverterReference | null>(null);
-  const [materielTab, setMaterielTab] = useState<"panels" | "inverters">("panels");
+  const [showAddBatteryRef, setShowAddBatteryRef] = useState(false);
+  const [editingBatteryRef, setEditingBatteryRef] = useState<BatteryReference | null>(null);
+  const [materielTab, setMaterielTab] = useState<"panels" | "inverters" | "batteries">("panels");
   const [usableRoofRatio, setUsableRoofRatio] = useState<number>(() => getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
   const [accountInfo, setAccountInfo] = useState<CommercialReferent>(() => getCommercialReferent());
   const [editingProfile, setEditingProfile] = useState(false);
@@ -662,9 +670,47 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                         setEditingInverterRef(null);
                       }}
                     />
+                  ) : (showAddBatteryRef || editingBatteryRef) && user ? (
+                    <BatteryReferenceForm
+                      key={editingBatteryRef?.id ?? "add"}
+                      initialRef={editingBatteryRef ?? undefined}
+                      allReferences={batteryReferences}
+                      userId={userId}
+                      onDelete={(id) => {
+                        const next = batteryReferences.filter((r) => r.id !== id);
+                        if (next.length === 0) return;
+                        if (!userId) return;
+                        deleteBatteryReferenceFromFirebase(id, userId).then(() => mutateBatteries()).catch(() => {});
+                        setShowAddBatteryRef(false);
+                        setEditingBatteryRef(null);
+                      }}
+                      onSave={(ref) => {
+                        let updatedRefs: BatteryReference[];
+                        if (editingBatteryRef) {
+                          updatedRefs = ref.recommended
+                            ? batteryReferences.map((r) => (r.id === ref.id ? ref : { ...r, recommended: false }))
+                            : batteryReferences.map((r) => (r.id === ref.id ? ref : r));
+                        } else {
+                          updatedRefs = ref.recommended
+                            ? [...batteryReferences.map((r) => ({ ...r, recommended: false })), ref]
+                            : [...batteryReferences, ref];
+                        }
+                        if (userId) {
+                          Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
+                            .then(() => mutateBatteries())
+                            .catch(() => {});
+                        }
+                        setShowAddBatteryRef(false);
+                        setEditingBatteryRef(null);
+                      }}
+                      onCancel={() => {
+                        setShowAddBatteryRef(false);
+                        setEditingBatteryRef(null);
+                      }}
+                    />
                   ) : !user ? (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                      Connectez-vous pour gérer votre matériel (panneaux, onduleurs).
+                      Connectez-vous pour gérer votre matériel (panneaux, onduleurs, batteries).
                     </div>
                   ) : (
                     <div className="space-y-4">
@@ -693,10 +739,11 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                           </SelectContent>
                         </Select>
                       </div>
-                      <Tabs value={materielTab} onValueChange={(v) => setMaterielTab(v as "panels" | "inverters")}>
-                        <TabsList className="grid w-full max-w-md grid-cols-2">
+                      <Tabs value={materielTab} onValueChange={(v) => setMaterielTab(v as "panels" | "inverters" | "batteries")}>
+                        <TabsList className="grid w-full max-w-md grid-cols-3">
                           <TabsTrigger value="panels">Panneaux</TabsTrigger>
                           <TabsTrigger value="inverters">Onduleurs</TabsTrigger>
+                          <TabsTrigger value="batteries">Batteries</TabsTrigger>
                         </TabsList>
 
                         <TabsContent value="panels" className="space-y-3 mt-4">
@@ -858,6 +905,95 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                       if (userId) {
                                         Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
                                           .then(() => mutateInverters())
+                                          .catch(() => {});
+                                      }
+                                    }}
+                                    size="sm"
+                                  />
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </TabsContent>
+
+                        <TabsContent value="batteries" className="space-y-3 mt-4">
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium">Références de batterie</label>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowAddBatteryRef(true)}
+                              className="h-8"
+                            >
+                              <Plus className="h-3.5 w-3 mr-1" />
+                              Ajouter
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Les batteries par défaut sont chargées depuis Firestore. Utilisées dans les calculs d&apos;injection et tirage batterie.
+                          </p>
+                          <ul className="space-y-3">
+                            {batteryReferences.map((ref) => (
+                              <li
+                                key={ref.id}
+                                className="rounded-xl border bg-card p-3 flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
+                                onClick={() => setEditingBatteryRef(ref)}
+                              >
+                                <div className="shrink-0 w-14 h-14 rounded-lg overflow-hidden bg-muted flex items-center justify-center">
+                                  {ref.imageUrl ? (
+                                    <Image
+                                      src={ref.imageUrl}
+                                      alt={ref.name}
+                                      width={56}
+                                      height={56}
+                                      className="w-full h-full object-cover"
+                                      unoptimized
+                                    />
+                                  ) : (
+                                    <Battery className="h-6 w-6 text-muted-foreground" />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-medium text-sm truncate">{ref.name}</div>
+                                  <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
+                                    <span>€{ref.costEur}</span>
+                                    <span>|</span>
+                                    <span>{ref.capacityKwh} kWh</span>
+                                    <span>|</span>
+                                    <span>{ref.powerChargeKw} / {ref.powerDischargeKw} kW</span>
+                                    <span>|</span>
+                                    <span>{ref.roundTripEfficiencyPercent} %</span>
+                                    {ref.warrantyYears != null && (
+                                      <>
+                                        <span>|</span>
+                                        <span className="flex items-center gap-0.5">
+                                          <FileCheck className="h-3 w-3" /> {ref.warrantyYears}y
+                                        </span>
+                                      </>
+                                    )}
+                                    {ref.countryCode && (
+                                      <>
+                                        <span>|</span>
+                                        <img
+                                          src={getCountryFlagUrl(ref.countryCode)}
+                                          alt=""
+                                          className="w-3 h-3 rounded-full object-cover"
+                                        />
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                                <div onClick={(e) => e.stopPropagation()}>
+                                  <Switch
+                                    checked={ref.recommended ?? false}
+                                    onCheckedChange={(checked) => {
+                                      const updatedRefs = batteryReferences.map((r) =>
+                                        r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
+                                      );
+                                      if (userId) {
+                                        Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
+                                          .then(() => mutateBatteries())
                                           .catch(() => {});
                                       }
                                     }}

@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { usePanelReferences, useInverterReferences } from "@/lib/swr-hooks";
+import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import {
   savePanelReferenceToFirebase,
@@ -25,6 +25,10 @@ import {
   saveInverterReferenceToFirebase,
   deleteInverterReferenceFromFirebase,
 } from "@/lib/firestore-inverter-references";
+import {
+  saveBatteryReferenceToFirebase,
+  deleteBatteryReferenceFromFirebase,
+} from "@/lib/firestore-battery-references";
 import {
   getPanelReferences,
   savePanelReferences,
@@ -40,8 +44,8 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage
 import { getUserProfile, setUserProfile } from "@/lib/firestore-user-profile";
 import { getQuotaDisplay } from "@/lib/usage-quotas";
 import { Badge } from "@/components/ui/badge";
-import { PanelReferenceForm, InverterReferenceForm } from "./Sidebar";
-import type { PanelReference, InverterReference, CommercialReferent } from "@/types";
+import { PanelReferenceForm, InverterReferenceForm, BatteryReferenceForm } from "./Sidebar";
+import type { PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 
 interface SettingsDrawerProps {
   onClose: () => void;
@@ -52,16 +56,20 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
   const userId = user?.uid ?? null;
   const { data: panelsData, mutate: mutatePanels } = usePanelReferences(userId);
   const { data: invertersData, mutate: mutateInverters } = useInverterReferences(userId);
+  const { data: batteriesData, mutate: mutateBatteries } = useBatteryReferences(userId);
   const panelReferences = panelsData ?? [];
   const inverterReferences = invertersData ?? [];
+  const batteryReferences = batteriesData ?? [];
 
   const [quotaDisplay, setQuotaDisplay] = useState<ReturnType<typeof getQuotaDisplay> | null>(null);
   const [showAddPanelRef, setShowAddPanelRef] = useState(false);
   const [editingRef, setEditingRef] = useState<PanelReference | null>(null);
   const [showAddInverterRef, setShowAddInverterRef] = useState(false);
   const [editingInverterRef, setEditingInverterRef] = useState<InverterReference | null>(null);
+  const [showAddBatteryRef, setShowAddBatteryRef] = useState(false);
+  const [editingBatteryRef, setEditingBatteryRef] = useState<BatteryReference | null>(null);
   const [mainTab, setMainTab] = useState<"materiel" | "compte">("materiel");
-  const [materielTab, setMaterielTab] = useState<"panels" | "inverters">("panels");
+  const [materielTab, setMaterielTab] = useState<"panels" | "inverters" | "batteries">("panels");
   const [accountInfo, setAccountInfo] = useState<CommercialReferent>(() => getCommercialReferent());
   const [usableRoofRatio, setUsableRoofRatio] = useState<number>(() => getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
@@ -144,13 +152,15 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
       <div className="border-b p-4 bg-white">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold leading-none tracking-tight">
-            {showAddPanelRef || editingRef 
+            {showAddPanelRef || editingRef
               ? (editingRef ? "Modifier le panneau" : "Ajouter une référence")
               : showAddInverterRef || editingInverterRef
               ? (editingInverterRef ? "Modifier l'onduleur" : "Ajouter une référence")
+              : showAddBatteryRef || editingBatteryRef
+              ? (editingBatteryRef ? "Modifier la batterie" : "Ajouter une référence")
               : "Personnalisation"}
           </h2>
-          {(showAddPanelRef || editingRef || showAddInverterRef || editingInverterRef) ? (
+          {(showAddPanelRef || editingRef || showAddInverterRef || editingInverterRef || showAddBatteryRef || editingBatteryRef) ? (
             <Button
               variant="outline"
               size="icon"
@@ -160,6 +170,8 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                 setEditingRef(null);
                 setShowAddInverterRef(false);
                 setEditingInverterRef(null);
+                setShowAddBatteryRef(false);
+                setEditingBatteryRef(null);
               }}
             >
               <ArrowLeft className="h-4 w-4 text-muted-foreground" />
@@ -175,7 +187,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
             </Button>
           )}
         </div>
-        {!(showAddPanelRef || editingRef || showAddInverterRef || editingInverterRef) && (
+        {!(showAddPanelRef || editingRef || showAddInverterRef || editingInverterRef || showAddBatteryRef || editingBatteryRef) && (
           <p className="text-sm text-muted-foreground mt-1">
             Matériel et informations de compte pour les liens prospect
           </p>
@@ -284,6 +296,53 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
               setEditingInverterRef(null);
             }}
           />
+        ) : (showAddBatteryRef || editingBatteryRef) ? (
+          <BatteryReferenceForm
+            key={editingBatteryRef?.id ?? "add"}
+            initialRef={editingBatteryRef ?? undefined}
+            allReferences={batteryReferences}
+            userId={userId}
+            onDelete={(id) => {
+              const next = batteryReferences.filter((r) => r.id !== id);
+              if (next.length === 0) return;
+              if (!userId) return;
+              deleteBatteryReferenceFromFirebase(id, userId)
+                .then(() => mutateBatteries())
+                .catch((e) => console.error("Firebase delete battery ref:", e));
+              setShowAddBatteryRef(false);
+              setEditingBatteryRef(null);
+            }}
+            onSave={(ref) => {
+              let updatedRefs: BatteryReference[];
+              if (editingBatteryRef) {
+                if (ref.recommended) {
+                  updatedRefs = batteryReferences.map((r) =>
+                    r.id === ref.id ? ref : { ...r, recommended: false }
+                  );
+                } else {
+                  updatedRefs = batteryReferences.map((r) => (r.id === ref.id ? ref : r));
+                }
+              } else {
+                if (ref.recommended) {
+                  updatedRefs = batteryReferences.map((r) => ({ ...r, recommended: false }));
+                  updatedRefs = [...updatedRefs, ref];
+                } else {
+                  updatedRefs = [...batteryReferences, ref];
+                }
+              }
+              if (userId) {
+                Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
+                  .then(() => mutateBatteries())
+                  .catch((e) => console.error("Firebase save battery refs:", e));
+              }
+              setShowAddBatteryRef(false);
+              setEditingBatteryRef(null);
+            }}
+            onCancel={() => {
+              setShowAddBatteryRef(false);
+              setEditingBatteryRef(null);
+            }}
+          />
         ) : (
           <>
             {/* Onglets principaux : Matériel | Informations de compte */}
@@ -300,10 +359,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                 Connectez-vous pour gérer votre matériel (panneaux, onduleurs).
               </div>
             ) : (
-            <Tabs value={materielTab} onValueChange={(v) => setMaterielTab(v as "panels" | "inverters")}>
-              <TabsList className="grid w-full grid-cols-2">
+            <Tabs value={materielTab} onValueChange={(v) => setMaterielTab(v as "panels" | "inverters" | "batteries")}>
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="panels">Panneaux</TabsTrigger>
                 <TabsTrigger value="inverters">Onduleurs</TabsTrigger>
+                <TabsTrigger value="batteries">Batteries</TabsTrigger>
               </TabsList>
 
               {/* Paramètre taux surface couverte */}
@@ -523,6 +583,104 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                               Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
                                 .then(() => mutateInverters())
                                 .catch((e) => console.error("Firebase save inverter refs:", e));
+                            }
+                          }}
+                          size="sm"
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </TabsContent>
+
+              {/* Onglet Batteries */}
+              <TabsContent value="batteries" className="space-y-3 mt-4">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">Références de batterie</label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowAddBatteryRef(true)}
+                    className="h-8"
+                  >
+                    <Plus className="h-3.5 w-3 mr-1" />
+                    Ajouter
+                  </Button>
+                </div>
+                <ul className="space-y-3">
+                  {batteryReferences.map((ref) => (
+                    <li
+                      key={ref.id}
+                      className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
+                      onClick={() => setEditingBatteryRef(ref)}
+                    >
+                      <div className="shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted">
+                        {ref.imageUrl ? (
+                          <Image
+                            src={ref.imageUrl}
+                            alt={ref.name}
+                            width={64}
+                            height={64}
+                            className="w-full h-full object-cover aspect-square"
+                            unoptimized
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <div className="font-semibold text-sm text-foreground truncate">{ref.name}</div>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{ref.costEur}</span>
+                          <span className="text-muted-foreground/40 text-xs">|</span>
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                            <Zap className="h-3.5 w-3.5 text-muted-foreground/80" />
+                            {ref.capacityKwh} kWh
+                          </span>
+                          {ref.warrantyYears != null && (
+                            <>
+                              <span className="text-muted-foreground/40 text-xs">|</span>
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                <FileCheck className="h-3.5 w-3.5 text-muted-foreground/80" />
+                                {ref.warrantyYears}y
+                              </span>
+                            </>
+                          )}
+                          {ref.countryCode && (
+                            <>
+                              <span className="text-muted-foreground/40 text-xs">|</span>
+                              <span className="inline-flex items-center shrink-0" title={ref.countryOfOrigin}>
+                                <img
+                                  src={getCountryFlagUrl(ref.countryCode)}
+                                  alt=""
+                                  className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                  width={12}
+                                  height={12}
+                                />
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <Switch
+                          checked={ref.recommended ?? false}
+                          onCheckedChange={(checked) => {
+                            let updatedRefs: BatteryReference[];
+                            if (checked) {
+                              updatedRefs = batteryReferences.map((r) =>
+                                r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }
+                              );
+                            } else {
+                              updatedRefs = batteryReferences.map((r) =>
+                                r.id === ref.id ? { ...r, recommended: false } : r
+                              );
+                            }
+                            if (userId) {
+                              Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
+                                .then(() => mutateBatteries())
+                                .catch((e) => console.error("Firebase save battery refs:", e));
                             }
                           }}
                           size="sm"
