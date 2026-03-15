@@ -22,6 +22,14 @@ export interface UserProfile {
   osmRequestCount?: number;
   /** Début de la période courante (réinitialisation mensuelle ou quotidienne selon statut) */
   creditsResetAt?: { seconds: number; nanoseconds: number };
+  // Onboarding
+  companyName?: string;
+  companyLogoUrl?: string;
+  defaultPanelRefId?: string;
+  defaultInverterRefId?: string;
+  companySize?: "solo" | "2-10" | "11-50" | "50+";
+  geoZones?: string[];
+  onboardingCompleted?: boolean;
 }
 
 const COLLECTION = "users";

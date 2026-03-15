@@ -5,13 +5,29 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // Dossier des photos des références de panneaux (upload depuis l'app)
+    // Photos des références de panneaux (par utilisateur)
+    match /users/{userId}/panel_references/{fileName} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Photos des références d'onduleurs (par utilisateur)
+    match /users/{userId}/inverter_references/{fileName} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Logo entreprise (onboarding, profil)
+    match /users/{userId}/{fileName} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Chemins legacy (panel_references, inverter_references) - rétrocompatibilité
     match /panel_references/{fileName} {
       allow read: if true;
       allow write: if true;
     }
-
-    // Dossier des photos des références d'onduleurs (upload depuis l'app)
     match /inverter_references/{fileName} {
       allow read: if true;
       allow write: if true;

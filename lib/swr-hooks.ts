@@ -2,14 +2,22 @@
 
 import useSWR, { type KeyedMutator } from "swr";
 import { fetchWithAuth } from "@/lib/api-client";
-import { getPanelReferencesFromFirebase } from "@/lib/firestore-panel-references";
-import { getInverterReferencesFromFirebase } from "@/lib/firestore-inverter-references";
+import {
+  getPanelReferencesFromFirebase,
+  initializePanelReferencesInFirebase,
+} from "@/lib/firestore-panel-references";
+import {
+  getInverterReferencesFromFirebase,
+  initializeInverterReferencesInFirebase,
+} from "@/lib/firestore-inverter-references";
 import {
   getPanelReferences,
   getInverterReferences,
 } from "@/lib/solar-settings";
 import { getProspectsForPipeline } from "@/lib/firestore";
 import { getProspectByShareToken } from "@/lib/firestore";
+import { getUserProfile } from "@/lib/firestore-user-profile";
+import type { UserProfile } from "@/lib/firestore-user-profile";
 import { collection, getDocs, query, orderBy } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type {
@@ -30,9 +38,13 @@ const SWR_OPTIONS_PIPELINE = {
   revalidateOnFocus: false,
 };
 
-async function fetchPanelReferences(): Promise<PanelReference[]> {
+async function fetchPanelReferences(userId: string): Promise<PanelReference[]> {
   try {
-    const refs = await getPanelReferencesFromFirebase();
+    let refs = await getPanelReferencesFromFirebase(userId);
+    if (refs.length === 0) {
+      await initializePanelReferencesInFirebase(userId);
+      refs = await getPanelReferencesFromFirebase(userId);
+    }
     if (refs.length > 0) return refs;
   } catch {
     // Fallback sur localStorage
@@ -40,9 +52,13 @@ async function fetchPanelReferences(): Promise<PanelReference[]> {
   return getPanelReferences();
 }
 
-async function fetchInverterReferences(): Promise<InverterReference[]> {
+async function fetchInverterReferences(userId: string): Promise<InverterReference[]> {
   try {
-    const refs = await getInverterReferencesFromFirebase();
+    let refs = await getInverterReferencesFromFirebase(userId);
+    if (refs.length === 0) {
+      await initializeInverterReferencesInFirebase(userId);
+      refs = await getInverterReferencesFromFirebase(userId);
+    }
     if (refs.length > 0) return refs;
   } catch {
     // Fallback sur localStorage
@@ -65,32 +81,52 @@ async function fetchLeads(): Promise<Lead[]> {
   return leadsData;
 }
 
-export function usePanelReferences(): {
+export function usePanelReferences(userId: string | null): {
   data: PanelReference[] | undefined;
   error: Error | undefined;
   isLoading: boolean;
   mutate: KeyedMutator<PanelReference[]>;
 } {
   const { data, error, isLoading, mutate } = useSWR(
-    "panel-references",
-    fetchPanelReferences,
+    userId ? ["panel-references", userId] : null,
+    () => fetchPanelReferences(userId!),
     SWR_OPTIONS_IMMUTABLE
   );
   return { data, error, isLoading, mutate };
 }
 
-export function useInverterReferences(): {
+/** Alias pour charger les refs d'un utilisateur donné (ex. propriétaire du prospect sur la page partagée) */
+export const usePanelReferencesForUser = usePanelReferences;
+
+export function useInverterReferences(userId: string | null): {
   data: InverterReference[] | undefined;
   error: Error | undefined;
   isLoading: boolean;
   mutate: KeyedMutator<InverterReference[]>;
 } {
   const { data, error, isLoading, mutate } = useSWR(
-    "inverter-references",
-    fetchInverterReferences,
+    userId ? ["inverter-references", userId] : null,
+    () => fetchInverterReferences(userId!),
     SWR_OPTIONS_IMMUTABLE
   );
   return { data, error, isLoading, mutate };
+}
+
+/** Alias pour charger les refs d'un utilisateur donné (ex. propriétaire du prospect sur la page partagée) */
+export const useInverterReferencesForUser = useInverterReferences;
+
+export function useUserProfile(userId: string | null): {
+  data: UserProfile | null | undefined;
+  error: Error | undefined;
+  isLoading: boolean;
+  mutate: KeyedMutator<UserProfile | null>;
+} {
+  const { data, error, isLoading, mutate } = useSWR(
+    userId ? ["user-profile", userId] : null,
+    () => getUserProfile(userId!),
+    { dedupingInterval: 5000, revalidateOnFocus: false }
+  );
+  return { data: data ?? null, error, isLoading, mutate };
 }
 
 export function useProspectsForPipeline(userId: string | null): {

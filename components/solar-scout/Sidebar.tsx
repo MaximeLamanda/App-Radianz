@@ -30,14 +30,14 @@ import { getPanelReferences, savePanelReferences, getInverterReferences, saveInv
 import {
   savePanelReferenceToFirebase,
   deletePanelReferenceFromFirebase,
-  initializePanelReferencesInFirebase,
 } from "@/lib/firestore-panel-references";
 import {
   saveInverterReferenceToFirebase,
   deleteInverterReferenceFromFirebase,
-  initializeInverterReferencesInFirebase,
 } from "@/lib/firestore-inverter-references";
 import { fetchWithAuth } from "@/lib/api-client";
+import { useOsmBuildings, type MapBounds } from "@/lib/swr-hooks";
+import { RangeSlider } from "@/components/ui/slider";
 
 export function PanelReferenceForm({
   initialRef,
@@ -45,12 +45,15 @@ export function PanelReferenceForm({
   onCancel,
   allReferences = [],
   onDelete,
+  userId,
 }: {
   initialRef?: PanelReference | null;
   onSave: (ref: PanelReference) => void;
   onCancel: () => void;
   allReferences?: PanelReference[];
   onDelete?: (id: string) => void;
+  /** UID pour le chemin Storage users/{userId}/panel_references/ */
+  userId?: string | null;
 }) {
   const isEdit = Boolean(initialRef);
   const [name, setName] = useState(initialRef?.name ?? "");
@@ -86,7 +89,9 @@ export function PanelReferenceForm({
     setUploadError(null);
     setIsUploading(true);
     try {
-      const path = `panel_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
+      const path = userId
+        ? `users/${userId}/panel_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`
+        : `panel_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
       const storageRef = ref(storage, path);
       await uploadBytes(storageRef, file);
       const url = await getDownloadURL(storageRef);
@@ -404,12 +409,15 @@ export function InverterReferenceForm({
   onCancel,
   allReferences = [],
   onDelete,
+  userId,
 }: {
   initialRef?: InverterReference | null;
   onSave: (ref: InverterReference) => void;
   onCancel: () => void;
   allReferences?: InverterReference[];
   onDelete?: (id: string) => void;
+  /** UID pour le chemin Storage users/{userId}/inverter_references/ */
+  userId?: string | null;
 }) {
   const isEdit = Boolean(initialRef);
   const [name, setName] = useState(initialRef?.name ?? "");
@@ -442,7 +450,9 @@ export function InverterReferenceForm({
     setUploadError(null);
     setIsUploading(true);
     try {
-      const path = `inverter_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
+      const path = userId
+        ? `users/${userId}/inverter_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`
+        : `inverter_references/${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
       const storageRef = ref(storage, path);
       await uploadBytes(storageRef, file);
       const url = await getDownloadURL(storageRef);
@@ -726,6 +736,12 @@ interface SidebarProps {
   onAnalyseBuildings?: () => void;
   /** Chargement en cours de l'analyse OSM des bâtiments */
   isAnalysingBuildings?: boolean;
+  /** Bounds pour accéder aux bâtiments OSM (même que MapComponent) */
+  osmBoundsToFetch?: MapBounds | null;
+  /** Plage de surface (min, max) en m² pour le filtre */
+  surfaceRange?: { min: number; max: number };
+  /** Callback quand la plage surface change */
+  onSurfaceRangeChange?: (range: { min: number; max: number }) => void;
 }
 
 export function Sidebar({
@@ -743,7 +759,27 @@ export function Sidebar({
   getMapCenter,
   onAnalyseBuildings,
   isAnalysingBuildings = false,
+  osmBoundsToFetch = null,
+  surfaceRange = { min: 200, max: 2000 },
+  onSurfaceRangeChange,
 }: SidebarProps) {
+  const { data: osmBuildings = [] } = useOsmBuildings(onAnalyseBuildings ? osmBoundsToFetch ?? null : null);
+  const wasAnalysingRef = useRef(false);
+
+  // À la fin d'une analyse : réinitialiser le filtre à 0 → max
+  useEffect(() => {
+    if (wasAnalysingRef.current && !isAnalysingBuildings && osmBuildings.length > 0 && onSurfaceRangeChange) {
+      const maxSurface = Math.max(
+        2000,
+        ...osmBuildings.map((b) =>
+          b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
+        )
+      );
+      onSurfaceRangeChange({ min: 0, max: maxSurface });
+    }
+    wasAnalysingRef.current = isAnalysingBuildings;
+  }, [isAnalysingBuildings, osmBuildings, onSurfaceRangeChange]);
+
   const [address, setAddress] = useState(initialAddress || ""); // Champ vide par défaut
   const inputRef = useRef<HTMLInputElement>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
@@ -1030,16 +1066,57 @@ export function Sidebar({
             {onAnalyseBuildings && (
               <TabsContent value="analyser" className="mt-0">
                 <Card className="rounded-xl">
-                  <CardContent className="space-y-4 p-4">
-                    {/* Zone réservée : insights sur les bâtiments analysés */}
-                    <div className="rounded-xl border border-dashed border-muted-foreground/25 bg-muted/30 min-h-[140px] flex flex-col items-center justify-center p-4 text-center">
-                      <div className="rounded-full bg-muted/60 p-3 mb-3">
-                        <Building2 className="h-6 w-6 text-muted-foreground" />
+                  <CardContent className="space-y-3 p-3 md:p-3 lg:p-4">
+                    {/* Slider filtre surface + stats */}
+                    <div className="rounded-xl bg-muted/30 p-3 space-y-3">
+                      {(() => {
+                        const sliderMax =
+                          osmBuildings.length > 0
+                            ? Math.max(
+                                2000,
+                                ...osmBuildings.map((b) =>
+                                  b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
+                                )
+                              )
+                            : 2000;
+                        return (
+                          <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">surface</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">{surfaceRange.min} – {surfaceRange.max} m²</span>
                       </div>
-                      <p className="text-sm font-medium text-foreground mb-1">Insights bâtiments</p>
-                      <p className="text-xs text-muted-foreground max-w-[260px]">
-                        Statistiques et insights sur les bâtiments sélectionnés — affichés après l&apos;analyse.
-                      </p>
+                      <div>
+                        <RangeSlider
+                          min={0}
+                          max={sliderMax}
+                          step={Math.max(50, Math.round(sliderMax / 100))}
+                          value={[surfaceRange.min, Math.min(surfaceRange.max, sliderMax)]}
+                          onValueChange={([min, max]) => {
+                            const m = min ?? 0;
+                            const M = max ?? sliderMax;
+                            onSurfaceRangeChange?.({ min: Math.min(m, M), max: Math.max(m, M) });
+                          }}
+                        />
+                      </div>
+                      {osmBuildings.length > 0 && (() => {
+                        const rangeMin = surfaceRange.min;
+                        const rangeMax = surfaceRange.max;
+                        const filtered = osmBuildings.filter((b) => {
+                          const total = b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0);
+                          return total >= rangeMin && total <= rangeMax;
+                        });
+                        return (
+                          <div className="text-xs space-y-1 pt-2">
+                            <span className="tabular-nums">{filtered.length}</span>
+                          </div>
+                        );
+                      })()}
+                      {osmBuildings.length === 0 && osmBoundsToFetch != null && (
+                        <p className="text-xs text-muted-foreground pt-2">Analyse en cours…</p>
+                      )}
+                          </>
+                        );
+                      })()}
                     </div>
 
                     <Button

@@ -195,17 +195,17 @@ export function getRecommendedPanelReferenceSync(): PanelReference | null {
 /**
  * Récupère le panneau recommandé (celui avec recommended: true)
  * Version async pour utilisation avec Firebase
+ * @param userId - UID de l'utilisateur (propriétaire des références)
  */
-export async function getRecommendedPanelReference(): Promise<PanelReference | null> {
+export async function getRecommendedPanelReference(userId?: string | null): Promise<PanelReference | null> {
+  if (!userId) return getRecommendedPanelReferenceSync();
   try {
-    const refs = await getPanelReferencesFromFirebase();
+    const refs = await getPanelReferencesFromFirebase(userId);
     const recommended = refs.find(r => r.recommended === true);
     if (recommended) return recommended;
   } catch (error) {
     // Ignorer l'erreur et utiliser le fallback
   }
-  
-  // Fallback sur localStorage
   return getRecommendedPanelReferenceSync();
 }
 
@@ -221,17 +221,17 @@ export function getRecommendedInverterReferenceSync(): InverterReference | null 
 /**
  * Récupère l'onduleur recommandé (celui avec recommended: true)
  * Version async pour utilisation avec Firebase
+ * @param userId - UID de l'utilisateur (propriétaire des références)
  */
-export async function getRecommendedInverterReference(): Promise<InverterReference | null> {
+export async function getRecommendedInverterReference(userId?: string | null): Promise<InverterReference | null> {
+  if (!userId) return getRecommendedInverterReferenceSync();
   try {
-    const refs = await getInverterReferencesFromFirebase();
+    const refs = await getInverterReferencesFromFirebase(userId);
     const recommended = refs.find(r => r.recommended === true);
     if (recommended) return recommended;
   } catch (error) {
     // Ignorer l'erreur et utiliser le fallback
   }
-  
-  // Fallback sur localStorage
   return getRecommendedInverterReferenceSync();
 }
 

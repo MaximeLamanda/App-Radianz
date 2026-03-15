@@ -92,6 +92,8 @@ interface MapComponentProps {
   onOsmPolygonClick?: () => void;
   /** Appelé au début/fin de l'enrichissement OSM (geocode + BDNB + POI) pour afficher le loading */
   onOsmEnrichmentChange?: (enriching: boolean) => void;
+  /** Plage de surface (m²) pour filtrer l'affichage des bâtiments OSM (atténuation hors plage) */
+  surfaceRange?: { min: number; max: number } | null;
 }
 
 export function MapComponent({
@@ -114,6 +116,7 @@ export function MapComponent({
   onOsmBuildingsLoadingChange,
   onOsmPolygonClick,
   onOsmEnrichmentChange,
+  surfaceRange = null,
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -898,24 +901,32 @@ export function MapComponent({
       });
   };
 
-  // Rendre les polygones OSM (bleu) + clic
+  // Rendre les polygones OSM (bleu) + clic, avec filtre surface (atténuation hors plage)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || !window.google?.maps) return;
 
     const maps = window.google.maps;
+    const rangeMin = surfaceRange?.min ?? 0;
+    const rangeMax = surfaceRange?.max ?? 2000;
 
     osmPolygonsRef.current.forEach((p) => p.setMap(null));
     osmPolygonsRef.current = [];
 
     osmBuildings.forEach((osmBuilding) => {
+      const totalAreaM2 = osmBuilding.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0);
+      const inRange = totalAreaM2 >= rangeMin && totalAreaM2 <= rangeMax;
+      const fillOpacity = inRange ? 0.25 : 0.08;
+      const strokeOpacity = inRange ? 1 : 0.3;
+
       osmBuilding.polygonSurfaces.forEach((surf) => {
         if (!surf.polygon || surf.polygon.length === 0) return;
         const polygon = new maps.Polygon({
           paths: surf.polygon,
           fillColor: "#60A5FA",
-          fillOpacity: 0.25,
+          fillOpacity,
           strokeColor: "#2563EB",
+          strokeOpacity,
           strokeWeight: 1,
           clickable: true,
           zIndex: 0,
@@ -939,7 +950,7 @@ export function MapComponent({
       });
       osmPolygonsRef.current = [];
     };
-  }, [osmBuildings]);
+  }, [osmBuildings, surfaceRange]);
 
   // Référence pour stocker tous les polygones affichés
   const polygonsRef = useRef<google.maps.Polygon[]>([]);
@@ -994,10 +1005,10 @@ export function MapComponent({
 
       const polygon = new maps.Polygon({
         paths: surface.polygon,
-        fillColor: "#84CC16",
+        fillColor: "#E4FE55",
         fillOpacity: 0.35,
         strokeWeight: 2,
-        strokeColor: "#84CC16",
+        strokeColor: "#d7f24f",
         clickable: false,
         editable: false,
         zIndex: 1,

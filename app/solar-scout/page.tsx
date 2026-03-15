@@ -66,6 +66,7 @@ function SolarScoutContent() {
   const { isDrawerOpen, setIsDrawerOpen, setDrawerContent } = useDrawer();
   const [isDrawing, setIsDrawing] = useState(false);
   const [osmBoundsToFetch, setOsmBoundsToFetch] = useState<{ ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null>(null);
+  const [surfaceRange, setSurfaceRange] = useState<{ min: number; max: number }>({ min: 200, max: 2000 });
   const [isAnalysingBuildings, setIsAnalysingBuildings] = useState(false);
   const [getMapBoundsFunc, setGetMapBoundsFunc] = useState<(() => { ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null) | null>(null);
 
@@ -496,6 +497,7 @@ function SolarScoutContent() {
               });
             }}
             osmBoundsToFetch={osmBoundsToFetch}
+            surfaceRange={surfaceRange}
             onOsmBuildingsLoadingChange={setIsAnalysingBuildings}
             onGetMapBounds={handleGetMapBounds}
             onBdnbSurface={(bdnbSurfaces) => {
@@ -657,6 +659,9 @@ function SolarScoutContent() {
           getMapCenter={getMapCenter}
           onAnalyseBuildings={handleAnalyseBuildings}
           isAnalysingBuildings={isAnalysingBuildings}
+          osmBoundsToFetch={osmBoundsToFetch}
+          surfaceRange={surfaceRange}
+          onSurfaceRangeChange={setSurfaceRange}
         />
       </div>
     </div>

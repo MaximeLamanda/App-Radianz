@@ -11,7 +11,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, X, Zap, FileCheck, ArrowLeft, User, Settings, Sun, Building2, LogOut, Loader2, Camera, HelpCircle, Sparkles, Calendar } from "lucide-react";
+import { Plus, X, Zap, FileCheck, ArrowLeft, User, Settings, Sun, Building2, LogOut, Loader2, Camera, Sparkles } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -47,13 +47,6 @@ import { auth, storage } from "@/lib/firebase";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import type { PanelReference, InverterReference, CommercialReferent } from "@/types";
 import { Badge } from "@/components/ui/badge";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-
 type MenuItem = "compte" | "parametres";
 
 interface SettingsPopupProps {
@@ -63,8 +56,9 @@ interface SettingsPopupProps {
 
 export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
   const { user } = useAuth();
-  const { data: panelsData, mutate: mutatePanels } = usePanelReferences();
-  const { data: invertersData, mutate: mutateInverters } = useInverterReferences();
+  const userId = user?.uid ?? null;
+  const { data: panelsData, mutate: mutatePanels } = usePanelReferences(userId);
+  const { data: invertersData, mutate: mutateInverters } = useInverterReferences(userId);
   const panelReferences = panelsData ?? [];
   const inverterReferences = invertersData ?? [];
 
@@ -82,11 +76,15 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
   const [profilePhotoFile, setProfilePhotoFile] = useState<File | null>(null);
   const [profilePhotoPreview, setProfilePhotoPreview] = useState<string | null>(null);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const profilePhotoInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   // Charger le profil utilisateur (Firestore) à l'ouverture du popup / menu Compte
+  // et synchro company/logo avec accountInfo (UserProfile = source de vérité pour onboarding)
   useEffect(() => {
     if (!open || !user?.uid) return;
     getUserProfile(user.uid)
@@ -99,6 +97,13 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
             phone: p.phone ?? "",
           });
         }
+        const fromStorage = getCommercialReferent();
+        const merged: CommercialReferent = {
+          ...fromStorage,
+          company: p?.companyName?.trim() || fromStorage.company || "",
+          logoUrl: p?.companyLogoUrl?.trim() || fromStorage.logoUrl || "",
+        };
+        setAccountInfo(merged);
       })
       .catch(() => setUserProfileState(null));
   }, [open, user?.uid]);
@@ -117,8 +122,8 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
   }, [editingProfile, user?.uid, user?.displayName, user?.phoneNumber, userProfile?.firstName, userProfile?.lastName, userProfile?.phone]);
 
   useEffect(() => {
-    setAccountInfo(getCommercialReferent());
-  }, [open]);
+    if (!open || !user?.uid) setAccountInfo(getCommercialReferent());
+  }, [open, user?.uid]);
 
   useEffect(() => {
     if (open) setUsableRoofRatio(getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
@@ -128,6 +133,12 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
     const next = { ...accountInfo, [field]: value ?? "" };
     setAccountInfo(next);
     saveCommercialReferent(next);
+    if (user?.uid && (field === "company" || field === "logoUrl")) {
+      setUserProfile(user.uid, {
+        ...(field === "company" && { companyName: value?.trim() || undefined }),
+        ...(field === "logoUrl" && { companyLogoUrl: value?.trim() || undefined }),
+      }).catch((e) => console.warn("Synchro UserProfile:", e));
+    }
   };
 
   const handleProfilePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -147,6 +158,50 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
       setProfilePhotoFile(file);
       const url = URL.createObjectURL(file);
       setProfilePhotoPreview(url);
+    }
+  };
+
+  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !file.type.startsWith("image/") || !user?.uid) return;
+    const preview = URL.createObjectURL(file);
+    setLogoPreview(preview);
+    setIsUploadingLogo(true);
+    try {
+      const path = `users/${user.uid}/company_logo_${Date.now()}.jpg`;
+      const ref = storageRef(storage, path);
+      await uploadBytes(ref, file);
+      const logoUrl = await getDownloadURL(ref);
+      handleAccountChange("logoUrl", logoUrl);
+    } catch (err) {
+      console.warn("Upload logo:", err);
+    } finally {
+      URL.revokeObjectURL(preview);
+      setIsUploadingLogo(false);
+      setLogoPreview(null);
+    }
+  };
+
+  const handleLogoDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (!file || !file.type.startsWith("image/") || !user?.uid) return;
+    const preview = URL.createObjectURL(file);
+    setLogoPreview(preview);
+    setIsUploadingLogo(true);
+    try {
+      const path = `users/${user.uid}/company_logo_${Date.now()}.jpg`;
+      const ref = storageRef(storage, path);
+      await uploadBytes(ref, file);
+      const logoUrl = await getDownloadURL(ref);
+      handleAccountChange("logoUrl", logoUrl);
+    } catch (err) {
+      console.warn("Upload logo:", err);
+    } finally {
+      URL.revokeObjectURL(preview);
+      setIsUploadingLogo(false);
+      setLogoPreview(null);
     }
   };
 
@@ -442,74 +497,24 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                           </Button>
                         </div>
                         {user && userProfile && (
-                          <TooltipProvider>
-                            <div className="space-y-0 pt-3 border-t border-dashed mt-3">
-                              <div className="flex items-center justify-between py-2">
-                                <div className="flex items-center gap-1.5">
-                                  <Sparkles className="h-4 w-4 text-muted-foreground" />
-                                  <span className="text-sm">Crédits BDNB</span>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="inline-flex text-muted-foreground hover:text-foreground">
-                                        <HelpCircle className="h-3.5 w-3.5" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      Requêtes d&apos;imagerie bâtiments BDNB
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <span className="text-sm font-medium tabular-nums">
-                                  {userProfile.bdnbRequestCount ?? 0}
-                                  {userProfile.status === "admin"
-                                    ? " ∞"
-                                    : userProfile.status === "premium"
-                                      ? " / 5000"
-                                      : userProfile.status === "starter" || !userProfile.status
-                                        ? " / 500"
-                                        : userProfile.status === "demo"
-                                          ? " / 10"
-                                          : ""}
-                                </span>
-                              </div>
-                              <div className="text-xs text-muted-foreground pl-5.5 -mt-1 pb-2">
-                                Crédits de détection de bâtiments
-                              </div>
-                              <div className="flex items-center justify-between py-2 border-t border-dashed">
-                                <div className="flex items-center gap-1.5">
-                                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                                  <span className="text-sm">Crédits OSM</span>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="inline-flex text-muted-foreground hover:text-foreground">
-                                        <HelpCircle className="h-3.5 w-3.5" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      Requêtes OpenStreetMap (bâtiments)
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <span className="text-sm font-medium tabular-nums">
-                                  {userProfile.osmRequestCount ?? 0}
-                                  {userProfile.status === "admin"
-                                    ? " ∞"
-                                    : userProfile.status === "premium"
-                                      ? " / 2000"
-                                      : userProfile.status === "starter" || !userProfile.status
-                                        ? " / 200"
-                                        : userProfile.status === "demo"
-                                          ? " / 5"
-                                          : ""}
-                                </span>
-                              </div>
-                              <div className="text-xs text-muted-foreground pl-5.5 -mt-1">
-                                {userProfile.status === "demo"
-                                  ? "Actualiser à 5 à 00:00 chaque jour"
-                                  : "Crédits de bâtiments OSM"}
-                              </div>
+                          <div className="flex items-center justify-between py-2 pt-3 border-t border-dashed mt-3">
+                            <div className="flex items-center gap-1.5">
+                              <Sparkles className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-sm">Crédits</span>
                             </div>
-                          </TooltipProvider>
+                            <span className="text-sm font-medium tabular-nums">
+                              {userProfile.bdnbRequestCount ?? 0}
+                              {userProfile.status === "admin"
+                                ? " ∞"
+                                : userProfile.status === "premium"
+                                  ? " / 5000"
+                                  : userProfile.status === "starter" || !userProfile.status
+                                    ? " / 500"
+                                    : userProfile.status === "demo"
+                                      ? " / 10"
+                                      : ""}
+                            </span>
+                          </div>
                         )}
                       </div>
                     </>
@@ -522,8 +527,20 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                         Entreprise
                       </div>
                       <div className="flex flex-wrap items-start gap-4">
-                        {accountInfo.logoUrl ? (
-                          <div className="h-14 w-14 rounded-lg overflow-hidden bg-muted shrink-0 flex items-center justify-center">
+                        <button
+                          type="button"
+                          onClick={() => logoInputRef.current?.click()}
+                          disabled={!user?.uid || isUploadingLogo}
+                          className="h-14 w-14 rounded-lg overflow-hidden bg-muted shrink-0 flex items-center justify-center border-2 border-dashed border-muted-foreground/30 hover:border-primary/50 hover:bg-muted/80 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={handleLogoDrop}
+                          title="Cliquez ou glissez une image pour changer le logo"
+                        >
+                          {isUploadingLogo ? (
+                            <Loader2 className="h-6 w-6 text-muted-foreground animate-spin" />
+                          ) : logoPreview ? (
+                            <img src={logoPreview} alt="" className="h-full w-full object-contain" />
+                          ) : accountInfo.logoUrl ? (
                             <img
                               src={accountInfo.logoUrl}
                               alt="Logo"
@@ -531,13 +548,21 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                               referrerPolicy="no-referrer"
                               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                             />
-                          </div>
-                        ) : (
-                          <div className="h-14 w-14 rounded-lg bg-muted shrink-0 flex items-center justify-center">
-                            <Building2 className="h-7 w-7 text-muted-foreground" />
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0 space-y-3">
+                          ) : (
+                            <div className="flex flex-col items-center gap-0.5 text-muted-foreground">
+                              <Camera className="h-6 w-6" />
+                              <span className="text-[9px]">Logo</span>
+                            </div>
+                          )}
+                        </button>
+                        <input
+                          ref={logoInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleLogoChange}
+                        />
+                        <div className="flex-1 min-w-0 space-y-2">
                           <div className="space-y-2">
                             <Label htmlFor="popup-account-company">Nom de l&apos;entreprise</Label>
                             <Input
@@ -545,15 +570,6 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                               value={accountInfo.company ?? ""}
                               onChange={(e) => handleAccountChange("company", e.target.value || undefined)}
                               placeholder="Solar Pro France"
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="popup-account-logo">URL du logo</Label>
-                            <Input
-                              id="popup-account-logo"
-                              value={accountInfo.logoUrl ?? ""}
-                              onChange={(e) => handleAccountChange("logoUrl", e.target.value || undefined)}
-                              placeholder="https://..."
                             />
                           </div>
                         </div>
@@ -566,16 +582,18 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
               {/* Contenu Paramètres (Matériel) */}
               {activeMenu === "parametres" && (
                 <>
-                  {(showAddPanelRef || editingRef) ? (
+                  {(showAddPanelRef || editingRef) && user ? (
                     <PanelReferenceForm
                       key={editingRef?.id ?? "add"}
                       initialRef={editingRef ?? undefined}
                       allReferences={panelReferences}
+                      userId={userId}
                       onDelete={(id) => {
                         const next = panelReferences.filter((r) => r.id !== id);
                         if (next.length === 0) return;
+                        if (!userId) return;
                         savePanelReferences(next);
-                        deletePanelReferenceFromFirebase(id).then(() => mutatePanels()).catch(() => {});
+                        deletePanelReferenceFromFirebase(id, userId).then(() => mutatePanels()).catch(() => {});
                         setShowAddPanelRef(false);
                         setEditingRef(null);
                       }}
@@ -591,9 +609,11 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                             : [...panelReferences, ref];
                         }
                         savePanelReferences(updatedRefs);
-                        Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
-                          .then(() => mutatePanels())
-                          .catch(() => {});
+                        if (userId) {
+                          Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r, userId)))
+                            .then(() => mutatePanels())
+                            .catch(() => {});
+                        }
                         setShowAddPanelRef(false);
                         setEditingRef(null);
                       }}
@@ -602,16 +622,18 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                         setEditingRef(null);
                       }}
                     />
-                  ) : (showAddInverterRef || editingInverterRef) ? (
+                  ) : (showAddInverterRef || editingInverterRef) && user ? (
                     <InverterReferenceForm
                       key={editingInverterRef?.id ?? "add"}
                       initialRef={editingInverterRef ?? undefined}
                       allReferences={inverterReferences}
+                      userId={userId}
                       onDelete={(id) => {
                         const next = inverterReferences.filter((r) => r.id !== id);
                         if (next.length === 0) return;
+                        if (!userId) return;
                         saveInverterReferences(next);
-                        deleteInverterReferenceFromFirebase(id).then(() => mutateInverters()).catch(() => {});
+                        deleteInverterReferenceFromFirebase(id, userId).then(() => mutateInverters()).catch(() => {});
                         setShowAddInverterRef(false);
                         setEditingInverterRef(null);
                       }}
@@ -627,9 +649,11 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                             : [...inverterReferences, ref];
                         }
                         saveInverterReferences(updatedRefs);
-                        Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
-                          .then(() => mutateInverters())
-                          .catch(() => {});
+                        if (userId) {
+                          Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
+                            .then(() => mutateInverters())
+                            .catch(() => {});
+                        }
                         setShowAddInverterRef(false);
                         setEditingInverterRef(null);
                       }}
@@ -638,6 +662,10 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                         setEditingInverterRef(null);
                       }}
                     />
+                  ) : !user ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                      Connectez-vous pour gérer votre matériel (panneaux, onduleurs).
+                    </div>
                   ) : (
                     <div className="space-y-4">
                       <div className="rounded-xl border bg-card p-4 space-y-2">
@@ -742,9 +770,11 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                         r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
                                       );
                                       savePanelReferences(updatedRefs);
-                                      Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
-                                        .then(() => mutatePanels())
-                                        .catch(() => {});
+                                      if (userId) {
+                                        Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r, userId)))
+                                          .then(() => mutatePanels())
+                                          .catch(() => {});
+                                      }
                                     }}
                                     size="sm"
                                   />
@@ -825,9 +855,11 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                         r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
                                       );
                                       saveInverterReferences(updatedRefs);
-                                      Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
-                                        .then(() => mutateInverters())
-                                        .catch(() => {});
+                                      if (userId) {
+                                        Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
+                                          .then(() => mutateInverters())
+                                          .catch(() => {});
+                                      }
                                     }}
                                     size="sm"
                                   />

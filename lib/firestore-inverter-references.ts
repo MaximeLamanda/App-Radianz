@@ -1,13 +1,12 @@
 /**
  * Gestion des références d'onduleurs dans Firebase Firestore
- * Collection : inverter_references (un document par référence, id = ref.id)
+ * Collection : users/{userId}/inverter_references (un document par référence, id = ref.id)
  */
 
 import {
   collection,
   doc,
   setDoc,
-  getDoc,
   getDocs,
   deleteDoc,
   Timestamp,
@@ -15,8 +14,6 @@ import {
 import { db } from "./firebase";
 import type { InverterReference } from "@/types";
 import { DEFAULT_INVERTER_REFERENCES } from "./solar-settings";
-
-const INVERTER_REFERENCES_COLLECTION = "inverter_references";
 
 /** Supprime les champs undefined pour Firestore */
 function toFirestoreData(ref: InverterReference): Record<string, unknown> {
@@ -53,11 +50,13 @@ function fromFirestoreData(data: Record<string, unknown>): InverterReference {
 }
 
 /**
- * Récupère toutes les références d'onduleurs depuis Firebase
+ * Récupère toutes les références d'onduleurs depuis Firebase pour un utilisateur
  */
-export async function getInverterReferencesFromFirebase(): Promise<InverterReference[]> {
+export async function getInverterReferencesFromFirebase(userId: string): Promise<InverterReference[]> {
+  if (!userId) return [];
   try {
-    const snapshot = await getDocs(collection(db, INVERTER_REFERENCES_COLLECTION));
+    const colRef = collection(db, "users", userId, "inverter_references");
+    const snapshot = await getDocs(colRef);
     if (snapshot.empty) return [];
     const list = snapshot.docs
       .map((d) => fromFirestoreData(d.data()))
@@ -72,9 +71,10 @@ export async function getInverterReferencesFromFirebase(): Promise<InverterRefer
 /**
  * Enregistre ou met à jour une référence d'onduleur dans Firebase
  */
-export async function saveInverterReferenceToFirebase(ref: InverterReference): Promise<void> {
+export async function saveInverterReferenceToFirebase(ref: InverterReference, userId: string): Promise<void> {
+  if (!userId) throw new Error("userId requis pour sauvegarder une référence onduleur");
   try {
-    const docRef = doc(db, INVERTER_REFERENCES_COLLECTION, ref.id);
+    const docRef = doc(db, "users", userId, "inverter_references", ref.id);
     await setDoc(
       docRef,
       {
@@ -92,9 +92,10 @@ export async function saveInverterReferenceToFirebase(ref: InverterReference): P
 /**
  * Supprime une référence d'onduleur dans Firebase
  */
-export async function deleteInverterReferenceFromFirebase(id: string): Promise<void> {
+export async function deleteInverterReferenceFromFirebase(id: string, userId: string): Promise<void> {
+  if (!userId) throw new Error("userId requis pour supprimer une référence onduleur");
   try {
-    const docRef = doc(db, INVERTER_REFERENCES_COLLECTION, id);
+    const docRef = doc(db, "users", userId, "inverter_references", id);
     await deleteDoc(docRef);
   } catch (error) {
     console.error("Erreur lors de la suppression de la référence onduleur Firebase:", error);
@@ -106,10 +107,12 @@ export async function deleteInverterReferenceFromFirebase(id: string): Promise<v
  * Sauvegarde toute la liste de références dans Firebase (écrase les documents existants pour ces ids)
  */
 export async function saveAllInverterReferencesToFirebase(
-  references: InverterReference[]
+  references: InverterReference[],
+  userId: string
 ): Promise<void> {
+  if (!userId) throw new Error("userId requis pour sauvegarder les références onduleurs");
   try {
-    await Promise.all(references.map((ref) => saveInverterReferenceToFirebase(ref)));
+    await Promise.all(references.map((ref) => saveInverterReferenceToFirebase(ref, userId)));
   } catch (error) {
     console.error("Erreur lors de la sauvegarde des références onduleurs Firebase:", error);
     throw error;
@@ -117,16 +120,17 @@ export async function saveAllInverterReferencesToFirebase(
 }
 
 /**
- * Initialise la collection avec les références par défaut si elle est vide
+ * Initialise la sous-collection avec les références par défaut si elle est vide
  */
-export async function initializeInverterReferencesInFirebase(): Promise<void> {
+export async function initializeInverterReferencesInFirebase(userId: string): Promise<void> {
+  if (!userId) return;
   try {
-    const existing = await getInverterReferencesFromFirebase();
+    const existing = await getInverterReferencesFromFirebase(userId);
     if (existing.length > 0) {
       console.log(`Références onduleurs déjà présentes (${existing.length}), skip init.`);
       return;
     }
-    await saveAllInverterReferencesToFirebase(DEFAULT_INVERTER_REFERENCES);
+    await saveAllInverterReferencesToFirebase(DEFAULT_INVERTER_REFERENCES, userId);
     console.log(`✅ ${DEFAULT_INVERTER_REFERENCES.length} référence(s) onduleur initialisées dans Firebase`);
   } catch (error) {
     console.error("Erreur lors de l'initialisation des références onduleurs Firebase:", error);

@@ -138,8 +138,8 @@ function HomePage() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
-  const { data: panelsData } = usePanelReferences();
-  const { data: invertersData } = useInverterReferences();
+  const { data: panelsData } = usePanelReferences(user?.uid ?? null);
+  const { data: invertersData } = useInverterReferences(user?.uid ?? null);
   const {
     data: prospectsData,
     error: prospectsError,

@@ -1,13 +1,12 @@
 /**
  * Gestion des références de panneaux solaires dans Firebase Firestore
- * Collection : panel_references (un document par référence, id = ref.id)
+ * Collection : users/{userId}/panel_references (un document par référence, id = ref.id)
  */
 
 import {
   collection,
   doc,
   setDoc,
-  getDoc,
   getDocs,
   deleteDoc,
   Timestamp,
@@ -15,8 +14,6 @@ import {
 import { db } from "./firebase";
 import type { PanelReference } from "@/types";
 import { DEFAULT_PANEL_REFERENCES } from "./solar-settings";
-
-const PANEL_REFERENCES_COLLECTION = "panel_references";
 
 /** Supprime les champs undefined pour Firestore */
 function toFirestoreData(ref: PanelReference): Record<string, unknown> {
@@ -57,11 +54,13 @@ function fromFirestoreData(data: Record<string, unknown>): PanelReference {
 }
 
 /**
- * Récupère toutes les références de panneaux depuis Firebase
+ * Récupère toutes les références de panneaux depuis Firebase pour un utilisateur
  */
-export async function getPanelReferencesFromFirebase(): Promise<PanelReference[]> {
+export async function getPanelReferencesFromFirebase(userId: string): Promise<PanelReference[]> {
+  if (!userId) return [];
   try {
-    const snapshot = await getDocs(collection(db, PANEL_REFERENCES_COLLECTION));
+    const colRef = collection(db, "users", userId, "panel_references");
+    const snapshot = await getDocs(colRef);
     if (snapshot.empty) return [];
     const list = snapshot.docs
       .map((d) => fromFirestoreData(d.data()))
@@ -76,9 +75,10 @@ export async function getPanelReferencesFromFirebase(): Promise<PanelReference[]
 /**
  * Enregistre ou met à jour une référence de panneau dans Firebase
  */
-export async function savePanelReferenceToFirebase(ref: PanelReference): Promise<void> {
+export async function savePanelReferenceToFirebase(ref: PanelReference, userId: string): Promise<void> {
+  if (!userId) throw new Error("userId requis pour sauvegarder une référence panneau");
   try {
-    const docRef = doc(db, PANEL_REFERENCES_COLLECTION, ref.id);
+    const docRef = doc(db, "users", userId, "panel_references", ref.id);
     await setDoc(
       docRef,
       {
@@ -96,9 +96,10 @@ export async function savePanelReferenceToFirebase(ref: PanelReference): Promise
 /**
  * Supprime une référence de panneau dans Firebase
  */
-export async function deletePanelReferenceFromFirebase(id: string): Promise<void> {
+export async function deletePanelReferenceFromFirebase(id: string, userId: string): Promise<void> {
+  if (!userId) throw new Error("userId requis pour supprimer une référence panneau");
   try {
-    const docRef = doc(db, PANEL_REFERENCES_COLLECTION, id);
+    const docRef = doc(db, "users", userId, "panel_references", id);
     await deleteDoc(docRef);
   } catch (error) {
     console.error("Erreur lors de la suppression de la référence panneau Firebase:", error);
@@ -110,10 +111,12 @@ export async function deletePanelReferenceFromFirebase(id: string): Promise<void
  * Sauvegarde toute la liste de références dans Firebase (écrase les documents existants pour ces ids)
  */
 export async function saveAllPanelReferencesToFirebase(
-  references: PanelReference[]
+  references: PanelReference[],
+  userId: string
 ): Promise<void> {
+  if (!userId) throw new Error("userId requis pour sauvegarder les références panneaux");
   try {
-    await Promise.all(references.map((ref) => savePanelReferenceToFirebase(ref)));
+    await Promise.all(references.map((ref) => savePanelReferenceToFirebase(ref, userId)));
   } catch (error) {
     console.error("Erreur lors de la sauvegarde des références panneaux Firebase:", error);
     throw error;
@@ -121,16 +124,17 @@ export async function saveAllPanelReferencesToFirebase(
 }
 
 /**
- * Initialise la collection avec les références par défaut si elle est vide
+ * Initialise la sous-collection avec les références par défaut si elle est vide
  */
-export async function initializePanelReferencesInFirebase(): Promise<void> {
+export async function initializePanelReferencesInFirebase(userId: string): Promise<void> {
+  if (!userId) return;
   try {
-    const existing = await getPanelReferencesFromFirebase();
+    const existing = await getPanelReferencesFromFirebase(userId);
     if (existing.length > 0) {
       console.log(`Références panneaux déjà présentes (${existing.length}), skip init.`);
       return;
     }
-    await saveAllPanelReferencesToFirebase(DEFAULT_PANEL_REFERENCES);
+    await saveAllPanelReferencesToFirebase(DEFAULT_PANEL_REFERENCES, userId);
     console.log(`✅ ${DEFAULT_PANEL_REFERENCES.length} référence(s) panneau initialisées dans Firebase`);
   } catch (error) {
     console.error("Erreur lors de l'initialisation des références panneaux Firebase:", error);

@@ -101,8 +101,8 @@ export function MonthlyProductionChart({ data, dailyData, viewMode: controlledVi
       });
 
   return (
-    <div className="w-full min-w-0">
-      <ChartContainer config={chartConfig} className="h-[250px] min-h-[250px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[9px] [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground/70">
+    <div className="w-full min-w-0 h-full min-h-0 flex-1 flex flex-col">
+      <ChartContainer config={chartConfig} className="aspect-auto h-full min-h-[120px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[9px] [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground/70">
         <BarChart accessibilityLayer data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 0 }}>
           <CartesianGrid vertical={false} />
           <XAxis

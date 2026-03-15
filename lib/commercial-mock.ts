@@ -57,7 +57,16 @@ export function buildCommercialReferentFromUser(
   const email = user.email?.trim() || "";
   const phone = user.phoneNumber?.trim() || userProfile?.phone?.trim() || undefined;
   const photoURL = user.photoURL?.trim() || undefined;
-  return { name, email, ...(phone && { phone }), ...(photoURL && { photoURL }) };
+  const company = userProfile?.companyName?.trim() || undefined;
+  const logoUrl = userProfile?.companyLogoUrl?.trim() || undefined;
+  return {
+    name,
+    email,
+    ...(phone && { phone }),
+    ...(photoURL && { photoURL }),
+    ...(company && { company }),
+    ...(logoUrl && { logoUrl }),
+  };
 }
 
 /**

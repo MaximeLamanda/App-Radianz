@@ -11,6 +11,7 @@ import {
   GoogleAuthProvider,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { getUserProfile } from "@/lib/firestore-user-profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,11 +33,12 @@ export default function LoginPage() {
   useEffect(() => {
     let cancelled = false;
     getRedirectResult(auth)
-      .then((result) => {
+      .then(async (result) => {
         if (cancelled) return;
         if (result?.user) {
           toast.success("Connexion réussie");
-          router.push("/");
+          const profile = await getUserProfile(result.user.uid);
+          router.push(profile?.onboardingCompleted ? "/" : "/onboarding");
           router.refresh();
         }
       })
@@ -59,9 +61,10 @@ export default function LoginPage() {
     }
     setLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const { user } = await signInWithEmailAndPassword(auth, email, password);
       toast.success("Connexion réussie");
-      router.push("/");
+      const profile = await getUserProfile(user.uid);
+      router.push(profile?.onboardingCompleted ? "/" : "/onboarding");
       router.refresh();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Erreur de connexion");
@@ -83,9 +86,10 @@ export default function LoginPage() {
         toast.info("Redirection vers Google…");
         return;
       }
-      const credential = await signInWithPopup(auth, new GoogleAuthProvider());
+      const { user } = await signInWithPopup(auth, new GoogleAuthProvider());
       toast.success("Connexion réussie");
-      router.push("/");
+      const profile = await getUserProfile(user.uid);
+      router.push(profile?.onboardingCompleted ? "/" : "/onboarding");
       router.refresh();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

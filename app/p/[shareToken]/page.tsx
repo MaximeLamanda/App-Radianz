@@ -314,35 +314,35 @@ export default function ProspectSharePage() {
               <button
                 type="button"
                 onClick={() => setConfigurationMode("perfect_fit")}
-                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between bg-gray-100 overflow-hidden ${
+                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                   configurationMode === "perfect_fit"
-                    ? "border-2 border-blue-500 shadow-xs"
-                    : "border border-transparent hover:bg-gray-200/80"
+                    ? "border border-blue-200 bg-blue-50 shadow-xs"
+                    : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] uppercase tracking-wide text-gray-500">Perfect fit</span>
                 </div>
-                <div className="text-lg font-normal text-gray-700 mt-auto">
+                <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-blue-600" : "text-gray-700"}`}>
                   {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
-                  <span className="text-sm font-light text-gray-400 ml-0.5">kWp</span>
+                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
                 </div>
               </button>
               <button
                 type="button"
                 onClick={() => setConfigurationMode("highest_production")}
-                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between bg-gray-100 overflow-hidden ${
+                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                   configurationMode === "highest_production"
-                    ? "border-2 border-blue-500 shadow-xs"
-                    : "border border-transparent hover:bg-gray-200/80"
+                    ? "border border-blue-200 bg-blue-50 shadow-xs"
+                    : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] uppercase tracking-wide text-gray-500">Highest production</span>
                 </div>
-                <div className="text-lg font-normal text-gray-700 mt-auto">
+                <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-blue-600" : "text-gray-700"}`}>
                   {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
-                  <span className="text-sm font-light text-gray-400 ml-0.5">kWp</span>
+                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
                 </div>
               </button>
             </div>

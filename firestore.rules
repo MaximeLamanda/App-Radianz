@@ -30,14 +30,17 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Références de panneaux solaires (paramètres)
-    match /panel_references/{refId} {
-      allow read, write: if true;
+    // Références de panneaux solaires (par utilisateur)
+    // Lecture publique pour la page prospect partagée (visiteur non connecté)
+    match /users/{userId}/panel_references/{refId} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Références d'onduleurs (paramètres)
-    match /inverter_references/{refId} {
-      allow read, write: if true;
+    // Références d'onduleurs (par utilisateur)
+    match /users/{userId}/inverter_references/{refId} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId;
     }
 
     // Profil utilisateur (téléphone, prénom, nom) — lecture/écriture par le propriétaire

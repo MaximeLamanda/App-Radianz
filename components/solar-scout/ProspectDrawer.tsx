@@ -285,8 +285,8 @@ export function ProspectDrawer({
     };
   }, [isOpen, prospect?.name, prospect?.address, prospect?.coordinates?.lat, prospect?.coordinates?.lng]);
 
-  const { data: panelsData } = usePanelReferences();
-  const { data: invertersData } = useInverterReferences();
+  const { data: panelsData } = usePanelReferences(user?.uid ?? null);
+  const { data: invertersData } = useInverterReferences(user?.uid ?? null);
 
   useEffect(() => {
     if (!isOpen || !panelsData) return;
@@ -1336,8 +1336,8 @@ export function ProspectDrawer({
                !isLoadingPVGIS &&
                ((prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0) && (
                 <>
-                  <div className="bg-gray-100 rounded-xl py-3 px-4 pb-2">
-                    <div className="flex items-start justify-between gap-2 mb-3">
+                  <div className="flex flex-col bg-gray-100 rounded-xl py-3 px-4 pb-2 min-h-[280px]">
+                    <div className="flex shrink-0 items-start justify-between gap-2 mb-3">
                       <div className="flex flex-col gap-0.5">
                         <span className="text-[10px] uppercase tracking-wide text-gray-500">Production</span>
                         {(() => {
@@ -1424,7 +1424,7 @@ export function ProspectDrawer({
                         </button>
                       </div>
                     </div>
-                    <div>
+                    <div className="h-[200px] min-w-0 w-full">
                       <MonthlyProductionChart
                         key={configurationMode}
                         viewMode={chartViewMode}
@@ -1493,7 +1493,7 @@ export function ProspectDrawer({
                         <div className="grid grid-cols-2 gap-2">
                           <div className="rounded-xl px-4 py-4 min-h-[130px] flex flex-col justify-between bg-gray-100">
                             <div className="flex items-center justify-between gap-1">
-                              <span className="text-[10px] uppercase tracking-wide text-gray-500">Energy Bill</span>
+                              <span className="text-[10px] uppercase tracking-wide text-gray-500">EST. Energy bill</span>
                               <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" title="Facture énergétique annuelle estimée (consommation × prix du kWh). Le prix du kWh est personnalisable dans les paramètres." />
                             </div>
                             <div className="text-2xl font-normal text-gray-700">

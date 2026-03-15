@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Image from "next/image";
-import { Plus, X, Zap, FileCheck, ArrowLeft, User, Building2, MapPin } from "lucide-react";
+import { Plus, X, Zap, FileCheck, ArrowLeft, User, Building2, Camera, Loader2, Sparkles } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -35,7 +35,9 @@ import {
 } from "@/lib/solar-settings";
 import { getCommercialReferent, saveCommercialReferent } from "@/lib/commercial-mock";
 import { useAuth } from "@/lib/auth-context";
-import { getUserProfile } from "@/lib/firestore-user-profile";
+import { storage } from "@/lib/firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { getUserProfile, setUserProfile } from "@/lib/firestore-user-profile";
 import { getQuotaDisplay } from "@/lib/usage-quotas";
 import { Badge } from "@/components/ui/badge";
 import { PanelReferenceForm, InverterReferenceForm } from "./Sidebar";
@@ -47,8 +49,9 @@ interface SettingsDrawerProps {
 
 export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
   const { user } = useAuth();
-  const { data: panelsData, mutate: mutatePanels } = usePanelReferences();
-  const { data: invertersData, mutate: mutateInverters } = useInverterReferences();
+  const userId = user?.uid ?? null;
+  const { data: panelsData, mutate: mutatePanels } = usePanelReferences(userId);
+  const { data: invertersData, mutate: mutateInverters } = useInverterReferences(userId);
   const panelReferences = panelsData ?? [];
   const inverterReferences = invertersData ?? [];
 
@@ -61,21 +64,30 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
   const [materielTab, setMaterielTab] = useState<"panels" | "inverters">("panels");
   const [accountInfo, setAccountInfo] = useState<CommercialReferent>(() => getCommercialReferent());
   const [usableRoofRatio, setUsableRoofRatio] = useState<number>(() => getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   // Charger les infos compte et paramètres au montage
   useEffect(() => {
-    setAccountInfo(getCommercialReferent());
     setUsableRoofRatio(getSolarEquipmentSettings().usableRoofRatio ?? 0.75);
   }, []);
 
-  // Charger profil et quotas quand l'utilisateur est connecté
+  // Charger profil, quotas et synchro company/logo (UserProfile = source de vérité pour onboarding)
   useEffect(() => {
     if (!user?.uid) {
       setQuotaDisplay(null);
+      setAccountInfo(getCommercialReferent());
       return;
     }
     getUserProfile(user.uid).then((profile) => {
       setQuotaDisplay(getQuotaDisplay(profile));
+      const fromStorage = getCommercialReferent();
+      const merged: CommercialReferent = {
+        ...fromStorage,
+        company: profile?.companyName?.trim() || fromStorage.company || "",
+        logoUrl: profile?.companyLogoUrl?.trim() || fromStorage.logoUrl || "",
+      };
+      setAccountInfo(merged);
     });
   }, [user?.uid]);
 
@@ -83,6 +95,48 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
     const next = { ...accountInfo, [field]: value ?? "" };
     setAccountInfo(next);
     saveCommercialReferent(next);
+    if (user?.uid && (field === "company" || field === "logoUrl")) {
+      setUserProfile(user.uid, {
+        companyName: field === "company" ? (value?.trim() || undefined) : undefined,
+        companyLogoUrl: field === "logoUrl" ? (value?.trim() || undefined) : undefined,
+      }).catch((e) => console.warn("Synchro UserProfile:", e));
+    }
+  };
+
+  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !file.type.startsWith("image/") || !user?.uid) return;
+    setIsUploadingLogo(true);
+    try {
+      const path = `users/${user.uid}/company_logo_${Date.now()}.jpg`;
+      const ref = storageRef(storage, path);
+      await uploadBytes(ref, file);
+      const logoUrl = await getDownloadURL(ref);
+      handleAccountChange("logoUrl", logoUrl);
+    } catch (err) {
+      console.warn("Upload logo:", err);
+    } finally {
+      setIsUploadingLogo(false);
+    }
+  };
+
+  const handleLogoDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (!file || !file.type.startsWith("image/") || !user?.uid) return;
+    setIsUploadingLogo(true);
+    try {
+      const path = `users/${user.uid}/company_logo_${Date.now()}.jpg`;
+      const ref = storageRef(storage, path);
+      await uploadBytes(ref, file);
+      const logoUrl = await getDownloadURL(ref);
+      handleAccountChange("logoUrl", logoUrl);
+    } catch (err) {
+      console.warn("Upload logo:", err);
+    } finally {
+      setIsUploadingLogo(false);
+    }
   };
 
   return (
@@ -135,11 +189,13 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
             key={editingRef?.id ?? "add"}
             initialRef={editingRef ?? undefined}
             allReferences={panelReferences}
+            userId={userId}
             onDelete={(id) => {
               const next = panelReferences.filter((r) => r.id !== id);
               if (next.length === 0) return;
+              if (!userId) return;
               savePanelReferences(next);
-              deletePanelReferenceFromFirebase(id)
+              deletePanelReferenceFromFirebase(id, userId)
                 .then(() => mutatePanels())
                 .catch((e) => console.error("Firebase delete panel ref:", e));
               setShowAddPanelRef(false);
@@ -165,9 +221,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
               }
               
               savePanelReferences(updatedRefs);
-              Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
-                .then(() => mutatePanels())
-                .catch((e) => console.error("Firebase save panel refs:", e));
+              if (userId) {
+                Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r, userId)))
+                  .then(() => mutatePanels())
+                  .catch((e) => console.error("Firebase save panel refs:", e));
+              }
               setShowAddPanelRef(false);
               setEditingRef(null);
             }}
@@ -181,11 +239,13 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
             key={editingInverterRef?.id ?? "add"}
             initialRef={editingInverterRef ?? undefined}
             allReferences={inverterReferences}
+            userId={userId}
             onDelete={(id) => {
               const next = inverterReferences.filter((r) => r.id !== id);
               if (next.length === 0) return;
+              if (!userId) return;
               saveInverterReferences(next);
-              deleteInverterReferenceFromFirebase(id)
+              deleteInverterReferenceFromFirebase(id, userId)
                 .then(() => mutateInverters())
                 .catch((e) => console.error("Firebase delete inverter ref:", e));
               setShowAddInverterRef(false);
@@ -211,9 +271,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
               }
               
               saveInverterReferences(updatedRefs);
-              Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
-                .then(() => mutateInverters())
-                .catch((e) => console.error("Firebase save inverter refs:", e));
+              if (userId) {
+                Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
+                  .then(() => mutateInverters())
+                  .catch((e) => console.error("Firebase save inverter refs:", e));
+              }
               setShowAddInverterRef(false);
               setEditingInverterRef(null);
             }}
@@ -233,6 +295,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
 
               {/* Contenu Matériel : Panneaux / Onduleurs */}
               <TabsContent value="materiel" className="mt-4">
+            {!user ? (
+              <div className="rounded-xl border border-border bg-amber-50 p-4 text-sm text-amber-800">
+                Connectez-vous pour gérer votre matériel (panneaux, onduleurs).
+              </div>
+            ) : (
             <Tabs value={materielTab} onValueChange={(v) => setMaterielTab(v as "panels" | "inverters")}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="panels">Panneaux</TabsTrigger>
@@ -352,9 +419,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                             }
                             
                             savePanelReferences(updatedRefs);
-                            Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r)))
-                              .then(() => mutatePanels())
-                              .catch((e) => console.error("Firebase save panel refs:", e));
+                            if (userId) {
+                              Promise.all(updatedRefs.map((r) => savePanelReferenceToFirebase(r, userId)))
+                                .then(() => mutatePanels())
+                                .catch((e) => console.error("Firebase save panel refs:", e));
+                            }
                           }}
                           size="sm"
                         />
@@ -450,9 +519,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                             }
                             
                             saveInverterReferences(updatedRefs);
-                            Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r)))
-                              .then(() => mutateInverters())
-                              .catch((e) => console.error("Firebase save inverter refs:", e));
+                            if (userId) {
+                              Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
+                                .then(() => mutateInverters())
+                                .catch((e) => console.error("Firebase save inverter refs:", e));
+                            }
                           }}
                           size="sm"
                         />
@@ -462,6 +533,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                 </ul>
               </TabsContent>
             </Tabs>
+            )}
               </TabsContent>
 
               {/* Contenu Informations de compte */}
@@ -517,33 +589,49 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="account-logo">URL du logo</Label>
-                      <Input
-                        id="account-logo"
-                        value={accountInfo.logoUrl ?? ""}
-                        onChange={(e) => handleAccountChange("logoUrl", e.target.value || undefined)}
-                        placeholder="https://..."
-                        className="bg-white"
-                      />
-                      {accountInfo.logoUrl && (
-                        <div className="mt-2 flex items-center gap-2">
+                      <Label className="flex items-center gap-2">Logo</Label>
+                      <button
+                        type="button"
+                        onClick={() => logoInputRef.current?.click()}
+                        disabled={!user?.uid || isUploadingLogo}
+                        className="h-14 w-14 rounded-lg overflow-hidden bg-muted shrink-0 flex items-center justify-center border-2 border-dashed border-muted-foreground/30 hover:border-primary/50 hover:bg-muted/80 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={handleLogoDrop}
+                        title="Cliquez ou glissez une image pour changer le logo"
+                      >
+                        {isUploadingLogo ? (
+                          <Loader2 className="h-6 w-6 text-muted-foreground animate-spin" />
+                        ) : accountInfo.logoUrl ? (
                           <img
                             src={accountInfo.logoUrl}
                             alt="Logo"
-                            className="h-12 w-auto object-contain rounded border"
+                            className="h-full w-full object-contain"
+                            referrerPolicy="no-referrer"
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                           />
-                        </div>
-                      )}
+                        ) : (
+                          <div className="flex flex-col items-center gap-0.5 text-muted-foreground">
+                            <Camera className="h-6 w-6" />
+                            <span className="text-[9px]">Logo</span>
+                          </div>
+                        )}
+                      </button>
+                      <input
+                        ref={logoInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleLogoChange}
+                      />
                     </div>
                   </div>
                 </div>
 
-                {/* Statut et quotas API */}
+                {/* Statut profil */}
                 {user && (
                   <div className="rounded-xl border border-border bg-white p-4 shadow-xs space-y-4">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">Profil et quotas</span>
+                      <span className="text-sm font-medium">Profil</span>
                       {quotaDisplay && (
                         <Badge variant={quotaDisplay.status === "admin" ? "default" : "outline"}>
                           {quotaDisplay.status === "admin" && "Admin"}
@@ -553,36 +641,19 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                         </Badge>
                       )}
                     </div>
-                    {quotaDisplay ? (
-                      <div className="space-y-3 text-sm">
-                        <div className="flex items-center gap-2">
-                          <MapPin className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-muted-foreground">BDNB :</span>
-                          <span>
-                            {quotaDisplay.bdnb.current}
-                            {quotaDisplay.bdnb.limit != null
-                              ? ` / ${quotaDisplay.bdnb.limit}`
-                              : " (illimité)"}
-                          </span>
+                    {quotaDisplay && (
+                      <div className="flex items-center justify-between py-2 pt-3 border-t border-dashed">
+                        <div className="flex items-center gap-1.5">
+                          <Sparkles className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm">Crédits</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <Building2 className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-muted-foreground">OSM :</span>
-                          <span>
-                            {quotaDisplay.osm.current}
-                            {quotaDisplay.osm.limit != null
-                              ? ` / ${quotaDisplay.osm.limit}`
-                              : " (illimité)"}
-                          </span>
-                        </div>
-                        {quotaDisplay.bdnb.resetAt && (
-                          <p className="text-xs text-muted-foreground">
-                            Reset : {new Date(quotaDisplay.bdnb.resetAt).toLocaleDateString("fr-FR")}
-                          </p>
-                        )}
+                        <span className="text-sm font-medium tabular-nums">
+                          {quotaDisplay.bdnb.current}
+                          {quotaDisplay.bdnb.limit != null
+                            ? ` / ${quotaDisplay.bdnb.limit}`
+                            : " ∞"}
+                        </span>
                       </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">Chargement…</p>
                     )}
                   </div>
                 )}
