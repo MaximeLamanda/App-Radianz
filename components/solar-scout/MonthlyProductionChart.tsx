@@ -179,7 +179,7 @@ export function MonthlyProductionChart({
             interval={isDaily ? 3 : 0}
           />
           <ChartTooltip
-            allowEscapeViewBox
+            allowEscapeViewBox={{ x: true, y: true }}
             offset={-20}
             content={({ active, payload }) => {
               if (!active || !payload?.length) return null;
