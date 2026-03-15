@@ -126,9 +126,24 @@ export const DEFAULT_INVERTER_REFERENCES: InverterReference[] = [
 
 /**
  * Références de batterie par défaut (gamme LUNA2000)
- * 7/14/21-S1 pour < 100 kWp, 215-2S10 pour ≥ 100 kWp
+ * 7/14/21-S1 pour < 100 kWp, 107-1S11 (Smart String ESS), 215-2S10 pour ≥ 100 kWp
  */
 export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
+  {
+    id: "battery-luna2000-107-1s11",
+    name: "HUAWEI LUNA2000-107-1S11",
+    capacityKwh: 107,
+    powerChargeKw: 108,
+    powerDischargeKw: 108,
+    roundTripEfficiencyPercent: 90,
+    costEur: 55000,
+    countryOfOrigin: "Chine",
+    countryCode: "cn",
+    imageUrl: "/AR0797-WS_visual.webp",
+    warrantyYears: 10,
+    recommended: false,
+    maxKwpRecommended: 9999,
+  },
   {
     id: "battery-luna2000-7-s1",
     name: "LUNA2000-7-S1",

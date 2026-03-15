@@ -36,6 +36,7 @@ import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { MonthlyProductionChart } from "./MonthlyProductionChart";
 import { BatterySelectCard } from "./BatterySelectCard";
+import { EquipmentSelectCard, EquipmentThumbnail } from "./EquipmentSelectCard";
 import { surfaceToKwp, getUsableRoofAreaM2 } from "@/lib/surface-to-kwp";
 import {
   BUILDING_ENERGY_CONSUMPTION_DATA,
@@ -59,7 +60,6 @@ import {
   getCountryFlagUrl,
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
-  getRecommendedBatteryReferenceSync,
   getSolarEquipmentSettings,
   calculatePanelCount,
   calculateInverterCount,
@@ -312,13 +312,6 @@ export function ProspectDrawer({
     const recommended = invertersData.find((r) => r.recommended === true);
     setUsedInverterRef(byId ?? recommended ?? invertersData[0] ?? getRecommendedInverterReferenceSync());
   }, [invertersData, prospect?.inverterReferenceId]);
-
-  useEffect(() => {
-    if (!batteriesData) return;
-    const byId = prospect?.batteryReferenceId ? batteriesData.find((r) => r.id === prospect.batteryReferenceId) : null;
-    const recommended = batteriesData.find((r) => r.recommended === true);
-    setUsedBatteryRef(byId ?? recommended ?? batteriesData[0] ?? getRecommendedBatteryReferenceSync());
-  }, [batteriesData, prospect?.batteryReferenceId]);
 
   // Mettre à jour l'adresse et le mode de config quand le prospect change
   useEffect(() => {
@@ -702,6 +695,71 @@ export function ProspectDrawer({
     }
     return config;
   }, [prospect, usedPanelRef, usedInverterRef]);
+
+  /**
+   * Taille batterie recommandée (kWh) selon méthodes courantes :
+   * - Si surplus annuel > 0 : capacité = surplus moyen journalier / rendement aller-retour (0,9).
+   *   (Sources : dimensionnement pour autoconsommation — stocker le surplus du jour pour la nuit.)
+   * - Si surplus ≤ 0 : règle 1 à 1,5 kWh de stockage par kWc installé (EDF, Oscaro, Shift to Solar).
+   * Pas de plafond artificiel : les valeurs suivent le dimensionnement réel.
+   */
+  const recommendedBatteryKwh = useMemo(() => {
+    const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+    if (!prospect || totalArea <= 0) return null;
+    const effectiveKwp = effectiveConfig.effectiveKwp;
+    const hasProductionData = effectiveConfig.productionPerKwp != null;
+    if (!hasProductionData || effectiveKwp <= 0) return null;
+    const placeType = prospect.placeType || "other";
+    const annualConsumptionKwh = getEnergyConsumption(placeType) * totalArea;
+    const annualProductionKwh = effectiveConfig.effectiveAnnualProductionKwh;
+    const annualSurplusKwh = annualProductionKwh - annualConsumptionKwh;
+
+    if (annualSurplusKwh > 0) {
+      const dailySurplusKwh = annualSurplusKwh / 365;
+      const ROUND_TRIP_EFFICIENCY = 0.9; // Li-ion typique (Sources: EleCalculator, derating)
+      const capacityKwh = dailySurplusKwh / ROUND_TRIP_EFFICIENCY;
+      return Math.round(capacityKwh * 10) / 10;
+    }
+
+    // Pas de surplus : règle 1 à 1,5 kWh / kWc (autoconsommation avec réseau)
+    const KWH_PER_KWP = 1.25;
+    const capacityKwh = effectiveKwp * KWH_PER_KWP;
+    return Math.round(Math.max(0, capacityKwh) * 10) / 10;
+  }, [prospect, effectiveConfig.effectiveAnnualProductionKwh, effectiveConfig.effectiveKwp, effectiveConfig.productionPerKwp]);
+
+  /** Modèle batterie utilisateur dont la capacité (kWh) est la plus proche de la taille recommandée */
+  const recommendedBatteryFromSurplus = useMemo(() => {
+    if (!batteriesData?.length || recommendedBatteryKwh == null) return null;
+    return batteriesData.reduce((best, b) =>
+      Math.abs(b.capacityKwh - recommendedBatteryKwh) < Math.abs(best.capacityKwh - recommendedBatteryKwh) ? b : best
+    );
+  }, [batteriesData, recommendedBatteryKwh]);
+
+  useEffect(() => {
+    if (recommendedBatteryKwh != null && process.env.NODE_ENV === "development") {
+      console.log("[Batterie] Dimensionnement calculé:", {
+        recommendedBatteryKwh,
+        modèleChoisi: recommendedBatteryFromSurplus?.name ?? null,
+      });
+    }
+  }, [recommendedBatteryKwh, recommendedBatteryFromSurplus?.id, recommendedBatteryFromSurplus?.name]);
+
+  // Batterie : toujours une ref issue de batteriesData (jamais DEFAULT_BATTERY_REFERENCES hors liste).
+  // Par défaut : choix prospect → batterie calculée (surplus) → premier avec flag recommandé → premier de la liste.
+  useEffect(() => {
+    if (!isOpen || !prospect) return;
+    if (!batteriesData?.length) {
+      setUsedBatteryRef(null);
+      return;
+    }
+    const byId = prospect.batteryReferenceId ? batteriesData.find((r) => r.id === prospect.batteryReferenceId) : null;
+    const chosen =
+      byId ??
+      recommendedBatteryFromSurplus ??
+      batteriesData.find((r) => r.recommended === true) ??
+      batteriesData[0];
+    setUsedBatteryRef(chosen);
+  }, [isOpen, batteriesData, prospect?.batteryReferenceId, prospect?.id, recommendedBatteryFromSurplus]);
 
   /** Nombre max d'onduleurs recommandé ; au-delà, le modèle n'est pas adapté */
   const MAX_INVERTER_COUNT = 8;
@@ -1310,7 +1368,7 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => setConfigurationMode("perfect_fit")}
-                    className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
+                    className={`cursor-pointer rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                       configurationMode === "perfect_fit"
                         ? "border border-blue-200 bg-blue-50 shadow-xs"
                         : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
@@ -1320,9 +1378,9 @@ export function ProspectDrawer({
                       <span className="text-[10px] uppercase tracking-wide text-gray-500">Perfect fit</span>
                     </div>
                     <div className="mt-auto">
-                      <div className={`text-base font-normal ${configurationMode === "perfect_fit" ? "text-blue-600" : "text-gray-700"}`}>
+                      <div className={`text-sm font-normal ${configurationMode === "perfect_fit" ? "text-blue-600" : "text-gray-700"}`}>
                         {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
-                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
+                        <span className={`text-xs font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
                       </div>
                       <div className="flex flex-wrap gap-1 mt-1.5">
                         <span className="text-[10px] text-muted-foreground">{choiceCardsConfig.perfectFit.panelCount} panneaux</span>
@@ -1334,7 +1392,7 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => setConfigurationMode("highest_production")}
-                    className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
+                    className={`cursor-pointer rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                       configurationMode === "highest_production"
                         ? "border border-blue-200 bg-blue-50 shadow-xs"
                         : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
@@ -1344,9 +1402,9 @@ export function ProspectDrawer({
                       <span className="text-[10px] uppercase tracking-wide text-gray-500">Highest production</span>
                     </div>
                     <div className="mt-auto">
-                      <div className={`text-base font-normal ${configurationMode === "highest_production" ? "text-blue-600" : "text-gray-700"}`}>
+                      <div className={`text-sm font-normal ${configurationMode === "highest_production" ? "text-blue-600" : "text-gray-700"}`}>
                         {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
-                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
+                        <span className={`text-xs font-light ml-0.5 ${configurationMode === "highest_production" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
                       </div>
                       <div className="flex flex-wrap gap-1 mt-1.5">
                         <span className="text-[10px] text-muted-foreground">{choiceCardsConfig.highestProduction.panelCount} panneaux</span>
@@ -1355,26 +1413,6 @@ export function ProspectDrawer({
                       </div>
                     </div>
                   </button>
-                </div>
-              )}
-
-              {/* Switch batterie : valeur effective = prospect.includeBatteryOverride ?? settings.includeBattery (défaut true) */}
-              {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 && (
-                <div className="flex items-center justify-between rounded-xl border border-border bg-white p-3">
-                  <div className="flex items-center gap-2">
-                    <Battery className="h-4 w-4 text-muted-foreground" />
-                    <Label htmlFor="include-battery" className="text-sm font-medium cursor-pointer">Inclure batterie</Label>
-                  </div>
-                  <Switch
-                    id="include-battery"
-                    className="data-[state=checked]:bg-[#0000FF]"
-                    checked={prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true}
-                    onCheckedChange={(checked) => {
-                      if (onProspectUpdate) {
-                        onProspectUpdate({ ...prospect, includeBatteryOverride: checked });
-                      }
-                    }}
-                  />
                 </div>
               )}
 
@@ -1409,11 +1447,11 @@ export function ProspectDrawer({
                             return (
                               <>
                                 <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                                  <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
                                   {fmt(dailyProductionKwh)} /j
                                 </span>
                                 <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" />
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
                                   {fmt(dailyConsumptionKwh)} /j
                                 </span>
                               </>
@@ -1427,11 +1465,11 @@ export function ProspectDrawer({
                           return (
                             <>
                               <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                                <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
                                 {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
                               </span>
                               <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" />
+                                <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
                                 {consumptionGwh >= 0.001 ? consumptionGwh.toFixed(3) : consumptionGwh.toFixed(6)} GWh
                               </span>
                             </>
@@ -1540,6 +1578,27 @@ export function ProspectDrawer({
                       />
                     </div>
                   </div>
+
+                  {/* Switch batterie : valeur effective = prospect.includeBatteryOverride ?? settings.includeBattery (défaut true) */}
+                  {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 && (
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-white p-3">
+                      <div className="flex items-center gap-2">
+                        <Battery className="h-4 w-4 text-muted-foreground" />
+                        <Label htmlFor="include-battery" className="text-sm font-medium cursor-pointer">Inclure batterie</Label>
+                      </div>
+                      <Switch
+                        id="include-battery"
+                        className="data-[state=checked]:bg-[#0000FF]"
+                        checked={prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true}
+                        onCheckedChange={(checked) => {
+                          if (onProspectUpdate) {
+                            onProspectUpdate({ ...prospect, includeBatteryOverride: checked });
+                          }
+                        }}
+                      />
+                    </div>
+                  )}
+
                   {/* Energy Bill + Savings + Estimated price (sous Production) */}
                   {(() => {
                     const totalArea = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
@@ -1571,7 +1630,7 @@ export function ProspectDrawer({
                           <div className="bg-gray-100 rounded-xl px-4 py-4 min-h-[130px] flex flex-col justify-between">
                             <div className="flex items-center justify-between gap-1">
                               <span className="text-[10px] uppercase tracking-wide text-gray-500">Savings</span>
-                              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" title="Économies annuelles estimées (production × prix du kWh)." />
+                              <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" title="Économies annuelles estimées (production × prix du kWh)." />
                             </div>
                             <div className="text-2xl font-normal text-gray-700">
                               {annualSavings.toLocaleString("fr-FR")}
@@ -1600,126 +1659,143 @@ export function ProspectDrawer({
                   <div className="bg-gray-100 rounded-xl py-3 px-4">
                     <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
                     <div className="space-y-2">
-                        {usedPanelRef && (
+                        {panelsData && panelsData.length > 0 && (
                           <div>
-                            <div className="flex justify-end items-center gap-1.5 mb-1">
-                              <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                              <span className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">{effectiveConfig.effectivePanelCount}</span>
-                            </div>
-                            <div className="rounded-xl border border-border bg-white p-3 flex items-stretch gap-3">
-                            <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
-                              {usedPanelRef.imageUrl ? (
-                                <Image
-                                  src={usedPanelRef.imageUrl}
-                                  alt={usedPanelRef.name}
-                                  width={48}
-                                  height={48}
-                                  className="w-full h-full object-cover"
-                                  unoptimized
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0 flex flex-col justify-center">
-                              <div className="font-semibold text-xs text-foreground truncate">{usedPanelRef.name}</div>
-                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{usedPanelRef.costEur}</span>
-                                <span className="text-muted-foreground/40 text-xs">|</span>
-                                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                  <Zap className="h-3 w-3 text-muted-foreground/80" />
-                                  {usedPanelRef.powerW}W
+                            <EquipmentSelectCard<PanelReference>
+                              value={usedPanelRef}
+                              options={panelsData}
+                              onChange={setUsedPanelRef}
+                              getItemId={(p) => p.id}
+                              showRecommendedBadge={!!usedPanelRef?.recommended}
+                              rightBadge={usedPanelRef ? String(effectiveConfig.effectivePanelCount) : undefined}
+                              placeholder={
+                                <span className="flex items-center gap-2">
+                                  <Zap className="h-5 w-5" />
+                                  Choisir un panneau
                                 </span>
-                                {usedPanelRef.warrantyYears != null && (
-                                  <>
-                                    <span className="text-muted-foreground/40 text-xs">|</span>
-                                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                      <FileCheck className="h-3 w-3 text-muted-foreground/80" />
-                                      {usedPanelRef.warrantyYears}y
-                                    </span>
-                                  </>
-                                )}
-                                {usedPanelRef.countryCode && (
-                                  <>
-                                    <span className="text-muted-foreground/40 text-xs">|</span>
-                                    <span className="inline-flex items-center shrink-0" title={usedPanelRef.countryOfOrigin}>
-                                      <img
-                                        src={getCountryFlagUrl(usedPanelRef.countryCode)}
-                                        alt=""
-                                        className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                        width={12}
-                                        height={12}
-                                      />
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                            </div>
+                              }
+                              renderTriggerContent={(p) => (
+                                <>
+                                  <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                                  <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                                    <div className="font-semibold text-xs text-foreground truncate">{p.name}</div>
+                                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{p.costEur}</span>
+                                      <span className="text-muted-foreground/40 text-xs">|</span>
+                                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                        <Zap className="h-3 w-3 text-muted-foreground/80" />
+                                        {p.powerW}W
+                                      </span>
+                                      {p.warrantyYears != null && (
+                                        <>
+                                          <span className="text-muted-foreground/40 text-xs">|</span>
+                                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                            <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                                            {p.warrantyYears}y
+                                          </span>
+                                        </>
+                                      )}
+                                      {p.countryCode && (
+                                        <>
+                                          <span className="text-muted-foreground/40 text-xs">|</span>
+                                          <span className="inline-flex shrink-0" title={p.countryOfOrigin}>
+                                            <img src={getCountryFlagUrl(p.countryCode)} alt="" className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50" width={12} height={12} />
+                                          </span>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                              renderOptionContent={(p, selected) => (
+                                <>
+                                  <EquipmentThumbnail imageUrl={p.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                                  <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                    <div className="font-medium text-xs text-foreground truncate">{p.name}</div>
+                                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                                      <span>€{p.costEur}</span>
+                                      <span>·</span>
+                                      <span>{p.powerW}W</span>
+                                      {p.recommended && (
+                                        <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            />
                           </div>
                         )}
-                        {usedInverterRef && (
+                        {invertersData && invertersData.length > 0 && (
                           <div>
-                            <div className="flex justify-end items-center gap-1.5 mb-1">
-                              {inverterCountExceedsLimit ? (
+                            <EquipmentSelectCard<InverterReference>
+                              value={usedInverterRef}
+                              options={invertersData}
+                              onChange={setUsedInverterRef}
+                              getItemId={(i) => i.id}
+                              showRecommendedBadge={!!usedInverterRef?.recommended && !inverterCountExceedsLimit}
+                              warningBadge={inverterCountExceedsLimit ? (
                                 <span className="inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800" title="Plus de 8 onduleurs : choisir un modèle plus puissant">
                                   Changer de modèle
                                 </span>
-                              ) : (
-                                <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                              )}
-                              <span className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">{effectiveInverterCount}</span>
-                            </div>
-                            <div className="rounded-xl border border-border bg-white p-3 flex items-stretch gap-3">
-                              <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
-                                {usedInverterRef.imageUrl ? (
-                                  <Image
-                                    src={usedInverterRef.imageUrl}
-                                    alt={usedInverterRef.name}
-                                    width={48}
-                                    height={48}
-                                    className="w-full h-full object-cover"
-                                    unoptimized
-                                  />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
-                                )}
-                              </div>
-                              <div className="flex-1 min-w-0 flex flex-col justify-center">
-                                <div className="font-semibold text-xs text-foreground truncate">{usedInverterRef.name}</div>
-                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{usedInverterRef.costEur}</span>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                    <Zap className="h-3 w-3 text-muted-foreground/80" />
-                                    {usedInverterRef.powerW}W
-                                  </span>
-                                  {usedInverterRef.warrantyYears != null && (
-                                    <>
+                              ) : undefined}
+                              rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
+                              placeholder={
+                                <span className="flex items-center gap-2">
+                                  <Zap className="h-5 w-5" />
+                                  Choisir un onduleur
+                                </span>
+                              }
+                              renderTriggerContent={(i) => (
+                                <>
+                                  <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                                  <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                                    <div className="font-semibold text-xs text-foreground truncate">{i.name}</div>
+                                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{i.costEur}</span>
                                       <span className="text-muted-foreground/40 text-xs">|</span>
                                       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                        <FileCheck className="h-3 w-3 text-muted-foreground/80" />
-                                        {usedInverterRef.warrantyYears}y
+                                        <Zap className="h-3 w-3 text-muted-foreground/80" />
+                                        {i.powerW}W
                                       </span>
-                                    </>
-                                  )}
-                                  {usedInverterRef.countryCode && (
-                                    <>
-                                      <span className="text-muted-foreground/40 text-xs">|</span>
-                                      <span className="inline-flex items-center shrink-0" title={usedInverterRef.countryOfOrigin}>
-                                        <img
-                                          src={getCountryFlagUrl(usedInverterRef.countryCode)}
-                                          alt=""
-                                          className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                          width={12}
-                                          height={12}
-                                        />
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
+                                      {i.warrantyYears != null && (
+                                        <>
+                                          <span className="text-muted-foreground/40 text-xs">|</span>
+                                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                            <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                                            {i.warrantyYears}y
+                                          </span>
+                                        </>
+                                      )}
+                                      {i.countryCode && (
+                                        <>
+                                          <span className="text-muted-foreground/40 text-xs">|</span>
+                                          <span className="inline-flex shrink-0" title={i.countryOfOrigin}>
+                                            <img src={getCountryFlagUrl(i.countryCode)} alt="" className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50" width={12} height={12} />
+                                          </span>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                              renderOptionContent={(i) => (
+                                <>
+                                  <EquipmentThumbnail imageUrl={i.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                                  <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                    <div className="font-medium text-xs text-foreground truncate">{i.name}</div>
+                                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                                      <span>€{i.costEur}</span>
+                                      <span>·</span>
+                                      <span>{i.powerW}W</span>
+                                      {i.recommended && (
+                                        <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            />
                           </div>
                         )}
                         {includeBatteryEffective && (
@@ -1727,8 +1803,14 @@ export function ProspectDrawer({
                             {batteriesData && batteriesData.length > 0 ? (
                               <BatterySelectCard
                                 value={usedBatteryRef}
-                                onChange={setUsedBatteryRef}
+                                onChange={(b) => {
+                                  setUsedBatteryRef(b);
+                                  if (b && prospect && onProspectUpdate) {
+                                    onProspectUpdate({ ...prospect, batteryReferenceId: b.id });
+                                  }
+                                }}
                                 batteries={batteriesData}
+                                isRecommendedForProspect={usedBatteryRef?.id === recommendedBatteryFromSurplus?.id}
                               />
                             ) : (
                               <p className="text-xs text-muted-foreground">Aucune batterie configurée. Ajoutez-en dans Paramètres.</p>

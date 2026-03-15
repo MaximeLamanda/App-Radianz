@@ -264,16 +264,7 @@ export function MonthlyProductionChart({
                             )}
                           </>
                         )}
-                        <div className="border-t border-border mt-1 pt-1 space-y-0.5">
-                          <span className="text-muted-foreground block">Production : {fmt(p.production)} kWh</span>
-                          <span className="text-muted-foreground block">Consommation : {fmt(p.consumption)} kWh</span>
-                        </div>
                       </>
-                    )}
-                    {!hasConsumption && (
-                      <div className="border-t border-border mt-1 pt-1">
-                        <span className="text-muted-foreground">Production : {fmt(p.production)} kWh</span>
-                      </div>
                     )}
                   </div>
                 </div>
