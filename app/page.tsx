@@ -765,10 +765,10 @@ function HomePage() {
                         <ScoreGauge score={prospect.qualityScore} />
                       </TableCell>
                       <TableCell className="p-2.5 align-middle">
-                        <EquipmentThumbnail equipment={prospectPanelRef} fallbackIcon={Sun} alt="Panneau" />
+                        <EquipmentThumbnail equipment={prospectPanelRef || null} fallbackIcon={Sun} alt="Panneau" />
                       </TableCell>
                       <TableCell className="p-2.5 align-middle">
-                        <EquipmentThumbnail equipment={prospectInverterRef} fallbackIcon={Zap} alt="Onduleur" />
+                        <EquipmentThumbnail equipment={prospectInverterRef || null} fallbackIcon={Zap} alt="Onduleur" />
                       </TableCell>
                       <TableCell className="p-2.5 align-middle">
                         {includeBatteryForProspect && prospectBatteryRef ? (
