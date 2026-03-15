@@ -133,6 +133,12 @@ export interface Prospect {
   bdnbBatimentId?: string;
   /** Override : inclure batterie pour ce prospect (si absent, réglage global settings.includeBattery). */
   includeBatteryOverride?: boolean;
+  /** ID de la référence panneau sélectionnée pour ce prospect (sinon recommandé global) */
+  panelReferenceId?: string;
+  /** ID de la référence onduleur sélectionnée pour ce prospect */
+  inverterReferenceId?: string;
+  /** ID de la référence batterie sélectionnée pour ce prospect */
+  batteryReferenceId?: string;
 }
 
 export interface Lead {

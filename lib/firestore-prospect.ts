@@ -57,6 +57,9 @@ export interface ProspectDocument {
   anneeConstruction?: number | null;
   /** Override : inclure batterie pour ce prospect (si absent, réglage global) */
   includeBatteryOverride?: boolean;
+  panelReferenceId?: string;
+  inverterReferenceId?: string;
+  batteryReferenceId?: string;
 }
 
 /** Valeurs calculées par le drawer, stockées telles quelles (pas de recalcul) */
@@ -203,6 +206,9 @@ export function prepareProspectForFirestore(
   if (userId) doc.userId = userId;
   if (prospect.anneeConstruction != null) doc.anneeConstruction = prospect.anneeConstruction;
   if (prospect.includeBatteryOverride != null) doc.includeBatteryOverride = prospect.includeBatteryOverride;
+  if (prospect.panelReferenceId) doc.panelReferenceId = prospect.panelReferenceId;
+  if (prospect.inverterReferenceId) doc.inverterReferenceId = prospect.inverterReferenceId;
+  if (prospect.batteryReferenceId) doc.batteryReferenceId = prospect.batteryReferenceId;
 
   return doc;
 }
@@ -280,5 +286,8 @@ export function prospectFromFirestore(
   if (data.userId) result.userId = data.userId;
   if (data.anneeConstruction != null) result.anneeConstruction = data.anneeConstruction;
   if (data.includeBatteryOverride != null) result.includeBatteryOverride = data.includeBatteryOverride;
+  if (data.panelReferenceId) result.panelReferenceId = data.panelReferenceId;
+  if (data.inverterReferenceId) result.inverterReferenceId = data.inverterReferenceId;
+  if (data.batteryReferenceId) result.batteryReferenceId = data.batteryReferenceId;
   return result;
 }

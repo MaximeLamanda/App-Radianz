@@ -189,13 +189,6 @@ export function MonthlyProductionChart({
                 <div className="rounded-md border border-border/50 bg-background px-2 py-1 text-[10px] shadow-lg">
                   <div className="font-medium mb-0.5">{isDaily ? `${p.hour}h - ${p.hour + 1}h` : p.month}</div>
                   <div className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className="inline-block h-1.5 w-1.5 rounded-[1px] shrink-0"
-                        style={{ backgroundColor: "var(--color-production)" }}
-                      />
-                      <span>Production : {fmt(p.production)} kWh</span>
-                    </div>
                     {hasConsumption && (
                       <>
                         {hasBatterySeries ? (
@@ -214,22 +207,13 @@ export function MonthlyProductionChart({
                               />
                               <span>Tirage batterie : {fmt(p.selfConsumptionViaBattery ?? 0)} kWh</span>
                             </div>
-                            {(p.injectionBattery ?? 0) > 0 && (
+                            {isDaily && (p.injectionBattery ?? 0) > 0 && (
                               <div className="flex items-center gap-1.5">
                                 <span
                                   className="inline-block h-1.5 w-1.5 rounded-[1px] shrink-0"
                                   style={{ backgroundColor: "var(--color-injectionBattery)" }}
                                 />
                                 <span>Injection batterie : {fmt(p.injectionBattery)} kWh</span>
-                              </div>
-                            )}
-                            {(p.excess ?? 0) > 0 && (
-                              <div className="flex items-center gap-1.5">
-                                <span
-                                  className="inline-block h-1.5 w-1.5 rounded-[1px] shrink-0"
-                                  style={{ backgroundColor: "var(--color-excess)" }}
-                                />
-                                <span>Injection réseau : {fmt(p.excess)} kWh</span>
                               </div>
                             )}
                             {p.gridDraw > 0 && (
@@ -239,6 +223,15 @@ export function MonthlyProductionChart({
                                   style={{ backgroundColor: "var(--color-gridDraw)" }}
                                 />
                                 <span>Tirage réseau : {fmt(p.gridDraw)} kWh</span>
+                              </div>
+                            )}
+                            {(p.excess ?? 0) > 0 && (
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="inline-block h-1.5 w-1.5 rounded-[1px] shrink-0"
+                                  style={{ backgroundColor: "var(--color-excess)" }}
+                                />
+                                <span>Injection réseau : {fmt(p.excess)} kWh</span>
                               </div>
                             )}
                           </>
@@ -251,15 +244,6 @@ export function MonthlyProductionChart({
                               />
                               <span>Autoconsommation : {fmt(p.selfConsumption)} kWh</span>
                             </div>
-                            {(p.excess ?? 0) > 0 && (
-                              <div className="flex items-center gap-1.5">
-                                <span
-                                  className="inline-block h-1.5 w-1.5 rounded-[1px] shrink-0"
-                                  style={{ backgroundColor: "var(--color-excess)" }}
-                                />
-                                <span>Injection réseau : {fmt(p.excess)} kWh</span>
-                              </div>
-                            )}
                             {p.gridDraw > 0 && (
                               <div className="flex items-center gap-1.5">
                                 <span
@@ -269,12 +253,27 @@ export function MonthlyProductionChart({
                                 <span>Tirage réseau : {fmt(p.gridDraw)} kWh</span>
                               </div>
                             )}
+                            {(p.excess ?? 0) > 0 && (
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="inline-block h-1.5 w-1.5 rounded-[1px] shrink-0"
+                                  style={{ backgroundColor: "var(--color-excess)" }}
+                                />
+                                <span>Injection réseau : {fmt(p.excess)} kWh</span>
+                              </div>
+                            )}
                           </>
                         )}
-                        <div className="border-t border-border mt-1 pt-1">
-                          <span className="text-muted-foreground">Consommation : {fmt(p.consumption)} kWh</span>
+                        <div className="border-t border-border mt-1 pt-1 space-y-0.5">
+                          <span className="text-muted-foreground block">Production : {fmt(p.production)} kWh</span>
+                          <span className="text-muted-foreground block">Consommation : {fmt(p.consumption)} kWh</span>
                         </div>
                       </>
+                    )}
+                    {!hasConsumption && (
+                      <div className="border-t border-border mt-1 pt-1">
+                        <span className="text-muted-foreground">Production : {fmt(p.production)} kWh</span>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -296,23 +295,25 @@ export function MonthlyProductionChart({
                   fill="var(--color-selfConsumptionViaBattery)"
                   name="Tirage batterie"
                 />
+                {isDaily && (
+                  <Bar
+                    dataKey="injectionBattery"
+                    stackId="a"
+                    fill="var(--color-injectionBattery)"
+                    name="Injection batterie"
+                  />
+                )}
                 <Bar
-                  dataKey="injectionBattery"
+                  dataKey="gridDraw"
                   stackId="a"
-                  fill="var(--color-injectionBattery)"
-                  name="Injection batterie"
+                  fill="var(--color-gridDraw)"
+                  name="Tirage réseau"
                 />
                 <Bar
                   dataKey="excess"
                   stackId="a"
                   fill="var(--color-excess)"
                   name="Injection réseau"
-                />
-                <Bar
-                  dataKey="gridDraw"
-                  stackId="a"
-                  fill="var(--color-gridDraw)"
-                  name="Tirage réseau"
                 />
               </>
             ) : (
@@ -324,16 +325,16 @@ export function MonthlyProductionChart({
                   name="Autoconsommation"
                 />
                 <Bar
-                  dataKey="excess"
-                  stackId="a"
-                  fill="var(--color-excess)"
-                  name="Injection"
-                />
-                <Bar
                   dataKey="gridDraw"
                   stackId="a"
                   fill="var(--color-gridDraw)"
                   name="Tirage réseau"
+                />
+                <Bar
+                  dataKey="excess"
+                  stackId="a"
+                  fill="var(--color-excess)"
+                  name="Injection réseau"
                 />
               </>
             )

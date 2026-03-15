@@ -22,13 +22,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import Image from "next/image";
-import { MapPin, Phone, Globe, Sun, Zap, Filter, X, MoreVertical, Link2, ExternalLink, Eye } from "lucide-react";
+import { MapPin, Phone, Globe, Sun, Zap, Battery, Info, Filter, X, MoreVertical, Link2, ExternalLink, Eye } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import {
   usePanelReferences,
   useInverterReferences,
+  useBatteryReferences,
   useProspectsForPipeline,
 } from "@/lib/swr-hooks";
 import { translatePlaceType } from "@/lib/place-types-translation";
@@ -38,8 +39,9 @@ import { updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import { surfaceToKwp } from "@/lib/surface-to-kwp";
+import { getSolarEquipmentSettings } from "@/lib/solar-settings";
 import { useDrawer } from "@/lib/drawer-context";
-import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference } from "@/types";
+import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell, PieChart, Pie, Cell as PieCell } from "recharts";
 import {
   ChartContainer,
@@ -59,7 +61,7 @@ function EquipmentThumbnail({
   fallbackIcon: FallbackIcon,
   alt,
 }: {
-  equipment: PanelReference | InverterReference | null;
+  equipment: PanelReference | InverterReference | BatteryReference | null;
   fallbackIcon: React.ComponentType<{ className?: string }>;
   alt: string;
 }) {
@@ -140,6 +142,7 @@ function HomePage() {
   const { user, loading: authLoading } = useAuth();
   const { data: panelsData } = usePanelReferences(user?.uid ?? null);
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
+  const { data: batteriesData } = useBatteryReferences(user?.uid ?? null);
   const {
     data: prospectsData,
     error: prospectsError,
@@ -150,6 +153,7 @@ function HomePage() {
   const prospects = prospectsData ?? [];
   const panelRef = panelsData?.find((p) => p.recommended) ?? panelsData?.[0] ?? null;
   const inverterRef = invertersData?.find((i) => i.recommended) ?? invertersData?.[0] ?? null;
+  const batteryRef = batteriesData?.find((b) => b.recommended) ?? batteriesData?.[0] ?? null;
 
   const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null);
   const { isDrawerOpen, setIsDrawerOpen, setDrawerContent } = useDrawer();
@@ -326,6 +330,23 @@ function HomePage() {
     });
     return Array.from(types).sort();
   }, [prospects]);
+
+  // Index Maps pour lookups O(1) du matériel par prospect (règle 7.2 Vercel React Best Practices)
+  const panelById = useMemo(
+    () => new Map((panelsData ?? []).map((p) => [p.id, p])),
+    [panelsData]
+  );
+  const inverterById = useMemo(
+    () => new Map((invertersData ?? []).map((i) => [i.id, i])),
+    [invertersData]
+  );
+  const batteryById = useMemo(
+    () => new Map((batteriesData ?? []).map((b) => [b.id, b])),
+    [batteriesData]
+  );
+
+  // Cache du réglage batterie global (évite appels répétés à getSolarEquipmentSettings dans la boucle)
+  const includeBatteryDefault = getSolarEquipmentSettings().includeBattery ?? true;
 
   const resetFilters = () => {
     setFilterStatus("all");
@@ -630,6 +651,9 @@ function HomePage() {
                   <TableHead className="w-12 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40" title="Onduleur">
                     <Zap className="h-4 w-4 mx-auto" />
                   </TableHead>
+                  <TableHead className="w-12 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40" title="Batterie">
+                    <Battery className="h-4 w-4 mx-auto" />
+                  </TableHead>
                   <TableHead className="text-right w-16 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0">Surface</TableHead>
                   <TableHead className="text-right w-16 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0">Prod.</TableHead>
                   <TableHead className="text-right w-16 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0" title="Consommation annuelle estimée">Conso.</TableHead>
@@ -677,6 +701,16 @@ function HomePage() {
                         year: "2-digit",
                       })
                     : "—";
+                  // Matériel propre au prospect (sauvegardé dans le drawer) ou repli sur le recommandé global (lookups O(1) via Map)
+                  const prospectPanelRef =
+                    (prospect.panelReferenceId && panelById.get(prospect.panelReferenceId)) ?? panelRef;
+                  const prospectInverterRef =
+                    (prospect.inverterReferenceId && inverterById.get(prospect.inverterReferenceId)) ?? inverterRef;
+                  const prospectBatteryRef =
+                    (prospect.batteryReferenceId && batteryById.get(prospect.batteryReferenceId)) ?? batteryRef;
+                  // Afficher la vignette batterie seulement si le prospect a la batterie activée (switch)
+                  const includeBatteryForProspect =
+                    prospect.includeBatteryOverride ?? includeBatteryDefault;
 
                   return (
                     <TableRow
@@ -731,10 +765,19 @@ function HomePage() {
                         <ScoreGauge score={prospect.qualityScore} />
                       </TableCell>
                       <TableCell className="p-2.5 align-middle">
-                        <EquipmentThumbnail equipment={panelRef} fallbackIcon={Sun} alt="Panneau" />
+                        <EquipmentThumbnail equipment={prospectPanelRef} fallbackIcon={Sun} alt="Panneau" />
                       </TableCell>
                       <TableCell className="p-2.5 align-middle">
-                        <EquipmentThumbnail equipment={inverterRef} fallbackIcon={Zap} alt="Onduleur" />
+                        <EquipmentThumbnail equipment={prospectInverterRef} fallbackIcon={Zap} alt="Onduleur" />
+                      </TableCell>
+                      <TableCell className="p-2.5 align-middle">
+                        {includeBatteryForProspect && prospectBatteryRef ? (
+                          <EquipmentThumbnail equipment={prospectBatteryRef} fallbackIcon={Battery} alt="Batterie" />
+                        ) : (
+                          <div className="w-8 h-8 rounded-md bg-muted/50 shrink-0 flex items-center justify-center" title={includeBatteryForProspect ? "Aucune batterie configurée" : "Batterie désactivée pour ce prospect"}>
+                            <Info className="h-4 w-4 text-muted-foreground" />
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
                         {totalArea > 0 ? `${totalArea.toFixed(0)} m²` : "—"}

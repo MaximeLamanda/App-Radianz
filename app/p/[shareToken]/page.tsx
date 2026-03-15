@@ -8,6 +8,8 @@ import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery } from "lucide-react";
 import {
   usePanelReferences,
@@ -69,6 +71,7 @@ export default function ProspectSharePage() {
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
   const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
   const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(0);
+  const [includeBatteryLocal, setIncludeBatteryLocal] = useState<boolean>(true);
 
   const usedPanelRef =
     panelsData?.find((r) => r.recommended) ?? panelsData?.[0] ?? getRecommendedPanelReferenceSync();
@@ -76,12 +79,13 @@ export default function ProspectSharePage() {
     invertersData?.find((r) => r.recommended) ?? invertersData?.[0] ?? getRecommendedInverterReferenceSync();
   const usedBatteryRef: BatteryReference | null =
     batteriesData?.find((r) => r.recommended) ?? batteriesData?.[0] ?? getRecommendedBatteryReferenceSync();
-  const includeBatteryEffective = prospect?.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true;
+  const includeBatteryEffective = includeBatteryLocal;
 
   useEffect(() => {
     if (prospect?.configurationMode) setConfigurationMode(prospect.configurationMode);
     if (prospect?.annualConsumptionKwhOverride != null) setAnnualConsumptionOverride(prospect.annualConsumptionKwhOverride);
-  }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride]);
+    if (prospect != null) setIncludeBatteryLocal(prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true);
+  }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride, prospect?.includeBatteryOverride, prospect]);
 
   /** production = productionPerKwp × kWp. kWp = surfaceToKwp(surface). */
   const effectiveConfig = useMemo(() => {
@@ -603,7 +607,7 @@ export default function ProspectSharePage() {
 
           {/* [3,2-3] Équipement — colonne 3, 2 lignes (panneau, onduleur, batterie) */}
           {(usedPanelRef || usedInverterRef || usedBatteryRef) && (
-            <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-3">
+            <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-4">
               <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
               <div className="space-y-2">
                 {usedPanelRef && (
@@ -702,12 +706,6 @@ export default function ProspectSharePage() {
                           €{usedBatteryRef.costEur}
                           <span className="text-muted-foreground/40">·</span>
                           <span title="Capacité utilisée dans la simulation">{usedBatteryRef.capacityKwh} kWh</span>
-                          <span className="text-muted-foreground/40">·</span>
-                          <span title="Puissance de charge">{usedBatteryRef.powerChargeKw} kW charge</span>
-                          <span className="text-muted-foreground/40">·</span>
-                          <span title="Puissance de décharge">{usedBatteryRef.powerDischargeKw} kW décharge</span>
-                          <span className="text-muted-foreground/40">·</span>
-                          <span title="Rendement aller-retour">{usedBatteryRef.roundTripEfficiencyPercent} %</span>
                           {usedBatteryRef.warrantyYears != null && (
                             <>
                               <span className="text-muted-foreground/40">·</span>
@@ -731,6 +729,24 @@ export default function ProspectSharePage() {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Inclure / exclure batterie (même bloc que dans le drawer) */}
+          {(prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0) > 0 && usedBatteryRef && (
+            <div className="order-8 mt-2 md:mt-0 md:order-none md:col-start-3 md:row-start-5 flex h-full min-h-0">
+              <div className="flex flex-1 items-center justify-between rounded-xl border border-border bg-white p-3 min-h-0">
+                <div className="flex items-center gap-2">
+                  <Battery className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <Label htmlFor="share-include-battery" className="text-sm font-medium cursor-pointer">Inclure batterie</Label>
+                </div>
+                <Switch
+                  id="share-include-battery"
+                  className="shrink-0 data-[state=checked]:bg-[#0000FF]"
+                  checked={includeBatteryLocal}
+                  onCheckedChange={setIncludeBatteryLocal}
+                />
               </div>
             </div>
           )}

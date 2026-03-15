@@ -27,6 +27,7 @@ export interface UserProfile {
   companyLogoUrl?: string;
   defaultPanelRefId?: string;
   defaultInverterRefId?: string;
+  defaultBatteryRefId?: string;
   companySize?: "solo" | "2-10" | "11-50" | "50+";
   geoZones?: string[];
   onboardingCompleted?: boolean;

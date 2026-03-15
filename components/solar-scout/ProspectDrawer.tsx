@@ -35,6 +35,7 @@ import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2,
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { MonthlyProductionChart } from "./MonthlyProductionChart";
+import { BatterySelectCard } from "./BatterySelectCard";
 import { surfaceToKwp, getUsableRoofAreaM2 } from "@/lib/surface-to-kwp";
 import {
   BUILDING_ENERGY_CONSUMPTION_DATA,
@@ -154,7 +155,7 @@ function PlaceTypeSelect({
       <SelectTrigger
         className={
           variant === "dark"
-            ? "h-auto w-fit min-w-0 border-0 px-3 py-1.5 text-[10px] uppercase text-white/60 hover:text-white/80 [&>span]:text-white/60 [&>span]:uppercase [&>span]:text-[10px] bg-white/10 hover:bg-white/15 focus:ring-0 focus:ring-offset-0 [&_svg]:text-white/60 [&_svg]:opacity-80 [&_svg]:h-3 [&_svg]:w-3 placeholder:text-white/60 justify-start gap-1"
+            ? "h-auto w-fit min-w-0 max-w-[90px] border-0 px-3 py-1.5 text-[10px] uppercase text-white/60 hover:text-white/80 [&>span]:text-white/60 [&>span]:uppercase [&>span]:text-[10px] [&>span]:truncate [&>span]:block bg-white/10 hover:bg-white/15 focus:ring-0 focus:ring-offset-0 [&_svg]:text-white/60 [&_svg]:opacity-80 [&_svg]:h-3 [&_svg]:w-3 placeholder:text-white/60 justify-start gap-1"
             : "bg-white"
         }
       >
@@ -297,23 +298,27 @@ export function ProspectDrawer({
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
   const { data: batteriesData } = useBatteryReferences(user?.uid ?? null);
 
+  // Équipement propre au prospect : initialiser depuis prospect.panelReferenceId / etc. ou recommandé global
   useEffect(() => {
     if (!isOpen || !panelsData) return;
+    const byId = prospect?.panelReferenceId ? panelsData.find((r) => r.id === prospect.panelReferenceId) : null;
     const recommended = panelsData.find((r) => r.recommended === true);
-    setUsedPanelRef(recommended ?? panelsData[0] ?? getPanelReferences()[0] ?? null);
-  }, [isOpen, panelsData]);
+    setUsedPanelRef(byId ?? recommended ?? panelsData[0] ?? getPanelReferences()[0] ?? null);
+  }, [isOpen, panelsData, prospect?.panelReferenceId]);
 
   useEffect(() => {
     if (!invertersData) return;
+    const byId = prospect?.inverterReferenceId ? invertersData.find((r) => r.id === prospect.inverterReferenceId) : null;
     const recommended = invertersData.find((r) => r.recommended === true);
-    setUsedInverterRef(recommended ?? invertersData[0] ?? getRecommendedInverterReferenceSync());
-  }, [invertersData]);
+    setUsedInverterRef(byId ?? recommended ?? invertersData[0] ?? getRecommendedInverterReferenceSync());
+  }, [invertersData, prospect?.inverterReferenceId]);
 
   useEffect(() => {
     if (!batteriesData) return;
+    const byId = prospect?.batteryReferenceId ? batteriesData.find((r) => r.id === prospect.batteryReferenceId) : null;
     const recommended = batteriesData.find((r) => r.recommended === true);
-    setUsedBatteryRef(recommended ?? batteriesData[0] ?? getRecommendedBatteryReferenceSync());
-  }, [batteriesData]);
+    setUsedBatteryRef(byId ?? recommended ?? batteriesData[0] ?? getRecommendedBatteryReferenceSync());
+  }, [batteriesData, prospect?.batteryReferenceId]);
 
   // Mettre à jour l'adresse et le mode de config quand le prospect change
   useEffect(() => {
@@ -521,6 +526,9 @@ export function ProspectDrawer({
         ...prospect,
         address: address || prospect.address,
         configurationMode,
+        ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
+        ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
+        ...(usedBatteryRef?.id && { batteryReferenceId: usedBatteryRef.id }),
         ...(pipelineOptions.estimatedKwp != null && {
           solarPotential: {
             ...prospect.solarPotential,
@@ -1588,7 +1596,7 @@ export function ProspectDrawer({
                     );
                   })()}
                   {/* Équipement (Panneau + Onduleur + Batterie) */}
-                  {(usedPanelRef || usedInverterRef || usedBatteryRef) && (
+                  {(usedPanelRef || usedInverterRef || usedBatteryRef || includeBatteryEffective) && (
                   <div className="bg-gray-100 rounded-xl py-3 px-4">
                     <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
                     <div className="space-y-2">
@@ -1714,72 +1722,17 @@ export function ProspectDrawer({
                             </div>
                           </div>
                         )}
-                        {usedBatteryRef && includeBatteryEffective && (
-                          <div>
-                            <div className="flex justify-end items-center gap-1.5 mb-1">
-                              {usedBatteryRef.recommended && (
-                                <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                              )}
-                              <span className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800" title="Paramètres utilisés dans les calculs (injection / tirage batterie)">
-                                Calculs
-                              </span>
-                            </div>
-                            <div className="rounded-xl border border-border bg-white p-3 flex items-stretch gap-3">
-                              <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100 flex items-center justify-center">
-                                {usedBatteryRef.imageUrl ? (
-                                  <Image
-                                    src={usedBatteryRef.imageUrl}
-                                    alt={usedBatteryRef.name}
-                                    width={48}
-                                    height={48}
-                                    className="w-full h-full object-cover"
-                                    unoptimized
-                                  />
-                                ) : (
-                                  <Battery className="h-6 w-6 text-muted-foreground" />
-                                )}
-                              </div>
-                              <div className="flex-1 min-w-0 flex flex-col justify-center">
-                                <div className="font-semibold text-xs text-foreground truncate">{usedBatteryRef.name}</div>
-                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{usedBatteryRef.costEur}</span>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title="Capacité utilisée dans la simulation">
-                                    <Battery className="h-3 w-3 text-muted-foreground/80" />
-                                    {usedBatteryRef.capacityKwh} kWh
-                                  </span>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="text-xs text-muted-foreground">{usedBatteryRef.powerChargeKw} kW charge</span>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="text-xs text-muted-foreground">{usedBatteryRef.powerDischargeKw} kW décharge</span>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="text-xs text-muted-foreground">{usedBatteryRef.roundTripEfficiencyPercent} %</span>
-                                  {usedBatteryRef.warrantyYears != null && (
-                                    <>
-                                      <span className="text-muted-foreground/40 text-xs">|</span>
-                                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                        <FileCheck className="h-3 w-3 text-muted-foreground/80" />
-                                        {usedBatteryRef.warrantyYears}y
-                                      </span>
-                                    </>
-                                  )}
-                                  {usedBatteryRef.countryCode && (
-                                    <>
-                                      <span className="text-muted-foreground/40 text-xs">|</span>
-                                      <span className="inline-flex items-center shrink-0" title={usedBatteryRef.countryOfOrigin}>
-                                        <img
-                                          src={getCountryFlagUrl(usedBatteryRef.countryCode)}
-                                          alt=""
-                                          className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                          width={12}
-                                          height={12}
-                                        />
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
+                        {includeBatteryEffective && (
+                          <div className="space-y-1.5">
+                            {batteriesData && batteriesData.length > 0 ? (
+                              <BatterySelectCard
+                                value={usedBatteryRef}
+                                onChange={setUsedBatteryRef}
+                                batteries={batteriesData}
+                              />
+                            ) : (
+                              <p className="text-xs text-muted-foreground">Aucune batterie configurée. Ajoutez-en dans Paramètres.</p>
+                            )}
                           </div>
                         )}
                     </div>
