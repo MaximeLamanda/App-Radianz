@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery } from "lucide-react";
+import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck } from "lucide-react";
 import {
   usePanelReferences,
   useInverterReferences,
@@ -33,7 +33,7 @@ import {
   buildTypicalDayForMonth,
 } from "@/lib/pvgis";
 import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
-import { runBatterySimulation, runBatterySimulationOneDayWithCarryOver } from "@/lib/battery-simulation";
+import { runProductionSimulation, runSimulationOneDayForChart } from "@/lib/battery-simulation";
 import {
   surfaceToKwp,
   getUsableRoofAreaM2,
@@ -47,12 +47,16 @@ import {
   calculateInverterCount,
   estimateInstallationPriceEur,
   estimateTotalPriceRangeEur,
-  estimateAnnualSavingsEur,
   estimateAnnualSavingsEurWithBattery,
+  DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH,
+  DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
+  estimateAnnualSavingsEurWithBreakdown,
   estimateEnergyBillEur,
   getBreakEvenYears,
 } from "@/lib/solar-settings";
 import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProductionChart";
+import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scout/EquipmentSelectCard";
+import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
 import type { Prospect, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { toast } from "sonner";
 
@@ -69,16 +73,28 @@ export default function ProspectSharePage() {
   const loading = prospectData === undefined && shareToken != null;
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
-  const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
-  const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(0);
+  const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("daily");
+  const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(6);
   const [includeBatteryLocal, setIncludeBatteryLocal] = useState<boolean>(true);
+  const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
+  const [selectedInverterId, setSelectedInverterId] = useState<string | null>(null);
+  const [selectedBatteryId, setSelectedBatteryId] = useState<string | null>(null);
 
-  const usedPanelRef =
-    panelsData?.find((r) => r.recommended) ?? panelsData?.[0] ?? getRecommendedPanelReferenceSync();
-  const usedInverterRef =
-    invertersData?.find((r) => r.recommended) ?? invertersData?.[0] ?? getRecommendedInverterReferenceSync();
+  const usedPanelRef: PanelReference | null =
+    (selectedPanelId && panelsData?.find((r) => r.id === selectedPanelId)) ??
+    panelsData?.find((r) => r.recommended) ??
+    panelsData?.[0] ??
+    getRecommendedPanelReferenceSync();
+  const usedInverterRef: InverterReference | null =
+    (selectedInverterId && invertersData?.find((r) => r.id === selectedInverterId)) ??
+    invertersData?.find((r) => r.recommended) ??
+    invertersData?.[0] ??
+    getRecommendedInverterReferenceSync();
   const usedBatteryRef: BatteryReference | null =
-    batteriesData?.find((r) => r.recommended) ?? batteriesData?.[0] ?? getRecommendedBatteryReferenceSync();
+    (selectedBatteryId && batteriesData?.find((r) => r.id === selectedBatteryId)) ??
+    batteriesData?.find((r) => r.recommended) ??
+    batteriesData?.[0] ??
+    getRecommendedBatteryReferenceSync();
   const includeBatteryEffective = includeBatteryLocal;
 
   useEffect(() => {
@@ -201,18 +217,26 @@ export default function ProspectSharePage() {
     const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
     let equipmentEur: number;
     let annualSavings: number;
+    let selfConsumptionDirectKwhTotal = 0;
+    let selfConsumptionViaBatteryKwhTotal = 0;
+    let injectionReseauKwhTotal = 0;
     let batteryByMonth: { selfConsumptionDirectKwh: number; selfConsumptionViaBatteryKwh: number; injectionBatteryKwh: number; injectionReseauKwh: number; excessKwh: number; gridDrawKwh: number }[] | undefined;
-    if (includeBatteryEffective && usedBatteryRef && effectiveConfig.productionPerKwp?.productionPerKwpMonthly?.length === 12) {
+    let breakdownFromHourlySim = false;
+    const canUseProfiles = effectiveConfig.productionPerKwp?.productionPerKwpMonthly?.length === 12;
+    const annualProductionKwh = effectiveConfig.effectiveAnnualProductionKwh;
+
+    if (canUseProfiles && annualProductionKwh > 0 && consoAnnuelleKwh > 0) {
+      breakdownFromHourlySim = true;
       const productionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
         buildTypicalDayForMonth(effectiveConfig.productionPerKwp!.productionPerKwpMonthly, m, totalPowerKW)
       );
       const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
         buildTypicalConsumptionDayForMonth(placeType, m, surfaceM2)
       );
-      const simulationResult = runBatterySimulation({
+      const simulationResult = runProductionSimulation({
         productionTypicalDayByMonth,
         consumptionTypicalDayByMonth,
-        battery: usedBatteryRef,
+        battery: includeBatteryEffective && usedBatteryRef ? usedBatteryRef : null,
       });
       annualSavings = estimateAnnualSavingsEurWithBattery(simulationResult);
       equipmentEur = estimateInstallationPriceEur(
@@ -220,11 +244,21 @@ export default function ProspectSharePage() {
         inverterCount,
         recommendedPanel,
         recommendedInverter,
-        usedBatteryRef
+        includeBatteryEffective && usedBatteryRef ? usedBatteryRef : undefined
       );
       batteryByMonth = simulationResult.byMonth;
+      selfConsumptionDirectKwhTotal = simulationResult.selfConsumptionDirectKwh;
+      selfConsumptionViaBatteryKwhTotal = simulationResult.selfConsumptionViaBatteryKwh;
+      injectionReseauKwhTotal = simulationResult.excessKwh;
     } else {
-      annualSavings = estimateAnnualSavingsEur(effectiveConfig.effectiveAnnualProductionKwh, undefined, consoAnnuelleKwh);
+      const breakdown = estimateAnnualSavingsEurWithBreakdown(
+        annualProductionKwh,
+        consoAnnuelleKwh
+      );
+      annualSavings = breakdown.annualSavingsEur;
+      selfConsumptionDirectKwhTotal = breakdown.selfConsumptionKwh;
+      selfConsumptionViaBatteryKwhTotal = 0;
+      injectionReseauKwhTotal = breakdown.excessKwh;
       equipmentEur = estimateInstallationPriceEur(
         panelCount,
         inverterCount,
@@ -235,10 +269,25 @@ export default function ProspectSharePage() {
     const priceRange = estimateTotalPriceRangeEur(totalPowerKW, equipmentEur);
     const breakEvenMin = getBreakEvenYears(priceRange.totalMinEur, annualSavings);
     const breakEvenMax = getBreakEvenYears(priceRange.totalMaxEur, annualSavings);
-    return { equipmentEur, priceRange, annualSavings, breakEvenMin, breakEvenMax, batteryByMonth };
+    return {
+      equipmentEur,
+      priceRange,
+      annualSavings,
+      breakEvenMin,
+      breakEvenMax,
+      batteryByMonth,
+      selfConsumptionDirectKwhTotal,
+      selfConsumptionViaBatteryKwhTotal,
+      injectionReseauKwhTotal,
+      breakdownFromHourlySim,
+    };
   }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, includeBatteryEffective]);
 
   const annualSavings = financialSummary?.annualSavings ?? 0;
+  const selfConsumptionDirectKwhTotal = financialSummary?.selfConsumptionDirectKwhTotal ?? 0;
+  const selfConsumptionViaBatteryKwhTotal = financialSummary?.selfConsumptionViaBatteryKwhTotal ?? 0;
+  const injectionReseauKwhTotal = financialSummary?.injectionReseauKwhTotal ?? 0;
+  const breakdownFromHourlySim = financialSummary?.breakdownFromHourlySim ?? false;
   const priceRange = financialSummary?.priceRange ?? { equipmentEur: 0, totalMinEur: 0, totalMaxEur: 0 };
   const breakEvenMin = financialSummary?.breakEvenMin ?? null;
   const breakEvenMax = financialSummary?.breakEvenMax ?? null;
@@ -288,15 +337,15 @@ export default function ProspectSharePage() {
         {/* Barre admin : visible uniquement pour le compte ayant généré la page */}
         {isOwner && (
           <div className="flex items-center justify-between shrink-0">
-            <Button variant="secondary" size="icon" className="h-9 w-9 shrink-0" asChild>
+            <Button variant="default" size="icon" className="h-9 w-9 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700" asChild>
               <Link href="/" title="Retour" aria-label="Retour">
                 <ArrowLeft className="h-4 w-4" />
               </Link>
             </Button>
             <Button
-              variant="secondary"
+              variant="default"
               size="icon"
-              className="h-9 w-9 shrink-0"
+              className="h-9 w-9 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
               onClick={copyShareLink}
               title="Copier le lien"
               aria-label="Copier le lien"
@@ -370,16 +419,16 @@ export default function ProspectSharePage() {
                 onClick={() => setConfigurationMode("perfect_fit")}
                 className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                   configurationMode === "perfect_fit"
-                    ? "border border-blue-200 bg-blue-50 shadow-xs"
+                    ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
                     : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] uppercase tracking-wide text-gray-500">Perfect fit</span>
                 </div>
-                <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-blue-600" : "text-gray-700"}`}>
+                <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-gray-700"}`}>
                   {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
-                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
+                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-gray-400"}`}>kWp</span>
                 </div>
               </button>
               <button
@@ -387,34 +436,101 @@ export default function ProspectSharePage() {
                 onClick={() => setConfigurationMode("highest_production")}
                 className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                   configurationMode === "highest_production"
-                    ? "border border-blue-200 bg-blue-50 shadow-xs"
+                    ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
                     : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] uppercase tracking-wide text-gray-500">Highest production</span>
                 </div>
-                <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-blue-600" : "text-gray-700"}`}>
+                <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-gray-700"}`}>
                   {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
-                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-blue-500" : "text-gray-400"}`}>kWp</span>
+                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-gray-400"}`}>kWp</span>
                 </div>
               </button>
             </div>
           )}
 
-          {/* [3,1] Prix projet estimé */}
-          <div className="order-6 rounded-xl px-4 py-4 min-h-0 flex flex-col justify-between bg-gray-100 overflow-hidden md:order-none md:col-start-2 md:row-start-7 md:row-span-2 md:min-h-[100px]">
-            <div className="flex items-center justify-between gap-1">
-              <span className="text-[10px] uppercase tracking-wide text-gray-500">Estimated project price</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" title="Fourchette du coût total d'installation" />
+          {/* [3,1] Bloc finances minimaliste : titre + lignes label / valeur, responsive */}
+          <div className="order-6 rounded-xl px-3 py-3 sm:px-4 sm:py-4 min-h-0 flex flex-col justify-center bg-gray-100 overflow-y-auto overflow-x-hidden md:order-none md:col-start-2 md:row-start-7 md:row-span-2 md:min-h-[120px]">
+            <div className="flex items-center justify-between gap-1 mb-1.5 sm:mb-2">
+              <span className="text-[10px] uppercase tracking-wide text-gray-500">Financial yearly</span>
             </div>
-            <div className="flex flex-col gap-0.5">
-              <div className="text-sm text-gray-500">{breakEvenLabel}</div>
-              <div className="text-2xl font-normal text-gray-700">
-                {priceRange.totalMinEur.toLocaleString("fr-FR")} – {priceRange.totalMaxEur.toLocaleString("fr-FR")}
-                <span className="text-sm font-light text-gray-400 ml-0.5">€</span>
+            {annualSavings > 0 ? (
+              (() => {
+                const directKwh = selfConsumptionDirectKwhTotal;
+                const viaBatteryKwh = selfConsumptionViaBatteryKwhTotal;
+                const injectionReseauKwh = injectionReseauKwhTotal;
+                const fmtPart = (eur: number) =>
+                  eur >= 1000 ? `${Math.round(eur / 100) / 10} k€` : `${Math.round(eur)} €`;
+
+                const directEur = directKwh * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+                const viaBatteryEur = viaBatteryKwh * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+                const injectionReseauEur = injectionReseauKwh * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+
+                const row = (key: string, label: ReactNode, value: ReactNode, valueSmall?: boolean) => (
+                  <div key={key} className="flex items-center justify-between gap-2 min-w-0 py-0 first:pt-0 last:pb-0">
+                    <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">{label}</span>
+                    <span className={`font-normal text-gray-500 shrink-0 tabular-nums ${valueSmall ? "text-[10px] sm:text-xs" : "text-xs sm:text-sm"}`}>{value}</span>
+                  </div>
+                );
+                return (
+                  <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
+                    {/* Principaux */}
+                    {row("energy-bill", "Est. Energy bill", <>{energyBillEur.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
+                    {row("savings", "Savings", <>{annualSavings.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
+                    {/* Sous-section : répartition */}
+                    {breakdownFromHourlySim ? (
+                      <>
+                        {row(
+                          "battery",
+                          <span className="flex items-center gap-1.5 truncate text-[9px] sm:text-[10px]"><span className="w-2 h-2 rounded-[2px] bg-[#0000FF] shrink-0" />Autoconsommation batterie</span>,
+                          fmtPart(viaBatteryEur),
+                          true
+                        )}
+                        {row(
+                          "direct",
+                          <span className="flex items-center gap-1.5 truncate text-[9px] sm:text-[10px]"><span className="w-2 h-2 rounded-[2px] bg-[#4B5563] shrink-0" />Autoconsommation directe</span>,
+                          fmtPart(directEur),
+                          true
+                        )}
+                        {row(
+                          "injection",
+                          <span className="flex items-center gap-1.5 truncate text-[9px] sm:text-[10px]"><span className="w-2 h-2 rounded-[2px] bg-[#32F490] shrink-0" />Injection réseau</span>,
+                          fmtPart(injectionReseauEur),
+                          true
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-[10px] text-gray-500 py-0">Répartition non disponible sans données mensuelles</p>
+                    )}
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
+                  <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">Est. Energy bill</span>
+                  <span className="text-xs sm:text-sm font-normal text-gray-500 shrink-0 tabular-nums">{energyBillEur.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></span>
+                </div>
+                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
+                  <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">Savings</span>
+                  <span className="text-xs sm:text-sm font-normal text-gray-500 shrink-0 tabular-nums">{annualSavings.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></span>
+                </div>
+                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
+                  <span className="flex items-center gap-1.5 text-[9px] sm:text-[10px] text-gray-500 truncate min-w-0"><span className="w-2 h-2 rounded-[2px] bg-[#0000FF] shrink-0" />Autoconsommation batterie</span>
+                  <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 tabular-nums">—</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
+                  <span className="flex items-center gap-1.5 text-[9px] sm:text-[10px] text-gray-500 truncate min-w-0"><span className="w-2 h-2 rounded-[2px] bg-[#4B5563] shrink-0" />Autoconsommation directe</span>
+                  <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 tabular-nums">—</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
+                  <span className="flex items-center gap-1.5 text-[9px] sm:text-[10px] text-gray-500 truncate min-w-0"><span className="w-2 h-2 rounded-[2px] bg-[#32F490] shrink-0" />Injection réseau</span>
+                  <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 tabular-nums">—</span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* [1,5-8] Image satellite — span 4 rows */}
@@ -485,7 +601,7 @@ export default function ProspectSharePage() {
                       return (
                         <>
                           <span className="flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#0000FF] shrink-0" />
                             {fmt(dailyProductionKwh)} /j
                           </span>
                           <span className="flex items-center gap-1.5">
@@ -502,7 +618,7 @@ export default function ProspectSharePage() {
                     return (
                       <>
                         <span className="flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#0000FF] shrink-0" />
                           {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
                         </span>
                         <span className="flex items-center gap-1.5">
@@ -557,23 +673,17 @@ export default function ProspectSharePage() {
                       effectiveConfig.effectiveKwp
                     );
                     const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
-                    if (financialSummary?.batteryByMonth && usedBatteryRef) {
-                      const hourly = runBatterySimulationOneDayWithCarryOver(prodDay, consDay, usedBatteryRef);
-                      return hourly.map((h, hour) => ({
-                        hour,
-                        production: prodDay[hour] ?? 0,
-                        consumption: consDay[hour] ?? 0,
-                        selfConsumptionDirect: h.selfConsumptionDirectKwh,
-                        selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
-                        injectionBattery: h.injectionBatteryKwh,
-                        excess: h.injectionReseauKwh,
-                        gridDraw: h.gridDrawKwh,
-                      }));
-                    }
-                    return Array.from({ length: 24 }, (_, hour) => ({
+                    const batteryForChart = includeBatteryEffective && usedBatteryRef ? usedBatteryRef : null;
+                    const hourly = runSimulationOneDayForChart(prodDay, consDay, batteryForChart);
+                    return hourly.map((h, hour) => ({
                       hour,
                       production: prodDay[hour] ?? 0,
                       consumption: consDay[hour] ?? 0,
+                      selfConsumptionDirect: h.selfConsumptionDirectKwh,
+                      selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
+                      injectionBattery: h.injectionBatteryKwh,
+                      excess: h.injectionReseauKwh,
+                      gridDraw: h.gridDrawKwh,
                     }));
                   })()}
                 />
@@ -581,152 +691,164 @@ export default function ProspectSharePage() {
             </div>
           )}
 
-          {/* [2,6] Energy Bill + Savings — en dessous du bloc Production, une seule ligne de grille */}
-          <div className="order-5 flex flex-row gap-2 min-h-0 overflow-hidden md:order-none md:col-start-2 md:row-start-6">
-            <div className="rounded-xl px-4 py-3 flex flex-col justify-between bg-gray-100 flex-1 min-w-0 md:min-h-[80px]">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-gray-500">EST. Energy bill</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" title="Facture énergétique annuelle estimée" />
-              </div>
-              <div className="text-xl font-normal text-gray-700">
-                {energyBillEur.toLocaleString("fr-FR")}
-                <span className="text-sm font-light text-gray-400 ml-0.5">€</span>
-              </div>
-            </div>
-            <div className="rounded-xl px-4 py-3 flex flex-col justify-between bg-gray-100 flex-1 min-w-0 md:min-h-[80px]">
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-gray-500">Savings</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" title="Économies annuelles estimées" />
-              </div>
-              <div className="text-xl font-normal text-gray-700">
-                {annualSavings.toLocaleString("fr-FR")}
-                <span className="text-sm font-light text-gray-400 ml-0.5">€</span>
-              </div>
-            </div>
-          </div>
+          {/* [2,6] (remplacé par le bloc finances ci-dessus) */}
 
           {/* [3,2-3] Équipement — colonne 3, 2 lignes (panneau, onduleur, batterie) */}
-          {(usedPanelRef || usedInverterRef || usedBatteryRef) && (
+          {(usedPanelRef || usedInverterRef || (usedBatteryRef && includeBatteryEffective)) && (
             <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-4">
               <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
               <div className="space-y-2">
-                {usedPanelRef && (
+                {panelsData && panelsData.length > 0 && (
                   <div>
-                    <div className="flex justify-end items-center gap-1.5 mb-1">
-                      <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                      <span className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">{effectiveConfig.effectivePanelCount}</span>
-                    </div>
-                    <div className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3">
-                      <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
-                        {usedPanelRef.imageUrl ? (
-                          <Image src={usedPanelRef.imageUrl} alt={usedPanelRef.name} width={48} height={48} className="w-full h-full object-cover" unoptimized />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0 flex flex-col justify-center">
-                        <div className="font-semibold text-xs text-foreground truncate">{usedPanelRef.name}</div>
-                        <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
-                          €{usedPanelRef.costEur} · {usedPanelRef.powerW}W
-                          {usedPanelRef.warrantyYears != null && ` · ${usedPanelRef.warrantyYears}y`}
-                          {usedPanelRef.countryCode && (
-                            <>
-                              <span className="text-muted-foreground/40">|</span>
-                              <span className="inline-flex items-center shrink-0" title={usedPanelRef.countryOfOrigin}>
-                                <img
-                                  src={getCountryFlagUrl(usedPanelRef.countryCode)}
-                                  alt=""
-                                  className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                />
+                    <EquipmentSelectCard<PanelReference>
+                      value={usedPanelRef}
+                      options={panelsData}
+                      onChange={(p) => setSelectedPanelId(p ? p.id : null)}
+                      getItemId={(p) => p.id}
+                      showRecommendedBadge={!!usedPanelRef?.recommended}
+                      rightBadge={usedPanelRef ? String(effectiveConfig.effectivePanelCount) : undefined}
+                      placeholder={
+                        <span className="flex items-center gap-2">
+                          <Zap className="h-5 w-5" />
+                          Choisir un panneau
+                        </span>
+                      }
+                      renderTriggerContent={(p) => (
+                        <>
+                          <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                          <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                            <div className="font-semibold text-xs text-foreground truncate">{p.name}</div>
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{p.costEur}</span>
+                              <span className="text-muted-foreground/40 text-xs">|</span>
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                <Zap className="h-3 w-3 text-muted-foreground/80" />
+                                {p.powerW}W
                               </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {usedInverterRef && (
-                  <div>
-                    <div className="flex justify-end items-center gap-1.5 mb-1">
-                      <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                      <span className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">{effectiveInverterCount}</span>
-                    </div>
-                    <div className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3">
-                      <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
-                        {usedInverterRef.imageUrl ? (
-                          <Image src={usedInverterRef.imageUrl} alt={usedInverterRef.name} width={48} height={48} className="w-full h-full object-cover" unoptimized />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">—</div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0 flex flex-col justify-center">
-                        <div className="font-semibold text-xs text-foreground truncate">{usedInverterRef.name}</div>
-                        <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
-                          €{usedInverterRef.costEur} · {usedInverterRef.powerW}W
-                          {usedInverterRef.warrantyYears != null && ` · ${usedInverterRef.warrantyYears}y`}
-                          {usedInverterRef.countryCode && (
-                            <>
-                              <span className="text-muted-foreground/40">|</span>
-                              <span className="inline-flex items-center shrink-0" title={usedInverterRef.countryOfOrigin}>
-                                <img
-                                  src={getCountryFlagUrl(usedInverterRef.countryCode)}
-                                  alt=""
-                                  className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                />
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {usedBatteryRef && includeBatteryEffective && (
-                  <div>
-                    <div className="flex justify-end items-center gap-1.5 mb-1">
-                      {usedBatteryRef.recommended && (
-                        <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                              {p.warrantyYears != null && (
+                                <>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                    <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                                    {p.warrantyYears}y
+                                  </span>
+                                </>
+                              )}
+                              {p.countryCode && (
+                                <>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="inline-flex shrink-0" title={p.countryOfOrigin}>
+                                    <img
+                                      src={getCountryFlagUrl(p.countryCode)}
+                                      alt=""
+                                      className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                    />
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </>
                       )}
-                      <span className="inline-flex items-center rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800" title="Paramètres utilisés dans les calculs (injection / tirage batterie)">
-                        Calculs
-                      </span>
-                    </div>
-                    <div className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3">
-                      <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100 flex items-center justify-center">
-                        {usedBatteryRef.imageUrl ? (
-                          <Image src={usedBatteryRef.imageUrl} alt={usedBatteryRef.name} width={48} height={48} className="w-full h-full object-cover" unoptimized />
-                        ) : (
-                          <Battery className="h-6 w-6 text-muted-foreground" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0 flex flex-col justify-center">
-                        <div className="font-semibold text-xs text-foreground truncate">{usedBatteryRef.name}</div>
-                        <div className="flex items-center gap-2 mt-0.5 flex-wrap text-xs text-muted-foreground">
-                          €{usedBatteryRef.costEur}
-                          <span className="text-muted-foreground/40">·</span>
-                          <span title="Capacité utilisée dans la simulation">{usedBatteryRef.capacityKwh} kWh</span>
-                          {usedBatteryRef.warrantyYears != null && (
-                            <>
-                              <span className="text-muted-foreground/40">·</span>
-                              <span>{usedBatteryRef.warrantyYears}y</span>
-                            </>
-                          )}
-                          {usedBatteryRef.countryCode && (
-                            <>
-                              <span className="text-muted-foreground/40">|</span>
-                              <span className="inline-flex items-center shrink-0" title={usedBatteryRef.countryOfOrigin}>
-                                <img
-                                  src={getCountryFlagUrl(usedBatteryRef.countryCode)}
-                                  alt=""
-                                  className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                />
+                      renderOptionContent={(p) => (
+                        <>
+                          <EquipmentThumbnail imageUrl={p.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                          <div className="flex-1 min-w-0 flex flex-col justify-center">
+                            <div className="font-medium text-xs text-foreground truncate">{p.name}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                              <span>€{p.costEur}</span>
+                              <span>·</span>
+                              <span>{p.powerW}W</span>
+                              {p.recommended && (
+                                <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    />
+                  </div>
+                )}
+                {invertersData && invertersData.length > 0 && (
+                  <div>
+                    <EquipmentSelectCard<InverterReference>
+                      value={usedInverterRef}
+                      options={invertersData}
+                      onChange={(i) => setSelectedInverterId(i ? i.id : null)}
+                      getItemId={(i) => i.id}
+                      showRecommendedBadge={!!usedInverterRef?.recommended}
+                      rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
+                      placeholder={
+                        <span className="flex items-center gap-2">
+                          <Zap className="h-5 w-5" />
+                          Choisir un onduleur
+                        </span>
+                      }
+                      renderTriggerContent={(i) => (
+                        <>
+                          <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                          <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                            <div className="font-semibold text-xs text-foreground truncate">{i.name}</div>
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{i.costEur}</span>
+                              <span className="text-muted-foreground/40 text-xs">|</span>
+                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                <Zap className="h-3 w-3 text-muted-foreground/80" />
+                                {i.powerW}W
                               </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+                              {i.warrantyYears != null && (
+                                <>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                                    <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                                    {i.warrantyYears}y
+                                  </span>
+                                </>
+                              )}
+                              {i.countryCode && (
+                                <>
+                                  <span className="text-muted-foreground/40 text-xs">|</span>
+                                  <span className="inline-flex shrink-0" title={i.countryOfOrigin}>
+                                    <img
+                                      src={getCountryFlagUrl(i.countryCode)}
+                                      alt=""
+                                      className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                    />
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                      renderOptionContent={(i) => (
+                        <>
+                          <EquipmentThumbnail imageUrl={i.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                          <div className="flex-1 min-w-0 flex flex-col justify-center">
+                            <div className="font-medium text-xs text-foreground truncate">{i.name}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                              <span>€{i.costEur}</span>
+                              <span>·</span>
+                              <span>{i.powerW}W</span>
+                              {i.recommended && (
+                                <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    />
+                  </div>
+                )}
+                {batteriesData && batteriesData.length > 0 && includeBatteryEffective && (
+                  <div>
+                    <BatterySelectCard
+                      value={usedBatteryRef}
+                      onChange={(b) => setSelectedBatteryId(b ? b.id : null)}
+                      batteries={batteriesData}
+                      isRecommendedForProspect={!!usedBatteryRef?.recommended}
+                      recommendedBatteryIdForProspect={usedBatteryRef?.id ?? null}
+                    />
                   </div>
                 )}
               </div>
@@ -735,7 +857,7 @@ export default function ProspectSharePage() {
 
           {/* Inclure / exclure batterie (même bloc que dans le drawer) */}
           {(prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0) > 0 && usedBatteryRef && (
-            <div className="order-8 mt-2 md:mt-0 md:order-none md:col-start-3 md:row-start-5 flex h-full min-h-0">
+            <div className="order-8 mt-2 md:mt-0 md:order-none md:col-start-2 md:row-start-6 flex h-full min-h-0">
               <div className="flex flex-1 items-center justify-between rounded-xl border border-border bg-white p-3 min-h-0">
                 <div className="flex items-center gap-2">
                   <Battery className="h-4 w-4 text-muted-foreground shrink-0" />

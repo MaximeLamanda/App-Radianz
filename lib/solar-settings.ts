@@ -516,7 +516,7 @@ export function calculateInverterCount(
 export const DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH = 0.20;
 
 /** Prix de rachat EDF OA (obligation d'achat) par défaut en €/kWh pour l'injection sur le réseau */
-export const DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH = 0.12;
+export const DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH = 0.053;
 
 /** Résultat du calcul d'économies avec distinction autoconsommation / injection */
 export interface SavingsBreakdown {
