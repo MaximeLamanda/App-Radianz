@@ -782,7 +782,7 @@ function HomePage() {
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
                         {totalArea > 0 ? `${totalArea.toFixed(0)} m²` : "—"}
                       </TableCell>
-                      <TableCell className="text-right p-2.5 whitespace-nowrap text-blue-700 font-medium">
+                      <TableCell className="text-right p-2.5 whitespace-nowrap text-[#0000FF] font-medium">
                         {productionKwh > 0 ? `${(productionKwh / 1000).toFixed(1)} MWh` : "—"}
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-gray-600 font-medium" title="Consommation annuelle estimée (kWh/m² × surface)">

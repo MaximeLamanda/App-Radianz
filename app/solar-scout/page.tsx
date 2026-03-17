@@ -419,9 +419,18 @@ function SolarScoutContent() {
         <MapErrorBoundary>
           <GoogleMapsLoader>
             <MapComponent
-            onProspectUpdate={(newProspect) => {
+            onProspectUpdate={(updatedProspect) => {
               pendingBdnbSurfacesRef.current = null;
-              setProspect(newProspect);
+              setProspect((prev) => {
+                if (!updatedProspect) return prev;
+                if (!prev) return updatedProspect;
+                return {
+                  ...prev,
+                  ...updatedProspect,
+                  roofSurfaces: updatedProspect.roofSurfaces ?? prev.roofSurfaces,
+                  roofSurface: updatedProspect.roofSurface ?? prev.roofSurface,
+                };
+              });
             }}
             isDrawing={isDrawing}
             onDrawingChange={(drawing) => {

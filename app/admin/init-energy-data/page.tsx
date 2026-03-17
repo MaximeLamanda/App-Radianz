@@ -53,7 +53,7 @@ export default function InitEnergyDataPage() {
           <div
             className={`p-4 rounded-md ${
               result.success
-                ? "bg-green-50 text-green-800 border border-green-200"
+                ? "bg-[#32F4901A] text-[#0F6F45] border border-[#32F49080]"
                 : "bg-red-50 text-red-800 border border-red-200"
             }`}
           >

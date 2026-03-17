@@ -8,7 +8,9 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Slider } from "@/components/ui/slider";
+import { FilterLabel } from "./FilterLabel";
 import { cn } from "@/lib/utils";
+import { StickSliderTrack } from "./StickSliderTrack";
 
 export interface MonthlyProductionChartDatum {
   month: number;
@@ -96,11 +98,11 @@ export function MonthlyProductionChart({
   dailyData,
   viewMode: controlledViewMode,
   onViewModeChange,
-  selectedMonthIndex: controlledMonthIndex = 0,
+  selectedMonthIndex: controlledMonthIndex = 6,
   onSelectedMonthIndexChange,
 }: MonthlyProductionChartProps) {
   const [internalViewMode, setInternalViewMode] = useState<"monthly" | "daily">("monthly");
-  const [internalMonthIndex, setInternalMonthIndex] = useState(0);
+  const [internalMonthIndex, setInternalMonthIndex] = useState(6);
   const viewMode = controlledViewMode ?? internalViewMode;
   const setViewMode = onViewModeChange ?? setInternalViewMode;
   const selectedMonthIndex = onSelectedMonthIndexChange ? controlledMonthIndex : (controlledMonthIndex ?? internalMonthIndex);
@@ -342,29 +344,10 @@ export function MonthlyProductionChart({
       {isDaily && onSelectedMonthIndexChange && (
         <div className="flex items-center justify-center mt-2 shrink-0">
           <div className="flex items-center gap-2 max-w-full">
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground shrink-0">Mois</span>
+            <FilterLabel label="Mois" />
             {/* Rotation slider : piste sombre, sticks (mois sélectionné = plus large + rouge), pas de round vert */}
             <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-xl bg-gray-200/80 dark:bg-gray-700/50 px-3 py-3">
-            {/* Sticks : alternance grand/petit, sélectionné = large + rouge, centrés (vertical + horizontal) */}
-            <div className="absolute inset-0 flex items-center justify-center px-3 pointer-events-none" aria-hidden>
-              <div className="flex w-full items-center justify-center">
-                {Array.from({ length: 12 }, (_, i) => {
-                  const isMajor = i % 3 === 0;
-                  const isSelected = i === selectedMonthIndex;
-                  return (
-                    <div key={i} className="flex-1 flex justify-center items-center">
-                      <div
-                        className={cn(
-                          "transition-all duration-200",
-                          isSelected ? "w-1 bg-red-500 h-3" : "w-px bg-gray-500/70 dark:bg-white/50",
-                          !isSelected && (isMajor ? "h-3" : "h-1.5")
-                        )}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <StickSliderTrack segments={12} selectedIndices={[selectedMonthIndex]} />
             <Slider
               value={[selectedMonthIndex + 1]}
               onValueChange={([v]) => setSelectedMonthIndex(Math.max(0, Math.min(11, (v ?? 1) - 1)))}
@@ -374,7 +357,9 @@ export function MonthlyProductionChart({
               className="relative z-10 [&_[data-orientation=horizontal]]:flex [&_[data-orientation=horizontal]]:items-center [&_.relative.grow]:!min-h-[12px] [&_.relative.grow]:!overflow-visible [&_.relative.grow]:!bg-transparent [&_.absolute.h-full]:!bg-transparent [&_.block]:!invisible [&_.block]:!h-4 [&_.block]:!w-4 [&_.block]:!rounded-none [&_.block]:!border-0 [&_.block]:!bg-transparent [&_.block]:!ring-0 [&_.block]:!ring-offset-0"
             />
           </div>
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground w-8 shrink-0">{monthNames[selectedMonthIndex]}</span>
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground w-8 shrink-0">
+            {monthNames[selectedMonthIndex]}
+          </span>
           </div>
         </div>
       )}

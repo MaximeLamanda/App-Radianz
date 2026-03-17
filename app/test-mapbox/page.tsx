@@ -77,7 +77,7 @@ export default function TestMapboxPage() {
           </div>
 
           {loaded.streets && loaded.satellite && !imgError && (
-            <p className="text-green-700 font-medium">Les deux images se sont chargées : la clé Mapbox est valide.</p>
+            <p className="text-[#0F6F45] font-medium">Les deux images se sont chargées : la clé Mapbox est valide.</p>
           )}
         </div>
       )}

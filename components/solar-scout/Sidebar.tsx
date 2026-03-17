@@ -38,6 +38,8 @@ import {
 import { fetchWithAuth } from "@/lib/api-client";
 import { useOsmBuildings, type MapBounds } from "@/lib/swr-hooks";
 import { RangeSlider } from "@/components/ui/slider";
+import { StickSliderTrack } from "./StickSliderTrack";
+import { FilterLabel } from "./FilterLabel";
 
 export function PanelReferenceForm({
   initialRef,
@@ -1258,56 +1260,96 @@ export function Sidebar({
               <TabsContent value="analyser" className="mt-0">
                 <Card className="rounded-xl">
                   <CardContent className="space-y-3 p-3 md:p-3 lg:p-4">
-                    {/* Slider filtre surface + stats */}
+                    {/* Slider filtre surface + résumé, avec design identique au slider de production */}
                     <div className="rounded-xl bg-muted/30 p-3 space-y-3">
-                      {(() => {
-                        const sliderMax =
-                          osmBuildings.length > 0
-                            ? Math.max(
-                                2000,
-                                ...osmBuildings.map((b) =>
-                                  b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
-                                )
-                              )
-                            : 2000;
-                        return (
-                          <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-muted-foreground">surface</span>
-                        <span className="text-xs text-muted-foreground tabular-nums">{surfaceRange.min} – {surfaceRange.max} m²</span>
-                      </div>
-                      <div>
+                    <FilterLabel
+                      label="surface"
+                      value={(() => {
+                        const count =
+                          osmBuildings?.filter((b) => {
+                            const surface = b.polygonSurfaces.reduce(
+                              (s, surf) => s + surf.areaM2,
+                              0
+                            );
+                            return (
+                              surface >= surfaceRange.min &&
+                              surface <= surfaceRange.max
+                            );
+                          }).length ?? 0;
+                        return `${count} · ${surfaceRange.min} – ${surfaceRange.max} m²`;
+                      })()}
+                    />
+                      <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-xl bg-gray-200/80 dark:bg-gray-700/50 px-3 py-3">
+                      <StickSliderTrack
+                          segments={24}
+                          selectedIndices={(() => {
+                            const sliderMax =
+                              osmBuildings.length > 0
+                                ? Math.max(
+                                    2000,
+                                    ...osmBuildings.map((b) =>
+                                      b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
+                                    )
+                                  )
+                                : 2000;
+                            const toIndex = (v: number) =>
+                              Math.max(0, Math.min(23, Math.round((v / sliderMax) * 23)));
+                            const iMin = toIndex(surfaceRange.min);
+                            const iMax = toIndex(surfaceRange.max);
+                            const start = Math.min(iMin, iMax);
+                            const end = Math.max(iMin, iMax);
+                            return Array.from({ length: end - start + 1 }, (_, idx) => start + idx);
+                          })()}
+                        />
                         <RangeSlider
                           min={0}
-                          max={sliderMax}
-                          step={Math.max(50, Math.round(sliderMax / 100))}
-                          value={[surfaceRange.min, Math.min(surfaceRange.max, sliderMax)]}
+                          max={
+                            osmBuildings.length > 0
+                              ? Math.max(
+                                  2000,
+                                  ...osmBuildings.map((b) =>
+                                    b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
+                                  )
+                                )
+                              : 2000
+                          }
+                          step={1}
+                          value={[surfaceRange.min, surfaceRange.max]}
                           onValueChange={([min, max]) => {
-                            const m = min ?? 0;
-                            const M = max ?? sliderMax;
-                            onSurfaceRangeChange?.({ min: Math.min(m, M), max: Math.max(m, M) });
+                            const rawMax =
+                              osmBuildings.length > 0
+                                ? Math.max(
+                                    2000,
+                                    ...osmBuildings.map((b) =>
+                                      b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
+                                    )
+                                  )
+                                : 2000;
+
+                            const segments = 24;
+                            const sticks = segments - 1;
+                            const sliderMax = rawMax || 1;
+                            const stepValue = sliderMax / sticks;
+
+                            const snapToStick = (value: number | undefined) => {
+                              const safe = Math.min(Math.max(value ?? 0, 0), sliderMax);
+                              const idx = Math.round(safe / stepValue);
+                              return idx * stepValue;
+                            };
+
+                            const snappedMin = snapToStick(min);
+                            const snappedMax = snapToStick(max);
+                            const finalMin = Math.round(Math.min(snappedMin, snappedMax));
+                            const finalMax = Math.round(Math.max(snappedMin, snappedMax));
+
+                            onSurfaceRangeChange?.({
+                              min: finalMin,
+                              max: finalMax,
+                            });
                           }}
+                          className="relative z-10 [&_[data-orientation=horizontal]]:flex [&_[data-orientation=horizontal]]:items-center [&_.relative.grow]:!min-h-[12px] [&_.relative.grow]:!overflow-visible [&_.relative.grow]:!bg-transparent [&_.absolute.h-full]:!bg-transparent [&_.block]:!invisible [&_.block]:!h-4 [&_.block]:!w-4 [&_.block]:!rounded-none [&_.block]:!border-0 [&_.block]:!bg-transparent [&_.block]:!ring-0 [&_.block]:!ring-offset-0"
                         />
                       </div>
-                      {osmBuildings.length > 0 && (() => {
-                        const rangeMin = surfaceRange.min;
-                        const rangeMax = surfaceRange.max;
-                        const filtered = osmBuildings.filter((b) => {
-                          const total = b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0);
-                          return total >= rangeMin && total <= rangeMax;
-                        });
-                        return (
-                          <div className="text-xs space-y-1 pt-2">
-                            <span className="tabular-nums">{filtered.length}</span>
-                          </div>
-                        );
-                      })()}
-                      {osmBuildings.length === 0 && osmBoundsToFetch != null && (
-                        <p className="text-xs text-muted-foreground pt-2">Analyse en cours…</p>
-                      )}
-                          </>
-                        );
-                      })()}
                     </div>
 
                     <Button

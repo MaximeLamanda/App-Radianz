@@ -17,6 +17,10 @@
  *
  * Ordre horaire appliqué : autoconsommation directe (PV → conso) puis tirage
  * batterie puis tirage réseau ; surplus PV → injection batterie puis injection réseau.
+ *
+ * Démarche unifiée : journalier (12 mois × jours × 24 h, 365 j) → consolidation
+ * mensuelle (byMonth) → annuelle (totaux). Une seule fonction runProductionSimulation
+ * avec batterie optionnelle (null = sans batterie).
  */
 
 import type { BatteryReference } from "@/types";
@@ -31,6 +35,15 @@ export interface BatterySimulationInput {
   consumptionTypicalDayByMonth: number[][];
   battery: BatteryReference;
   /** SoC initial (0–1). Si non fourni, utilise INITIAL_SOC_FRACTION. */
+  initialSocFraction?: number;
+}
+
+/** Entrée pour la simulation unifiée (avec ou sans batterie). */
+export interface ProductionSimulationInput {
+  productionTypicalDayByMonth: number[][];
+  consumptionTypicalDayByMonth: number[][];
+  /** Si null/undefined : même boucle horaire, sans batterie (surplus → réseau, conso restante → réseau). */
+  battery?: BatteryReference | null;
   initialSocFraction?: number;
 }
 
@@ -58,25 +71,29 @@ export interface BatterySimulationResult {
   }[];
 }
 
+const DAYS_CAP = 365;
+const daysInMonth = (m: number) => new Date(2000, m + 1, 0).getDate();
+
 /**
- * Simule une année (365 jours) avec jours types par mois, SoC batterie chaîné.
+ * Une seule simulation : journalier (365 j × 24 h) → consolidation mensuelle et annuelle.
+ * Avec ou sans batterie : même boucle ; si battery == null, pas de SoC (surplus → réseau, conso restante → réseau).
  */
-export function runBatterySimulation(input: BatterySimulationInput): BatterySimulationResult {
+export function runProductionSimulation(input: ProductionSimulationInput): BatterySimulationResult {
   const {
     productionTypicalDayByMonth,
     consumptionTypicalDayByMonth,
-    battery,
+    battery = null,
     initialSocFraction = INITIAL_SOC_FRACTION,
   } = input;
 
-  const capacityKwh = battery.capacityKwh;
-  const powerChargeKw = battery.powerChargeKw;
-  const powerDischargeKw = battery.powerDischargeKw;
-  const eta = (battery.roundTripEfficiencyPercent ?? 90) / 100;
+  const capacityKwh = battery ? battery.capacityKwh : 0;
+  const powerChargeKw = battery ? battery.powerChargeKw : 0;
+  const powerDischargeKw = battery ? battery.powerDischargeKw : 0;
+  const eta = battery ? (battery.roundTripEfficiencyPercent ?? 90) / 100 : 1;
   const etaCharge = Math.sqrt(eta);
   const etaDischarge = Math.sqrt(eta);
 
-  let socKwh = Math.max(0, Math.min(capacityKwh, capacityKwh * initialSocFraction));
+  let socKwh = battery ? Math.max(0, Math.min(capacityKwh, capacityKwh * initialSocFraction)) : 0;
 
   let selfConsumptionDirectKwh = 0;
   let selfConsumptionViaBatteryKwh = 0;
@@ -93,15 +110,13 @@ export function runBatterySimulation(input: BatterySimulationInput): BatterySimu
     excessKwh: 0,
   }));
 
-  const daysInMonth = (m: number) => new Date(2000, m + 1, 0).getDate();
-
   let dayOfYear = 0;
   for (let month = 0; month < 12; month++) {
     const prodDay = productionTypicalDayByMonth[month] ?? Array(24).fill(0);
     const consDay = consumptionTypicalDayByMonth[month] ?? Array(24).fill(0);
     const days = daysInMonth(month);
 
-    for (let d = 0; d < days && dayOfYear < 365; d++) {
+    for (let d = 0; d < days && dayOfYear < DAYS_CAP; d++) {
       for (let h = 0; h < 24; h++) {
         const prod = prodDay[h] ?? 0;
         const cons = consDay[h] ?? 0;
@@ -115,37 +130,45 @@ export function runBatterySimulation(input: BatterySimulationInput): BatterySimu
         remainingProduction -= direct;
         remainingConsumption -= direct;
 
-        // Règle 2 : tirage — priorité batterie si elle a du stock, sinon réseau
-        if (remainingConsumption > 0 && socKwh > 0) {
-          const maxDischargeFromBattery = Math.min(powerDischargeKw * 1, socKwh);
-          const maxUsableByLoad = maxDischargeFromBattery * etaDischarge;
-          const toServe = Math.min(maxUsableByLoad, remainingConsumption);
-          const fromBattery = toServe;
-          const drawnFromBattery = toServe / etaDischarge;
-          selfConsumptionViaBatteryKwh += fromBattery;
-          byMonth[month]!.selfConsumptionViaBatteryKwh += fromBattery;
-          socKwh -= drawnFromBattery;
-          remainingConsumption -= fromBattery;
-        }
-        if (remainingConsumption > 0) {
-          gridDrawKwh += remainingConsumption;
-          byMonth[month]!.gridDrawKwh += remainingConsumption;
+        if (battery) {
+          if (remainingConsumption > 0 && socKwh > 0) {
+            const maxDischargeFromBattery = Math.min(powerDischargeKw * 1, socKwh);
+            const maxUsableByLoad = maxDischargeFromBattery * etaDischarge;
+            const toServe = Math.min(maxUsableByLoad, remainingConsumption);
+            const fromBattery = toServe;
+            const drawnFromBattery = toServe / etaDischarge;
+            selfConsumptionViaBatteryKwh += fromBattery;
+            byMonth[month]!.selfConsumptionViaBatteryKwh += fromBattery;
+            socKwh -= drawnFromBattery;
+            remainingConsumption -= fromBattery;
+          }
+          if (remainingConsumption > 0) {
+            gridDrawKwh += remainingConsumption;
+            byMonth[month]!.gridDrawKwh += remainingConsumption;
+          }
+          if (remainingProduction > 0 && socKwh < capacityKwh) {
+            const spaceKwh = capacityKwh - socKwh;
+            const maxInputKwh = Math.min(powerChargeKw * 1, remainingProduction);
+            const stored = Math.min(spaceKwh, maxInputKwh * etaCharge);
+            const pvUsedForCharge = stored / etaCharge;
+            socKwh += stored;
+            remainingProduction -= pvUsedForCharge;
+            injectionBatteryKwh += pvUsedForCharge;
+            byMonth[month]!.injectionBatteryKwh += pvUsedForCharge;
+          }
+        } else {
+          if (remainingProduction > 0) {
+            injectionReseauKwh += remainingProduction;
+            byMonth[month]!.injectionReseauKwh += remainingProduction;
+            byMonth[month]!.excessKwh += remainingProduction;
+          }
+          if (remainingConsumption > 0) {
+            gridDrawKwh += remainingConsumption;
+            byMonth[month]!.gridDrawKwh += remainingConsumption;
+          }
         }
 
-        // Règle 1 : injection — priorité batterie jusqu'à capa max, puis réseau
-        if (remainingProduction > 0 && socKwh < capacityKwh) {
-          const spaceKwh = capacityKwh - socKwh;
-          const maxStorable = spaceKwh;
-          const maxInputKwh = Math.min(powerChargeKw * 1, remainingProduction);
-          const stored = Math.min(maxStorable, maxInputKwh * etaCharge);
-          const pvUsedForCharge = stored / etaCharge;
-          socKwh += stored;
-          remainingProduction -= pvUsedForCharge;
-          injectionBatteryKwh += pvUsedForCharge;
-          byMonth[month]!.injectionBatteryKwh += pvUsedForCharge;
-        }
-
-        if (remainingProduction > 0) {
+        if (battery && remainingProduction > 0) {
           injectionReseauKwh += remainingProduction;
           byMonth[month]!.injectionReseauKwh += remainingProduction;
           byMonth[month]!.excessKwh += remainingProduction;
@@ -166,6 +189,37 @@ export function runBatterySimulation(input: BatterySimulationInput): BatterySimu
   };
 }
 
+/** Délègue à runProductionSimulation (compatibilité). */
+export function runBatterySimulation(input: BatterySimulationInput): BatterySimulationResult {
+  return runProductionSimulation({
+    productionTypicalDayByMonth: input.productionTypicalDayByMonth,
+    consumptionTypicalDayByMonth: input.consumptionTypicalDayByMonth,
+    battery: input.battery,
+    initialSocFraction: input.initialSocFraction,
+  });
+}
+
+/** Simulation sans batterie : délègue à runProductionSimulation avec battery: null. */
+export function computeSelfConsumptionWithoutBattery(input: {
+  productionTypicalDayByMonth: number[][];
+  consumptionTypicalDayByMonth: number[][];
+}) {
+  const result = runProductionSimulation({
+    ...input,
+    battery: null,
+  });
+  return {
+    selfConsumptionDirectKwh: result.selfConsumptionDirectKwh,
+    injectionReseauKwh: result.injectionReseauKwh,
+    gridDrawKwh: result.gridDrawKwh,
+    byMonth: result.byMonth?.map((m) => ({
+      selfConsumptionDirectKwh: m.selfConsumptionDirectKwh,
+      injectionReseauKwh: m.injectionReseauKwh,
+      gridDrawKwh: m.gridDrawKwh,
+    })),
+  };
+}
+
 /** Résultat horaire pour une heure (jour type). */
 export interface BatterySimulationHourlyResult {
   selfConsumptionDirectKwh: number;
@@ -173,6 +227,42 @@ export interface BatterySimulationHourlyResult {
   injectionBatteryKwh: number;
   injectionReseauKwh: number;
   gridDrawKwh: number;
+}
+
+/**
+ * Point d'entrée unique pour la vue journalière : avec ou sans batterie, même format de sortie horaire.
+ */
+export function runSimulationOneDayForChart(
+  prodDay: number[],
+  consDay: number[],
+  battery?: BatteryReference | null
+): BatterySimulationHourlyResult[] {
+  if (battery) return runBatterySimulationOneDayWithCarryOver(prodDay, consDay, battery);
+  return computeOneDayWithoutBattery(prodDay, consDay);
+}
+
+/**
+ * Simule un seul jour type (24h) SANS batterie : même logique horaire (PV → conso directe, surplus → réseau, conso restante → réseau).
+ * Retourne le même format que runBatterySimulationOneDay pour alimenter la vue journalière (selfConsumptionViaBattery et injectionBattery à 0).
+ */
+export function computeOneDayWithoutBattery(
+  prodDay: number[],
+  consDay: number[]
+): BatterySimulationHourlyResult[] {
+  return Array.from({ length: 24 }, (_, h) => {
+    const prod = prodDay[h] ?? 0;
+    const cons = consDay[h] ?? 0;
+    const direct = Math.min(prod, cons);
+    const injectionReseauKwh = Math.max(0, prod - direct);
+    const gridDrawKwh = Math.max(0, cons - direct);
+    return {
+      selfConsumptionDirectKwh: Math.round(direct * 1000) / 1000,
+      selfConsumptionViaBatteryKwh: 0,
+      injectionBatteryKwh: 0,
+      injectionReseauKwh: Math.round(injectionReseauKwh * 1000) / 1000,
+      gridDrawKwh: Math.round(gridDrawKwh * 1000) / 1000,
+    };
+  });
 }
 
 /**

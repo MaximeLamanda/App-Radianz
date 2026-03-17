@@ -95,7 +95,9 @@ export function EquipmentSelectCard<T>({
                   setOpen(false);
                 }}
                 className={`w-full rounded-xl border p-2.5 flex items-stretch gap-2.5 text-left transition-colors hover:bg-muted/50 focus:outline-none ${
-                  selected ? "border-primary bg-primary/5 ring-1 ring-primary/20" : "border-border bg-white"
+                  selected
+                    ? "border-[#E4FE55] bg-[#E4FE55]/10 ring-1 ring-[#E4FE55]/40"
+                    : "border-border bg-white"
                 }`}
               >
                 {renderOptionContent(option, selected)}

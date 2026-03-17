@@ -812,6 +812,37 @@ export function MapComponent({
     const maps = window.google.maps;
     const centroid = calculatePolygonCenter(firstSurf.polygon);
 
+    // Prospect minimal immédiat : ouvrir le drawer et passer le polygone en jaune sans attendre BDNB/geocode/POI
+    const roofSurfacesMinimal: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
+      id: `${osmBuilding.id}-${i}`,
+      area: s.areaM2,
+      polygon: s.polygon,
+      orientation: s.orientation ?? undefined,
+    }));
+    const totalAreaMinimal = roofSurfacesMinimal.reduce((sum, s) => sum + s.area, 0);
+    const minimalProspect: Prospect = {
+      address: "Chargement…",
+      coordinates: centroid,
+      roofSurface: roofSurfacesMinimal[0] ?? { area: 0, polygon: [] },
+      roofSurfaces: roofSurfacesMinimal,
+      placeType: "other",
+      qualityScore: totalAreaMinimal > 0 ? Math.min(100, 10 + Math.floor(totalAreaMinimal / 50)) : 10,
+      name: undefined,
+      placeId: undefined,
+      contact: undefined,
+      anneeConstruction: undefined,
+      // Réinitialiser les champs data gouv pour que l'enrichissement se relance sur le nouveau bâtiment
+      // (sinon le merge garde le siren du bâtiment précédent et le drawer ne refetch pas)
+      siren: undefined,
+      siret: undefined,
+      companyLegalName: undefined,
+      companyManagerName: undefined,
+      companyAddress: undefined,
+      companyNaf: undefined,
+      companyEnrichmentApiUrl: undefined,
+    };
+    onProspectUpdateRef.current(minimalProspect);
+
     const geocodePromise = new Promise<string>((resolve) => {
       const geocoder = new maps.Geocoder();
       geocoder.geocode({ location: centroid }, (results, status) => {
@@ -830,74 +861,81 @@ export function MapComponent({
 
     const poiPromise = searchPoiForPolygon(centroid, firstSurf.polygon).catch(() => null);
 
-    Promise.all([geocodePromise, bdnbPromise, poiPromise])
-      .then(
-        async ([address, anneeConstruction, poi]) => {
-          if (myClickId !== osmClickIdRef.current) return;
+    const roofSurfacesForMerge: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
+      id: `${osmBuilding.id}-${i}`,
+      area: s.areaM2,
+      polygon: s.polygon,
+      orientation: s.orientation ?? undefined,
+    }));
+    const totalAreaForMerge = roofSurfacesForMerge.reduce((sum, s) => sum + s.area, 0);
 
-          const roofSurfaces: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
-            id: `${osmBuilding.id}-${i}`,
-            area: s.areaM2,
-            polygon: s.polygon,
-            orientation: s.orientation ?? undefined,
-          }));
-          const totalArea = roofSurfaces.reduce((sum, s) => sum + s.area, 0);
-
-          let prospect: Prospect;
-
-          if (poi?.placeId) {
-            const placeDetails = await getPlaceDetailsNew(poi.placeId);
-            if (myClickId !== osmClickIdRef.current) return;
-            const coords = poi.coordinates ?? centroid;
-            const fullAddress = placeDetails?.formattedAddress ?? address;
-            const displayName = placeDetails?.displayName ?? poi.name;
-            const placeType = placeDetails?.primaryTypeDisplayName ?? "other";
-            const contact =
-              placeDetails?.nationalPhoneNumber || placeDetails?.internationalPhoneNumber
-                ? {
-                    nationalPhoneNumber: placeDetails.nationalPhoneNumber ?? undefined,
-                    internationalPhoneNumber: placeDetails.internationalPhoneNumber ?? undefined,
-                    websiteUri: placeDetails.websiteURI ?? undefined,
-                  }
-                : undefined;
-
-            prospect = {
-              name: displayName,
-              address: fullAddress,
-              coordinates: coords,
-              placeId: poi.placeId,
-              roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
-              roofSurfaces,
-              placeType,
-              qualityScore: totalArea > 0 ? Math.min(100, 10 + Math.floor(totalArea / 50)) : 10,
-              anneeConstruction: anneeConstruction ?? undefined,
-              contact,
-            };
-          } else {
-            const finalAddress = poi?.name ?? address;
-            prospect = {
-              address: finalAddress,
-              name: poi?.name ?? undefined,
-              coordinates: centroid,
-              roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
-              roofSurfaces,
-              placeType: "other",
-              qualityScore: 10,
-              anneeConstruction: anneeConstruction ?? undefined,
-            };
-          }
-
-          onProspectUpdateRef.current(prospect);
-        }
-      )
+    // Geocode : mise à jour de l'adresse dès que disponible (en parallèle avec BDNB et POI)
+    geocodePromise
+      .then((address) => {
+        if (myClickId !== osmClickIdRef.current) return;
+        onProspectUpdateRef.current({ address });
+      })
       .catch((err) => {
-        console.error("[MapComponent] Erreur enrichissement OSM:", err);
-        toast.error("Impossible de charger les informations du bâtiment");
+        console.warn("[MapComponent] Geocode OSM:", err);
+      });
+
+    // BDNB : seule l'année de construction est mise à jour à la complétion ; on arrête le loading "année" au finally
+    bdnbPromise
+      .then((anneeConstruction) => {
+        if (myClickId !== osmClickIdRef.current) return;
+        onProspectUpdateRef.current({ anneeConstruction: anneeConstruction ?? undefined });
+      })
+      .catch((err) => {
+        console.warn("[MapComponent] BDNB OSM:", err);
       })
       .finally(() => {
         if (myClickId === osmClickIdRef.current) {
           onOsmEnrichmentChange?.(false);
         }
+      });
+
+    // POI : nom, adresse, type, contact, etc. dès que disponible (en parallèle avec BDNB et geocode)
+    poiPromise
+      .then((poi) => {
+        if (myClickId !== osmClickIdRef.current) return null;
+        if (!poi?.placeId) {
+          if (poi?.name) onProspectUpdateRef.current({ name: poi.name });
+          return null;
+        }
+        return getPlaceDetailsNew(poi.placeId).then((placeDetails) => {
+          if (myClickId !== osmClickIdRef.current) return null;
+          const coords = poi.coordinates ?? centroid;
+          const fullAddress = placeDetails?.formattedAddress;
+          const displayName = placeDetails?.displayName ?? poi.name;
+          const placeType = (placeDetails?.primaryTypeDisplayName ?? "other") as Prospect["placeType"];
+          const contact =
+            placeDetails?.nationalPhoneNumber || placeDetails?.internationalPhoneNumber
+              ? {
+                  nationalPhoneNumber: placeDetails.nationalPhoneNumber ?? undefined,
+                  internationalPhoneNumber: placeDetails.internationalPhoneNumber ?? undefined,
+                  websiteUri: placeDetails.websiteURI ?? undefined,
+                }
+              : undefined;
+          const qualityScore = totalAreaForMerge > 0 ? Math.min(100, 10 + Math.floor(totalAreaForMerge / 50)) : 10;
+          const update: Partial<Prospect> = {
+            name: displayName,
+            coordinates: coords,
+            placeId: poi.placeId,
+            placeType,
+            qualityScore,
+            contact,
+          };
+          if (fullAddress != null) update.address = fullAddress;
+          return update;
+        });
+      })
+      .then((poiUpdate) => {
+        if (poiUpdate && myClickId === osmClickIdRef.current) {
+          onProspectUpdateRef.current(poiUpdate);
+        }
+      })
+      .catch((err) => {
+        console.warn("[MapComponent] POI OSM:", err);
       });
   };
 

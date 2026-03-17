@@ -10,12 +10,15 @@ export function BatterySelectCard({
   onChange,
   batteries,
   isRecommendedForProspect,
+  recommendedBatteryIdForProspect,
 }: {
   value: BatteryReference | null;
   onChange: (b: BatteryReference | null) => void;
   batteries: BatteryReference[];
-  /** Affiche le badge "recommandé" quand la batterie est celle recommandée pour ce prospect (ex. calcul surplus) */
+  /** Affiche le badge "recommandé" sur la carte sélectionnée quand elle est recommandée pour ce prospect */
   isRecommendedForProspect?: boolean;
+  /** Identifiant de la batterie recommandée pour ce prospect (pour le badge dans la liste) */
+  recommendedBatteryIdForProspect?: string | null;
 }) {
   const showRecommended = value?.recommended === true || isRecommendedForProspect === true;
 
@@ -84,7 +87,7 @@ export function BatterySelectCard({
               <span>{b.capacityKwh} kWh</span>
               <span>·</span>
               <span>{b.powerChargeKw} kW</span>
-              {b.recommended && (
+              {b.id === recommendedBatteryIdForProspect && (
                 <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">
                   recommandé
                 </span>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode, type ComponentType } from "react";
 import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -78,6 +78,24 @@ import { useAuth } from "@/lib/auth-context";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import type { ScoredCandidate } from "@/lib/find-local-siren";
 import type { Prospect, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
+
+/** Config des lignes données prospect : liste fixe, une entrée par ligne (skeleton / valeur / "No data"). */
+const PROSPECT_DATA_ROWS: {
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  getValue: (p: Prospect) => string | undefined;
+  isBdnb: boolean;
+  isPhone?: boolean;
+}[] = [
+  { label: "SIREN", icon: Hash, getValue: (p) => p.siren ?? undefined, isBdnb: false },
+  { label: "SIRET", icon: Hash, getValue: (p) => p.siret ?? undefined, isBdnb: false },
+  { label: "Dénomination", icon: Building2, getValue: (p) => p.companyLegalName ?? undefined, isBdnb: false },
+  { label: "Adresse siège", icon: MapPin, getValue: (p) => p.companyAddress ?? undefined, isBdnb: false },
+  { label: "Code NAF", icon: Tag, getValue: (p) => p.companyNaf ?? undefined, isBdnb: false },
+  { label: "Gérant", icon: User, getValue: (p) => p.companyManagerName ?? undefined, isBdnb: false },
+  { label: "Téléphone", icon: Phone, getValue: (p) => (p.contact?.nationalPhoneNumber ?? p.contact?.internationalPhoneNumber) ?? undefined, isBdnb: false, isPhone: true },
+  { label: "Année construction", icon: Calendar, getValue: (p) => (p.anneeConstruction != null ? String(p.anneeConstruction) : undefined), isBdnb: true },
+];
 
 /** Options du select : types canoniques (sans doublons) + type actuel si inconnu */
 function getPlaceTypeOptions(currentValue: string): { value: string; label: string }[] {
@@ -994,105 +1012,32 @@ export function ProspectDrawer({
 
                     <Separator className="bg-white/20 my-2" />
 
-                    {/* Entreprise (api.gouv) */}
-                    <div>
-                      {companyEnrichmentLoading ? (
-                        <div className="space-y-3 text-xs pt-3">
-                          <div className="flex items-center gap-4 min-w-0">
-                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
-                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                    {/* Entreprise (api.gouv) — liste fixe : skeleton / valeur / "No data" par ligne */}
+                    <div className="space-y-3 text-xs pt-3">
+                      {PROSPECT_DATA_ROWS.map((row) => {
+                        const Icon = row.icon;
+                        const isLoading = row.isBdnb ? bdnbLoading : companyEnrichmentLoading;
+                        const value = row.getValue(prospect);
+                        return (
+                          <div key={row.label} className="flex items-center gap-4 min-w-0">
+                            <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
+                              <Icon className="h-3.5 w-3.5 opacity-70" />
+                              <span>{row.label}</span>
+                            </div>
+                            {isLoading ? (
+                              <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                            ) : value ? (
+                              row.isPhone ? (
+                                <a href={`tel:${value.replace(/\s/g, "")}`} className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline" title={value}>{value}</a>
+                              ) : (
+                                <span className={`truncate min-w-0 flex-1 text-left pl-1 ${row.label === "SIREN" || row.label === "SIRET" || row.label === "Code NAF" ? "font-mono text-white" : "text-white"}`} title={value}>{value}</span>
+                              )
+                            ) : (
+                              <span className="text-white/50 min-w-0 flex-1 text-left pl-1">No data</span>
+                            )}
                           </div>
-                          <div className="flex items-center gap-4 min-w-0">
-                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
-                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
-                          </div>
-                          <div className="flex items-center gap-4 min-w-0">
-                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
-                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
-                          </div>
-                          <div className="flex items-center gap-4 min-w-0">
-                            <Skeleton className="h-3.5 w-[115px] bg-white/20" />
-                            <Skeleton className="h-3.5 flex-1 bg-white/20" />
-                          </div>
-                        </div>
-                      ) : prospect.siren || prospect.companyLegalName || prospect.companyManagerName || prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber ? (
-                        <div className="space-y-3 text-xs pt-3">
-                          {prospect.siren && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <Hash className="h-3.5 w-3.5 opacity-70" />
-                                <span>SIREN</span>
-                              </div>
-                              <span className="font-mono text-white truncate min-w-0 flex-1 text-left pl-1" title={prospect.siren}>{prospect.siren}</span>
-                            </div>
-                          )}
-                          {prospect.siret && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <Hash className="h-3.5 w-3.5 opacity-70" />
-                                <span>SIRET</span>
-                              </div>
-                              <span className="font-mono text-white truncate min-w-0 flex-1 text-left pl-1" title={prospect.siret}>{prospect.siret}</span>
-                            </div>
-                          )}
-                          {prospect.companyLegalName && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <Building2 className="h-3.5 w-3.5 opacity-70" />
-                                <span>Dénomination</span>
-                              </div>
-                              <span className="text-white truncate min-w-0 flex-1 text-left pl-1" title={prospect.companyLegalName}>{prospect.companyLegalName}</span>
-                            </div>
-                          )}
-                          {prospect.companyAddress && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <MapPin className="h-3.5 w-3.5 opacity-70" />
-                                <span>Adresse siège</span>
-                              </div>
-                              <span className="text-white truncate min-w-0 flex-1 text-left pl-1" title={prospect.companyAddress}>{prospect.companyAddress}</span>
-                            </div>
-                          )}
-                          {prospect.companyNaf && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <Tag className="h-3.5 w-3.5 opacity-70" />
-                                <span>Code NAF</span>
-                              </div>
-                              <span className="font-mono text-white truncate min-w-0 flex-1 text-left pl-1" title={prospect.companyNaf}>{prospect.companyNaf}</span>
-                            </div>
-                          )}
-                          {prospect.companyManagerName && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <User className="h-3.5 w-3.5 opacity-70" />
-                                <span>Gérant</span>
-                              </div>
-                              <span className="text-white truncate min-w-0 flex-1 text-left pl-1" title={prospect.companyManagerName}>{prospect.companyManagerName}</span>
-                            </div>
-                          )}
-                          {(prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber) && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <Phone className="h-3.5 w-3.5 opacity-70" />
-                                <span>Téléphone</span>
-                              </div>
-                              <a href={`tel:${(prospect.contact?.internationalPhoneNumber || prospect.contact?.nationalPhoneNumber || "").replace(/\s/g, "")}`} className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline" title={prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber}>{prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber}</a>
-                            </div>
-                          )}
-                          {prospect.anneeConstruction != null && (
-                            <div className="flex items-center gap-4 min-w-0">
-                              <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                                <Calendar className="h-3.5 w-3.5 opacity-70" />
-                                <span>Année construction</span>
-                              </div>
-                              <span className="text-white truncate min-w-0 flex-1 text-left pl-1">{prospect.anneeConstruction}</span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-white/60">No data</p>
-                      )}
+                        );
+                      })}
                     </div>
 
                     {/* Ligne Lat/Lon (gauche) + Badge (droite) - en bas */}
