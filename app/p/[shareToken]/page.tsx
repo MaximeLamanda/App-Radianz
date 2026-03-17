@@ -81,17 +81,17 @@ export default function ProspectSharePage() {
   const [selectedBatteryId, setSelectedBatteryId] = useState<string | null>(null);
 
   const usedPanelRef: PanelReference | null =
-    (selectedPanelId && panelsData?.find((r) => r.id === selectedPanelId)) ??
+    (selectedPanelId ? panelsData?.find((r) => r.id === selectedPanelId) ?? null : null) ??
     panelsData?.find((r) => r.recommended) ??
     panelsData?.[0] ??
     getRecommendedPanelReferenceSync();
   const usedInverterRef: InverterReference | null =
-    (selectedInverterId && invertersData?.find((r) => r.id === selectedInverterId)) ??
+    (selectedInverterId ? invertersData?.find((r) => r.id === selectedInverterId) ?? null : null) ??
     invertersData?.find((r) => r.recommended) ??
     invertersData?.[0] ??
     getRecommendedInverterReferenceSync();
   const usedBatteryRef: BatteryReference | null =
-    (selectedBatteryId && batteriesData?.find((r) => r.id === selectedBatteryId)) ??
+    (selectedBatteryId ? batteriesData?.find((r) => r.id === selectedBatteryId) ?? null : null) ??
     batteriesData?.find((r) => r.recommended) ??
     batteriesData?.[0] ??
     getRecommendedBatteryReferenceSync();

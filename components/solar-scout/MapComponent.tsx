@@ -873,7 +873,7 @@ export function MapComponent({
     geocodePromise
       .then((address) => {
         if (myClickId !== osmClickIdRef.current) return;
-        onProspectUpdateRef.current({ address });
+        onProspectUpdateRef.current({ address } as Prospect);
       })
       .catch((err) => {
         console.warn("[MapComponent] Geocode OSM:", err);
@@ -883,7 +883,7 @@ export function MapComponent({
     bdnbPromise
       .then((anneeConstruction) => {
         if (myClickId !== osmClickIdRef.current) return;
-        onProspectUpdateRef.current({ anneeConstruction: anneeConstruction ?? undefined });
+        onProspectUpdateRef.current({ anneeConstruction: anneeConstruction ?? undefined } as Prospect);
       })
       .catch((err) => {
         console.warn("[MapComponent] BDNB OSM:", err);
@@ -899,7 +899,7 @@ export function MapComponent({
       .then((poi) => {
         if (myClickId !== osmClickIdRef.current) return null;
         if (!poi?.placeId) {
-          if (poi?.name) onProspectUpdateRef.current({ name: poi.name });
+          if (poi?.name) onProspectUpdateRef.current({ name: poi.name } as Prospect);
           return null;
         }
         return getPlaceDetailsNew(poi.placeId).then((placeDetails) => {
@@ -931,7 +931,7 @@ export function MapComponent({
       })
       .then((poiUpdate) => {
         if (poiUpdate && myClickId === osmClickIdRef.current) {
-          onProspectUpdateRef.current(poiUpdate);
+          onProspectUpdateRef.current(poiUpdate as Prospect);
         }
       })
       .catch((err) => {
@@ -1291,7 +1291,7 @@ export function MapComponent({
     <div className="absolute inset-0 h-full min-h-[70vh]">
       <div ref={mapRef} className="absolute inset-0 h-full w-full min-h-[70vh]" />
 
-      {hasSurfaces && (
+      {hasSurfaces && false && (
         <div className="absolute bottom-3 left-3 z-100 pointer-events-none flex flex-col gap-1 rounded-lg bg-white/95 border border-gray-200 px-2 py-1.5 shadow-sm text-xs">
           <span className="flex items-center gap-2">
             <span className="w-4 h-0.5 rounded bg-[#DC2626]" style={{ minWidth: 12 }} />
@@ -1300,10 +1300,6 @@ export function MapComponent({
           <span className="flex items-center gap-2">
             <span className="w-4 h-0.5 rounded bg-[#2563EB]" style={{ minWidth: 12 }} />
             Perp. (orientation toit)
-          </span>
-          <span className="flex items-center gap-2">
-            <span className="w-4 h-0.5 rounded bg-[#0D9488]" style={{ minWidth: 12 }} />
-            Côté le plus long
           </span>
         </div>
       )}
