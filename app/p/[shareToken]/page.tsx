@@ -327,7 +327,7 @@ export default function ProspectSharePage() {
       injectionReseauKwhTotal,
       breakdownFromHourlySim,
     };
-  }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, selectedBatteryCount, includeBatteryEffective]);
+  }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, configurationMode, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, selectedBatteryCount, includeBatteryEffective]);
 
   const chartData = useMemo(() => {
     if (!effectiveConfig.productionPerKwp) return [];
@@ -576,8 +576,9 @@ export default function ProspectSharePage() {
                 const viaBatteryEur = viaBatteryKwh * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
                 const injectionReseauEur = injectionReseauKwh * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
 
-                const savingsPct = displayEnergyBillEur > 0 ? Math.min(100, (annualSavings / displayEnergyBillEur) * 100) : 0;
                 const totalSavings = viaBatteryEur + directEur + injectionReseauEur;
+                const savingsPctRaw = displayEnergyBillEur > 0 ? (annualSavings / displayEnergyBillEur) * 100 : 0;
+                const savingsPct = Math.min(100, savingsPctRaw);
                 const pctBattery = totalSavings > 0 ? (viaBatteryEur / totalSavings) * 100 : 0;
                 const pctDirect = totalSavings > 0 ? (directEur / totalSavings) * 100 : 0;
                 const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
@@ -611,13 +612,18 @@ export default function ProspectSharePage() {
                     {/* Barre minimaliste savings / energy bill */}
                     {displayEnergyBillEur > 0 && (
                       <div className="w-full mb-1.5 shrink-0">
-                        {productionKwh > 0 && (
-                          <div className="flex justify-end mb-0.5">
+                        <div className="flex justify-between items-center mb-0.5">
+                          {displayEnergyBillEur > 0 && annualSavings > 0 && (
+                            <span className="text-[9px] text-gray-400 tabular-nums" title="Économies en % de la facture énergétique">
+                              {Math.round(savingsPctRaw)}%
+                            </span>
+                          )}
+                          {productionKwh > 0 && (
                             <span className="text-[9px] text-gray-400 tabular-nums" title="Taux d'autoconsommation">
                               {autoPct}%
                             </span>
-                          </div>
-                        )}
+                          )}
+                        </div>
                         <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden flex">
                           {savingsPct > 0 && breakdownFromHourlySim && totalSavings > 0 ? (
                             <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>

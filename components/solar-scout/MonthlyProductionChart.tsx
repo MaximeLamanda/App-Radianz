@@ -146,8 +146,8 @@ export function MonthlyProductionChart({
         const cons = item.consumption ?? 0;
         const selfConsumptionDirect = item.selfConsumptionDirect;
         const selfConsumptionViaBattery = item.selfConsumptionViaBattery;
-        const injectionBattery = item.injectionBattery ?? 0;
-        const excess = item.excess ?? (hasConsumption ? Math.max(0, prod - cons) : prod);
+        const injectionBattery = 0; // Masqué en vue mensuelle (pas de barre affichée)
+        const excess = item.excess ?? (hasConsumption ? Math.max(0, prod - cons) : prod); // Injection réseau seule : varie quand le nb de batteries change
         const gridDraw = item.gridDraw ?? (hasConsumption ? Math.max(0, cons - prod) : 0);
         const selfConsumption =
           typeof selfConsumptionDirect === "number" && typeof selfConsumptionViaBattery === "number"

@@ -27,6 +27,8 @@ import type { BatteryReference } from "@/types";
 
 /** Activer les logs détaillés (scaleBatteryForCount, runProductionSimulation). Désactivé par défaut. */
 const DEBUG_AUTOCONSO = false;
+/** Afficher le profil journalier (injection/tirage batterie par heure) quand le nombre de batteries change. Activé en dev. */
+const DEBUG_DAILY_PROFILE = process.env.NODE_ENV === "development";
 
 /** SoC initial au 1er janvier (0–1). Plan : 50 %. */
 const INITIAL_SOC_FRACTION = 0.5;
@@ -228,7 +230,7 @@ export function runProductionSimulation(input: ProductionSimulationInput): Batte
     byMonth,
   };
 
-  if (process.env.NODE_ENV === "development") {
+  if (DEBUG_AUTOCONSO && process.env.NODE_ENV === "development") {
     const totalProdKwh = productionTypicalDayByMonth.reduce(
       (sum, prodDay, m) => sum + (prodDay?.reduce((a, b) => a + b, 0) ?? 0) * daysInMonth(m),
       0
@@ -303,8 +305,25 @@ export function runSimulationOneDayForChart(
   consDay: number[],
   battery?: BatteryReference | null
 ): BatterySimulationHourlyResult[] {
-  if (battery) return runBatterySimulationOneDayWithCarryOver(prodDay, consDay, battery);
-  return computeOneDayWithoutBattery(prodDay, consDay);
+  const result = battery
+    ? runBatterySimulationOneDayWithCarryOver(prodDay, consDay, battery)
+    : computeOneDayWithoutBattery(prodDay, consDay);
+  if (DEBUG_DAILY_PROFILE && battery) {
+    const totalInjection = result.reduce((s, h) => s + h.injectionBatteryKwh, 0);
+    const totalViaBattery = result.reduce((s, h) => s + h.selfConsumptionViaBatteryKwh, 0);
+    console.log("[Profil journalier batterie]", {
+      batterie: battery.name,
+      capaciteKwh: battery.capacityKwh,
+      injectionBatterieTotal: Math.round(totalInjection * 1000) / 1000,
+      autoconsommationViaBatterieTotal: Math.round(totalViaBattery * 1000) / 1000,
+      detailParHeure: result.map((h, i) => ({
+        h: i,
+        injection: h.injectionBatteryKwh,
+        tirage: h.selfConsumptionViaBatteryKwh,
+      })),
+    });
+  }
+  return result;
 }
 
 /**

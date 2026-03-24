@@ -57,6 +57,7 @@ import {
 } from "@/lib/pvgis";
 import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
 import { runProductionSimulation, runSimulationOneDayForChart, scaleBatteryForCount } from "@/lib/battery-simulation";
+import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
 import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import {
   getPanelReferences,
@@ -240,7 +241,9 @@ export function ProspectDrawer({
   const [usedPanelRef, setUsedPanelRef] = useState<PanelReference | null>(null);
   const [usedInverterRef, setUsedInverterRef] = useState<InverterReference | null>(null);
   const [usedBatteryRef, setUsedBatteryRef] = useState<BatteryReference | null>(null);
-  const [batteryCount, setBatteryCount] = useState(1);
+  const [batteryCount, setBatteryCount] = useState(() =>
+    prospect?.batteryCount != null && prospect.batteryCount >= 1 ? prospect.batteryCount : 1
+  );
   /** "highest_production" = max surface utilisée | "perfect_fit" = production ≈ consommation */
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [companyEnrichmentLoading, setCompanyEnrichmentLoading] = useState(false);
@@ -366,7 +369,6 @@ export function ProspectDrawer({
       ? `${prospect.id ?? "noid"}-${prospect.coordinates.lat}-${prospect.coordinates.lng}-${Math.round(totalAreaForKey)}`
       : null;
   const pvgisFetchInProgressRef = useRef(false);
-  const choiceCardsConfigLogKeyRef = useRef<string | null>(null);
 
   // Récupérer les données PVGIS une seule fois à l'ouverture du drawer pour ce prospect
   useEffect(() => {
@@ -667,7 +669,8 @@ export function ProspectDrawer({
 
     const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7;
     const placeType = prospect.placeType || "other";
-    const consoAnnuelleKwh = getEnergyConsumption(placeType) * surfaceM2;
+    const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
+    const consoAnnuelleKwh = prospect.annualConsumptionKwhOverride ?? consoFromType;
     const targetKwp = productible > 0
       ? (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / productible
       : 0;
@@ -710,7 +713,8 @@ export function ProspectDrawer({
 
     const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7;
     const placeType = prospect.placeType || "other";
-    const consoAnnuelleKwh = getEnergyConsumption(placeType) * surfaceM2;
+    const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
+    const consoAnnuelleKwh = prospect.annualConsumptionKwhOverride ?? consoFromType;
     const targetKwp = productible > 0
       ? (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / productible
       : 0;
@@ -722,25 +726,14 @@ export function ProspectDrawer({
       perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount, kwp: cappedKwp },
       highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount, kwp: fullKwp },
     };
-    if (process.env.NODE_ENV === "development") {
-      const key = `${config.highestProduction.panelCount},${config.highestProduction.inverterCount},${config.perfectFit.panelCount},${config.perfectFit.inverterCount}`;
-      if (choiceCardsConfigLogKeyRef.current !== key) {
-        choiceCardsConfigLogKeyRef.current = key;
-        console.log("[Production]", {
-          highest_production: { panneaux: config.highestProduction.panelCount, onduleurs: config.highestProduction.inverterCount },
-          perfect_fit: { panneaux: config.perfectFit.panelCount, onduleurs: config.perfectFit.inverterCount },
-        });
-      }
-    }
     return config;
   }, [prospect, usedPanelRef, usedInverterRef]);
 
   /**
-   * Taille batterie recommandée (kWh) selon méthodes courantes :
-   * - Si surplus annuel > 0 : capacité = surplus moyen journalier / rendement aller-retour (0,9).
-   *   (Sources : dimensionnement pour autoconsommation — stocker le surplus du jour pour la nuit.)
-   * - Si surplus ≤ 0 : règle 1 à 1,5 kWh de stockage par kWc installé (EDF, Oscaro, Shift to Solar).
-   * Pas de plafond artificiel : les valeurs suivent le dimensionnement réel.
+   * Taille batterie recommandée (kWh) :
+   * - Avec profils PVGIS (12 mois) : simulation sans batterie → surplus = injection réseau annuelle ;
+   *   capacité ≈ (surplus journalier moyen) / η (0,9).
+   * - Sinon : repli sur bilan annuel prod − conso (historique), puis règle kWh/kWc si pas de surplus.
    */
   const recommendedBatteryKwh = useMemo(() => {
     const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
@@ -749,21 +742,19 @@ export function ProspectDrawer({
     const hasProductionData = effectiveConfig.productionPerKwp != null;
     if (!hasProductionData || effectiveKwp <= 0) return null;
     const placeType = prospect.placeType || "other";
-    const annualConsumptionKwh = getEnergyConsumption(placeType) * totalArea;
+    const annualConsumptionKwh =
+      prospect.annualConsumptionKwhOverride ?? getEnergyConsumption(placeType) * totalArea;
     const annualProductionKwh = effectiveConfig.effectiveAnnualProductionKwh;
-    const annualSurplusKwh = annualProductionKwh - annualConsumptionKwh;
+    const monthly = effectiveConfig.productionPerKwp?.productionPerKwpMonthly;
 
-    if (annualSurplusKwh > 0) {
-      const dailySurplusKwh = annualSurplusKwh / 365;
-      const ROUND_TRIP_EFFICIENCY = 0.9; // Li-ion typique (Sources: EleCalculator, derating)
-      const capacityKwh = dailySurplusKwh / ROUND_TRIP_EFFICIENCY;
-      return Math.round(capacityKwh * 10) / 10;
-    }
-
-    // Pas de surplus : règle 1 à 1,5 kWh / kWc (autoconsommation avec réseau)
-    const KWH_PER_KWP = 1.25;
-    const capacityKwh = effectiveKwp * KWH_PER_KWP;
-    return Math.round(Math.max(0, capacityKwh) * 10) / 10;
+    return computeRecommendedBatteryTargetKwh({
+      productionPerKwpMonthly: monthly,
+      effectiveKwp,
+      annualProductionKwh,
+      annualConsumptionKwh,
+      placeType,
+      surfaceM2: totalArea,
+    });
   }, [prospect, effectiveConfig.effectiveAnnualProductionKwh, effectiveConfig.effectiveKwp, effectiveConfig.productionPerKwp]);
 
   /**
@@ -823,9 +814,11 @@ export function ProspectDrawer({
         composition: recommendedBatteryComposition ? `${recommendedBatteryComposition.count}× ${recommendedBatteryComposition.model.name}` : null,
       });
     }
-  }, [recommendedBatteryKwh, recommendedBatteryComposition?.model?.name, recommendedBatteryComposition?.count]);
+  }, [recommendedBatteryKwh, recommendedBatteryComposition]);
 
   // Batterie : toujours une ref issue de batteriesData. Par défaut : choix prospect → composition recommandée → premier avec flag recommandé → premier de la liste.
+  // Si le prospect a un batteryCount persisté, il prime ; sinon on suit la composition recommandée quand elle arrive
+  // (ex. après chargement des batteries / PVGIS) pour que le badge « recommandé » et les simulations soient cohérents.
   useEffect(() => {
     if (!isOpen || !prospect) return;
     const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
@@ -865,7 +858,8 @@ export function ProspectDrawer({
     const totalPowerKW = effectiveConfig.effectiveKwp;
     const inverterCount = calculateInverterCount(totalPowerKW, recommendedInverter);
     const placeType = prospect.placeType || "other";
-    const totalConsumptionKwh = getEnergyConsumption(placeType) * totalArea;
+    const totalConsumptionKwh =
+      prospect.annualConsumptionKwhOverride ?? getEnergyConsumption(placeType) * totalArea;
 
     let equipmentEur: number;
     let annualSavings: number;
@@ -939,6 +933,7 @@ export function ProspectDrawer({
     };
   }, [
     prospect,
+    configurationMode,
     effectiveConfig,
     usedPanelRef,
     usedInverterRef,
@@ -1472,7 +1467,12 @@ export function ProspectDrawer({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setConfigurationMode("perfect_fit")}
+                    onClick={() => {
+                      setConfigurationMode("perfect_fit");
+                      if (prospect && onProspectUpdate) {
+                        onProspectUpdate({ ...prospect, configurationMode: "perfect_fit" });
+                      }
+                    }}
                     className={`cursor-pointer rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                       configurationMode === "perfect_fit"
                         ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
@@ -1496,7 +1496,12 @@ export function ProspectDrawer({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setConfigurationMode("highest_production")}
+                    onClick={() => {
+                      setConfigurationMode("highest_production");
+                      if (prospect && onProspectUpdate) {
+                        onProspectUpdate({ ...prospect, configurationMode: "highest_production" });
+                      }
+                    }}
                     className={`cursor-pointer rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                       configurationMode === "highest_production"
                         ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
@@ -1675,6 +1680,14 @@ export function ProspectDrawer({
                     const directEur = (selfConsumptionDirectKwhTotal ?? 0) * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
                     const viaBatteryEur = (selfConsumptionViaBatteryKwhTotal ?? 0) * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
                     const injectionReseauEur = (injectionReseauKwhTotal ?? 0) * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+                    const totalSavings = directEur + viaBatteryEur + injectionReseauEur;
+                    const savingsPctRaw = energyBillEur > 0 ? (annualSavings / energyBillEur) * 100 : 0;
+                    const savingsPct = Math.min(100, savingsPctRaw);
+                    const pctBattery = totalSavings > 0 ? (viaBatteryEur / totalSavings) * 100 : 0;
+                    const pctDirect = totalSavings > 0 ? (directEur / totalSavings) * 100 : 0;
+                    const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
+                    const autoKwh = (selfConsumptionDirectKwhTotal ?? 0) + (selfConsumptionViaBatteryKwhTotal ?? 0);
+                    const autoPct = productionKwh > 0 ? Math.round((autoKwh / productionKwh) * 100) : 0;
                     const row = (key: string, label: ReactNode, value: ReactNode, valueSmall?: boolean) => (
                       <div key={key} className="flex items-center justify-between gap-2 min-w-0 py-0 first:pt-0 last:pb-0">
                         <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">{label}</span>
@@ -1688,6 +1701,33 @@ export function ProspectDrawer({
                             <span className="text-[10px] uppercase tracking-wide text-gray-500">Financial yearly</span>
                           </div>
                           <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
+                            {energyBillEur > 0 && (
+                              <div className="w-full mb-1.5 shrink-0">
+                                <div className="flex justify-between items-center mb-0.5">
+                                  {annualSavings > 0 && (
+                                    <span className="text-[9px] text-gray-400 tabular-nums" title="Économies en % de la facture énergétique">
+                                      {Math.round(savingsPctRaw)}%
+                                    </span>
+                                  )}
+                                  {productionKwh > 0 && (
+                                    <span className="text-[9px] text-gray-400 tabular-nums" title="Taux d'autoconsommation">
+                                      {autoPct}%
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden flex">
+                                  {savingsPct > 0 && breakdownFromHourlySim && totalSavings > 0 ? (
+                                    <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>
+                                      <div className="h-full bg-[#0000FF] shrink-0" style={{ width: `${pctBattery}%` }} title="Autoconsommation batterie" />
+                                      <div className="h-full bg-[#4B5563] shrink-0" style={{ width: `${pctDirect}%` }} title="Autoconsommation directe" />
+                                      <div className="h-full bg-[#32F490] shrink-0 flex-1" title="Injection réseau" />
+                                    </div>
+                                  ) : savingsPct > 0 ? (
+                                    <div className="h-full rounded-l-full bg-gray-600" style={{ width: `${savingsPct}%` }} />
+                                  ) : null}
+                                </div>
+                              </div>
+                            )}
                             {row("energy-bill", "Est. Energy bill", <>{energyBillEur.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
                             {row("savings", "Savings", <>{annualSavings.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
                             {breakdownFromHourlySim ? (

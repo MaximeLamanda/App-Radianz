@@ -65,6 +65,12 @@ export function BatterySelectCard({
                 onCountChange?.(v);
               }
             }}
+            onBlur={(e) => {
+              const v = parseInt(e.target.value, 10);
+              if (!isNaN(v) && v >= 1 && v <= effectiveMax) {
+                onCountChange?.(v);
+              }
+            }}
           />
           <p className="text-[10px] text-muted-foreground">1 à {effectiveMax} (max par rack)</p>
         </div>
