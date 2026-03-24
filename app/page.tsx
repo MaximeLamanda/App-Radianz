@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import Image from "next/image";
-import { MapPin, Phone, Globe, Sun, Zap, Battery, Info, Filter, X, MoreVertical, Link2, ExternalLink, Eye } from "lucide-react";
+import { MapPin, Phone, Globe, Sun, Zap, Battery, Info, Filter, X, MoreVertical, Link2, ExternalLink, Eye, Map as MapIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
@@ -507,6 +507,12 @@ function HomePage() {
       <div className="max-w-7xl mx-auto w-full min-w-0">
         <div className="flex items-center justify-between mb-4 sm:mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold truncate">Prospects Pipeline</h1>
+          <Button asChild variant="default" size="sm" className="shrink-0">
+            <Link href="/solar-scout" className="gap-2">
+              <MapIcon className="h-4 w-4" />
+              Ajouter
+            </Link>
+          </Button>
         </div>
 
         {error && (
@@ -630,7 +636,13 @@ function HomePage() {
           <Card className="shadow-none">
             <CardContent className="py-12 text-center text-muted-foreground">
               <MapPin className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p className="mb-2">Aucun prospect dans le pipeline</p>
+              <p className="mb-4">Aucun prospect dans le pipeline</p>
+              <Button asChild>
+                <Link href="/solar-scout">
+                  <MapPin className="h-4 w-4 mr-2" />
+                  Accéder à la carte
+                </Link>
+              </Button>
             </CardContent>
           </Card>
         ) : (

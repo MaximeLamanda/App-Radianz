@@ -60,6 +60,7 @@ export interface ProspectDocument {
   panelReferenceId?: string;
   inverterReferenceId?: string;
   batteryReferenceId?: string;
+  batteryCount?: number;
 }
 
 /** Valeurs calculées par le drawer, stockées telles quelles (pas de recalcul) */
@@ -209,6 +210,7 @@ export function prepareProspectForFirestore(
   if (prospect.panelReferenceId) doc.panelReferenceId = prospect.panelReferenceId;
   if (prospect.inverterReferenceId) doc.inverterReferenceId = prospect.inverterReferenceId;
   if (prospect.batteryReferenceId) doc.batteryReferenceId = prospect.batteryReferenceId;
+  if (prospect.batteryCount != null && prospect.batteryCount >= 1) doc.batteryCount = prospect.batteryCount;
 
   return doc;
 }
@@ -289,5 +291,6 @@ export function prospectFromFirestore(
   if (data.panelReferenceId) result.panelReferenceId = data.panelReferenceId;
   if (data.inverterReferenceId) result.inverterReferenceId = data.inverterReferenceId;
   if (data.batteryReferenceId) result.batteryReferenceId = data.batteryReferenceId;
+  if (data.batteryCount != null && data.batteryCount >= 1) result.batteryCount = data.batteryCount;
   return result;
 }

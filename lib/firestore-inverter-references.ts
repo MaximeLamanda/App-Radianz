@@ -29,6 +29,7 @@ function toFirestoreData(ref: InverterReference): Record<string, unknown> {
     ...(ref.imageUrl != null && { imageUrl: ref.imageUrl }),
     ...(ref.warrantyYears != null && { warrantyYears: ref.warrantyYears }),
     ...(ref.recommended != null && { recommended: ref.recommended }),
+    ...(ref.visible != null && { visible: ref.visible }),
   };
 }
 
@@ -46,6 +47,7 @@ function fromFirestoreData(data: Record<string, unknown>): InverterReference {
     imageUrl: data.imageUrl != null ? String(data.imageUrl) : undefined,
     warrantyYears: data.warrantyYears != null ? Number(data.warrantyYears) : undefined,
     recommended: data.recommended === true,
+    visible: data.visible !== false,
   };
 }
 
@@ -61,7 +63,10 @@ export async function getInverterReferencesFromFirebase(userId: string): Promise
     const list = snapshot.docs
       .map((d) => fromFirestoreData(d.data()))
       .filter((r) => r.id && r.name);
-    return list.sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
+    const visibleCount = sorted.filter((r) => r.visible !== false).length;
+    console.log("[Firestore] getInverterReferences", { total: sorted.length, visible: visibleCount, refs: sorted.map((r) => ({ id: r.id, name: r.name, visible: r.visible })) });
+    return sorted;
   } catch (error) {
     console.error("Erreur lors de la récupération des références onduleurs Firebase:", error);
     return [];
@@ -73,6 +78,7 @@ export async function getInverterReferencesFromFirebase(userId: string): Promise
  */
 export async function saveInverterReferenceToFirebase(ref: InverterReference, userId: string): Promise<void> {
   if (!userId) throw new Error("userId requis pour sauvegarder une référence onduleur");
+  console.log("[Firestore] saveInverterReference", { refId: ref.id, name: ref.name, visible: ref.visible });
   try {
     const docRef = doc(db, "users", userId, "inverter_references", ref.id);
     await setDoc(

@@ -25,6 +25,9 @@
 
 import type { BatteryReference } from "@/types";
 
+/** Activer les logs détaillés (scaleBatteryForCount, runProductionSimulation). Désactivé par défaut. */
+const DEBUG_AUTOCONSO = false;
+
 /** SoC initial au 1er janvier (0–1). Plan : 50 %. */
 const INITIAL_SOC_FRACTION = 0.5;
 
@@ -75,6 +78,35 @@ const DAYS_CAP = 365;
 const daysInMonth = (m: number) => new Date(2000, m + 1, 0).getDate();
 
 /**
+ * Retourne une batterie virtuelle équivalente à N unités identiques.
+ * Utilisée pour la simulation : capacité, puissance charge/décharge × count.
+ * Le coût reste géré séparément dans estimateInstallationPriceEur.
+ */
+export function scaleBatteryForCount(
+  ref: BatteryReference | null | undefined,
+  count: number
+): BatteryReference | null {
+  if (!ref || count < 1) return null;
+  if (count === 1) {
+    if (DEBUG_AUTOCONSO && process.env.NODE_ENV === "development") {
+      console.log("[Autoconsommation] scaleBatteryForCount: 1×", ref.name, "→", ref.capacityKwh, "kWh");
+    }
+    return ref;
+  }
+  const scaled = {
+    ...ref,
+    capacityKwh: ref.capacityKwh * count,
+    powerChargeKw: ref.powerChargeKw * count,
+    powerDischargeKw: ref.powerDischargeKw * count,
+    costEur: ref.costEur * count,
+  };
+  if (DEBUG_AUTOCONSO && process.env.NODE_ENV === "development") {
+    console.log("[Autoconsommation] scaleBatteryForCount:", count, "×", ref.name, "→", scaled.capacityKwh, "kWh (charge:", scaled.powerChargeKw, "kW, décharge:", scaled.powerDischargeKw, "kW)");
+  }
+  return scaled;
+}
+
+/**
  * Une seule simulation : journalier (365 j × 24 h) → consolidation mensuelle et annuelle.
  * Avec ou sans batterie : même boucle ; si battery == null, pas de SoC (surplus → réseau, conso restante → réseau).
  */
@@ -94,6 +126,14 @@ export function runProductionSimulation(input: ProductionSimulationInput): Batte
   const etaDischarge = Math.sqrt(eta);
 
   let socKwh = battery ? Math.max(0, Math.min(capacityKwh, capacityKwh * initialSocFraction)) : 0;
+
+  if (DEBUG_AUTOCONSO && process.env.NODE_ENV === "development") {
+    if (battery) {
+      console.log("[Autoconsommation] runProductionSimulation ENTRÉE — batterie:", battery.name, "| capacité:", capacityKwh, "kWh | charge:", powerChargeKw, "kW | décharge:", powerDischargeKw, "kW | SoC initial:", socKwh.toFixed(2), "kWh");
+    } else {
+      console.log("[Autoconsommation] runProductionSimulation ENTRÉE — sans batterie");
+    }
+  }
 
   let selfConsumptionDirectKwh = 0;
   let selfConsumptionViaBatteryKwh = 0;
@@ -178,7 +218,7 @@ export function runProductionSimulation(input: ProductionSimulationInput): Batte
     }
   }
 
-  return {
+  const result = {
     selfConsumptionDirectKwh: Math.round(selfConsumptionDirectKwh * 100) / 100,
     selfConsumptionViaBatteryKwh: Math.round(selfConsumptionViaBatteryKwh * 100) / 100,
     injectionBatteryKwh: Math.round(injectionBatteryKwh * 100) / 100,
@@ -187,6 +227,32 @@ export function runProductionSimulation(input: ProductionSimulationInput): Batte
     excessKwh: Math.round(injectionReseauKwh * 100) / 100,
     byMonth,
   };
+
+  if (process.env.NODE_ENV === "development") {
+    const totalProdKwh = productionTypicalDayByMonth.reduce(
+      (sum, prodDay, m) => sum + (prodDay?.reduce((a, b) => a + b, 0) ?? 0) * daysInMonth(m),
+      0
+    );
+    const totalConsommationKwh = consumptionTypicalDayByMonth.reduce(
+      (sum, consDay, m) => sum + (consDay?.reduce((a, b) => a + b, 0) ?? 0) * daysInMonth(m),
+      0
+    );
+    const totalAuto = result.selfConsumptionDirectKwh + result.selfConsumptionViaBatteryKwh;
+    const tauxAuto = totalProdKwh > 0 ? Math.round((totalAuto / totalProdKwh) * 100) : 0;
+    console.log("[Autoconsommation] runProductionSimulation SORTIE —", {
+      direct: result.selfConsumptionDirectKwh,
+      viaBatterie: result.selfConsumptionViaBatteryKwh,
+      totalAutoconsommation: totalAuto,
+      injectionBatterie: result.injectionBatteryKwh,
+      injectionReseau: result.injectionReseauKwh,
+      tirageReseau: result.gridDrawKwh,
+      productionAnnuelle: Math.round(totalProdKwh),
+      consommationAnnuelle: Math.round(totalConsommationKwh),
+      tauxAutoconsommation: tauxAuto + "%",
+    });
+  }
+
+  return result;
 }
 
 /** Délègue à runProductionSimulation (compatibilité). */

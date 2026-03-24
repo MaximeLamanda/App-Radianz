@@ -31,6 +31,7 @@ function toFirestoreData(ref: PanelReference): Record<string, unknown> {
     ...(ref.imageUrl != null && { imageUrl: ref.imageUrl }),
     ...(ref.warrantyYears != null && { warrantyYears: ref.warrantyYears }),
     ...(ref.recommended != null && { recommended: ref.recommended }),
+    ...(ref.visible != null && { visible: ref.visible }),
   };
 }
 
@@ -50,6 +51,7 @@ function fromFirestoreData(data: Record<string, unknown>): PanelReference {
     imageUrl: data.imageUrl != null ? String(data.imageUrl) : undefined,
     warrantyYears: data.warrantyYears != null ? Number(data.warrantyYears) : undefined,
     recommended: data.recommended === true,
+    visible: data.visible === true,
   };
 }
 

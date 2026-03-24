@@ -24,7 +24,9 @@ if (typeof window !== "undefined") {
   if (!getApps().length) {
     app = initializeApp(firebaseConfig);
     try {
-      analytics = getAnalytics(app);
+      if (navigator.onLine) {
+        analytics = getAnalytics(app);
+      }
     } catch {
       analytics = null; // Bloqué dans certains navigateurs (Cursor, iframe, etc.)
     }

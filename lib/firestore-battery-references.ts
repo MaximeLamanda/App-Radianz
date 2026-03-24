@@ -31,6 +31,8 @@ function toFirestoreData(ref: BatteryReference): Record<string, unknown> {
     ...(ref.warrantyYears != null && { warrantyYears: ref.warrantyYears }),
     ...(ref.recommended != null && { recommended: ref.recommended }),
     ...(ref.maxKwpRecommended != null && { maxKwpRecommended: ref.maxKwpRecommended }),
+    ...(ref.maxBatteriesPerRack != null && { maxBatteriesPerRack: ref.maxBatteriesPerRack }),
+    ...(ref.visible != null && { visible: ref.visible }),
   };
 }
 
@@ -50,6 +52,8 @@ function fromFirestoreData(data: Record<string, unknown>): BatteryReference {
     warrantyYears: data.warrantyYears != null ? Number(data.warrantyYears) : undefined,
     recommended: data.recommended === true,
     maxKwpRecommended: data.maxKwpRecommended != null ? Number(data.maxKwpRecommended) : undefined,
+    maxBatteriesPerRack: data.maxBatteriesPerRack != null ? Number(data.maxBatteriesPerRack) : undefined,
+    visible: data.visible !== false,
   };
 }
 
@@ -65,7 +69,10 @@ export async function getBatteryReferencesFromFirebase(userId: string): Promise<
     const list = snapshot.docs
       .map((d) => fromFirestoreData(d.data()))
       .filter((r) => r.id && r.name);
-    return list.sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
+    const visibleCount = sorted.filter((r) => r.visible !== false).length;
+    console.log("[Firestore] getBatteryReferences", { total: sorted.length, visible: visibleCount, refs: sorted.map((r) => ({ id: r.id, name: r.name, visible: r.visible })) });
+    return sorted;
   } catch (error) {
     console.error("Erreur lors de la récupération des références batteries Firebase:", error);
     return [];
@@ -77,6 +84,7 @@ export async function getBatteryReferencesFromFirebase(userId: string): Promise<
  */
 export async function saveBatteryReferenceToFirebase(ref: BatteryReference, userId: string): Promise<void> {
   if (!userId) throw new Error("userId requis pour sauvegarder une référence batterie");
+  console.log("[Firestore] saveBatteryReference", { refId: ref.id, name: ref.name, visible: ref.visible });
   try {
     const docRef = doc(db, "users", userId, "battery_references", ref.id);
     await setDoc(

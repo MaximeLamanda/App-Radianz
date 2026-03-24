@@ -11,6 +11,9 @@ import { getBatteryReferencesFromFirebase } from "./firestore-battery-references
 import type { BatterySimulationResult } from "./battery-simulation";
 
 const STORAGE_KEY = "solarEquipmentSettings";
+
+/** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
+const DEBUG_AUTOCONSO = false;
 const STORAGE_KEY_PANEL_REFERENCES = "solarPanelReferences";
 const STORAGE_KEY_INVERTER_REFERENCES = "solarInverterReferences";
 
@@ -143,6 +146,7 @@ export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
     warrantyYears: 10,
     recommended: false,
     maxKwpRecommended: 9999,
+    maxBatteriesPerRack: 20,
   },
   {
     id: "battery-luna2000-7-s1",
@@ -157,6 +161,7 @@ export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
     warrantyYears: 10,
     recommended: true,
     maxKwpRecommended: 100,
+    maxBatteriesPerRack: 20,
   },
   {
     id: "battery-luna2000-14-s1",
@@ -171,6 +176,7 @@ export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
     warrantyYears: 10,
     recommended: false,
     maxKwpRecommended: 100,
+    maxBatteriesPerRack: 20,
   },
   {
     id: "battery-luna2000-21-s1",
@@ -185,6 +191,7 @@ export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
     warrantyYears: 10,
     recommended: false,
     maxKwpRecommended: 100,
+    maxBatteriesPerRack: 20,
   },
   {
     id: "battery-luna2000-215-2s10",
@@ -199,6 +206,7 @@ export const DEFAULT_BATTERY_REFERENCES: BatteryReference[] = [
     warrantyYears: 10,
     recommended: false,
     maxKwpRecommended: 9999,
+    maxBatteriesPerRack: 20,
   },
 ];
 
@@ -541,9 +549,21 @@ export function estimateAnnualSavingsEurWithBattery(
 ): number {
   const selfKwh =
     simulationResult.selfConsumptionDirectKwh + simulationResult.selfConsumptionViaBatteryKwh;
-  return Math.round(
+  const savings = Math.round(
     selfKwh * retailPriceEurPerKwh + simulationResult.excessKwh * feedInPriceEurPerKwh
   );
+  if (DEBUG_AUTOCONSO && process.env.NODE_ENV === "development") {
+    const autoEur = selfKwh * retailPriceEurPerKwh;
+    const injEur = simulationResult.excessKwh * feedInPriceEurPerKwh;
+    console.log("[Autoconsommation] estimateAnnualSavingsEurWithBattery —", {
+      autoconsommationKwh: selfKwh,
+      autoconsommationEur: Math.round(autoEur),
+      injectionKwh: simulationResult.excessKwh,
+      injectionEur: Math.round(injEur),
+      totalSavingsEur: savings,
+    });
+  }
+  return savings;
 }
 
 /**
@@ -573,11 +593,12 @@ export function estimateInstallationPriceEur(
   inverterCount: number,
   recommendedPanel?: PanelReference | null,
   recommendedInverter?: InverterReference | null,
-  recommendedBattery?: BatteryReference | null
+  recommendedBattery?: BatteryReference | null,
+  batteryCount: number = 1
 ): number {
   const panelCost = (recommendedPanel?.costEur ?? 150) * panelCount;
   const inverterCost = (recommendedInverter?.costEur ?? 2000) * inverterCount;
-  const batteryCost = recommendedBattery?.costEur ?? 0;
+  const batteryCost = (recommendedBattery?.costEur ?? 0) * batteryCount;
   return Math.round(panelCost + inverterCost + batteryCost);
 }
 

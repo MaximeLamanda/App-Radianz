@@ -612,9 +612,14 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                             ? panelReferences.map((r) => (r.id === ref.id ? ref : { ...r, recommended: false }))
                             : panelReferences.map((r) => (r.id === ref.id ? ref : r));
                         } else {
-                          updatedRefs = ref.recommended
-                            ? [...panelReferences.map((r) => ({ ...r, recommended: false })), ref]
-                            : [...panelReferences, ref];
+                          // Panneaux : un seul "visible". Nouveau panneau = visible par défaut.
+                          const nextRef: PanelReference = { ...ref, visible: true };
+                          updatedRefs = panelReferences.map((r) => ({
+                            ...r,
+                            visible: false,
+                            ...(nextRef.recommended ? { recommended: false } : {}),
+                          }));
+                          updatedRefs = [...updatedRefs, nextRef];
                         }
                         savePanelReferences(updatedRefs);
                         if (userId) {
@@ -645,22 +650,17 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                         setShowAddInverterRef(false);
                         setEditingInverterRef(null);
                       }}
-                      onSave={(ref) => {
-                        let updatedRefs: InverterReference[];
-                        if (editingInverterRef) {
-                          updatedRefs = ref.recommended
-                            ? inverterReferences.map((r) => (r.id === ref.id ? ref : { ...r, recommended: false }))
-                            : inverterReferences.map((r) => (r.id === ref.id ? ref : r));
-                        } else {
-                          updatedRefs = ref.recommended
-                            ? [...inverterReferences.map((r) => ({ ...r, recommended: false })), ref]
-                            : [...inverterReferences, ref];
-                        }
-                        saveInverterReferences(updatedRefs);
+                      onSave={async (ref) => {
+                        const toSave: InverterReference = editingInverterRef
+                          ? { ...inverterReferences.find((r) => r.id === ref.id), ...ref } as InverterReference
+                          : { ...ref, visible: ref.visible !== false };
                         if (userId) {
-                          Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
-                            .then(() => mutateInverters())
-                            .catch(() => {});
+                          await saveInverterReferenceToFirebase(toSave, userId);
+                          if (ref.recommended) {
+                            const prev = inverterReferences.find((r) => r.id !== ref.id && r.recommended);
+                            if (prev) await saveInverterReferenceToFirebase({ ...prev, recommended: false }, userId);
+                          }
+                          mutateInverters();
                         }
                         setShowAddInverterRef(false);
                         setEditingInverterRef(null);
@@ -684,21 +684,17 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                         setShowAddBatteryRef(false);
                         setEditingBatteryRef(null);
                       }}
-                      onSave={(ref) => {
-                        let updatedRefs: BatteryReference[];
-                        if (editingBatteryRef) {
-                          updatedRefs = ref.recommended
-                            ? batteryReferences.map((r) => (r.id === ref.id ? ref : { ...r, recommended: false }))
-                            : batteryReferences.map((r) => (r.id === ref.id ? ref : r));
-                        } else {
-                          updatedRefs = ref.recommended
-                            ? [...batteryReferences.map((r) => ({ ...r, recommended: false })), ref]
-                            : [...batteryReferences, ref];
-                        }
+                      onSave={async (ref) => {
+                        const toSave: BatteryReference = editingBatteryRef
+                          ? { ...batteryReferences.find((r) => r.id === ref.id), ...ref } as BatteryReference
+                          : { ...ref, visible: ref.visible !== false };
                         if (userId) {
-                          Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
-                            .then(() => mutateBatteries())
-                            .catch(() => {});
+                          await saveBatteryReferenceToFirebase(toSave, userId);
+                          if (ref.recommended) {
+                            const prev = batteryReferences.find((r) => r.id !== ref.id && r.recommended);
+                            if (prev) await saveBatteryReferenceToFirebase({ ...prev, recommended: false }, userId);
+                          }
+                          mutateBatteries();
                         }
                         setShowAddBatteryRef(false);
                         setEditingBatteryRef(null);
@@ -811,10 +807,15 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                 </div>
                                 <div onClick={(e) => e.stopPropagation()}>
                                   <Switch
-                                    checked={ref.recommended ?? false}
+                                    checked={
+                                      (panelReferences.find((p) => p.visible === true)?.id ??
+                                        panelReferences.find((p) => p.recommended === true)?.id ??
+                                        panelReferences[0]?.id) === ref.id
+                                    }
                                     onCheckedChange={(checked) => {
+                                      if (!checked) return; // un seul panneau "visible" doit rester sélectionné
                                       const updatedRefs = panelReferences.map((r) =>
-                                        r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
+                                        r.id === ref.id ? { ...r, visible: true } : { ...r, visible: false }
                                       );
                                       savePanelReferences(updatedRefs);
                                       if (userId) {
@@ -896,16 +897,18 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                 </div>
                                 <div onClick={(e) => e.stopPropagation()}>
                                   <Switch
-                                    checked={ref.recommended ?? false}
-                                    onCheckedChange={(checked) => {
-                                      const updatedRefs = inverterReferences.map((r) =>
-                                        r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
-                                      );
-                                      saveInverterReferences(updatedRefs);
-                                      if (userId) {
-                                        Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
-                                          .then(() => mutateInverters())
-                                          .catch(() => {});
+                                    checked={ref.visible === true}
+                                    onCheckedChange={async (checked) => {
+                                      const visibleCount = inverterReferences.filter((r) => r.visible === true).length;
+                                      if (!checked && visibleCount === 1 && ref.visible === true) return; // garder au moins un visible
+                                      if (!userId) return;
+                                      const updatedRef = { ...ref, visible: checked };
+                                      const nextList = inverterReferences.map((r) => (r.id === ref.id ? updatedRef : r));
+                                      mutateInverters(nextList, { revalidate: false });
+                                      try {
+                                        await saveInverterReferenceToFirebase(updatedRef, userId);
+                                      } catch (e) {
+                                        mutateInverters();
                                       }
                                     }}
                                     size="sm"
@@ -986,15 +989,18 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                                 </div>
                                 <div onClick={(e) => e.stopPropagation()}>
                                   <Switch
-                                    checked={ref.recommended ?? false}
-                                    onCheckedChange={(checked) => {
-                                      const updatedRefs = batteryReferences.map((r) =>
-                                        r.id === ref.id ? { ...r, recommended: checked } : { ...r, recommended: checked ? false : r.recommended }
-                                      );
-                                      if (userId) {
-                                        Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
-                                          .then(() => mutateBatteries())
-                                          .catch(() => {});
+                                    checked={ref.visible === true}
+                                    onCheckedChange={async (checked) => {
+                                      const visibleCount = batteryReferences.filter((r) => r.visible === true).length;
+                                      if (!checked && visibleCount === 1 && ref.visible === true) return; // garder au moins un visible
+                                      if (!userId) return;
+                                      const updatedRef = { ...ref, visible: checked };
+                                      const nextList = batteryReferences.map((r) => (r.id === ref.id ? updatedRef : r));
+                                      mutateBatteries(nextList, { revalidate: false });
+                                      try {
+                                        await saveBatteryReferenceToFirebase(updatedRef, userId);
+                                      } catch (e) {
+                                        mutateBatteries();
                                       }
                                     }}
                                     size="sm"

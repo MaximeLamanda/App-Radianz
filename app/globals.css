@@ -181,4 +181,8 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Utilitaire explicite pour appliquer Geist Mono même si font-mono est surchargé */
+  .font-geist-mono {
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+  }
 }

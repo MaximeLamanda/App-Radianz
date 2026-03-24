@@ -840,6 +840,10 @@ export function MapComponent({
       companyAddress: undefined,
       companyNaf: undefined,
       companyEnrichmentApiUrl: undefined,
+      // Réinitialiser la batterie pour que le drawer reparte sur la recommandation du nouveau prospect
+      // (sinon le merge garde batteryReferenceId/batteryCount du polygone précédent)
+      batteryReferenceId: undefined,
+      batteryCount: undefined,
     };
     onProspectUpdateRef.current(minimalProspect);
 

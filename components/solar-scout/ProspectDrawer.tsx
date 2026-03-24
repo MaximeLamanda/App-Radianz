@@ -33,6 +33,9 @@ import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
 import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar, Battery } from "lucide-react";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
+
+/** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
+const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { MonthlyProductionChart } from "./MonthlyProductionChart";
 import { BatterySelectCard } from "./BatterySelectCard";
@@ -53,7 +56,7 @@ import {
   buildTypicalDayForMonth,
 } from "@/lib/pvgis";
 import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
-import { runProductionSimulation, runSimulationOneDayForChart } from "@/lib/battery-simulation";
+import { runProductionSimulation, runSimulationOneDayForChart, scaleBatteryForCount } from "@/lib/battery-simulation";
 import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import {
   getPanelReferences,
@@ -237,6 +240,7 @@ export function ProspectDrawer({
   const [usedPanelRef, setUsedPanelRef] = useState<PanelReference | null>(null);
   const [usedInverterRef, setUsedInverterRef] = useState<InverterReference | null>(null);
   const [usedBatteryRef, setUsedBatteryRef] = useState<BatteryReference | null>(null);
+  const [batteryCount, setBatteryCount] = useState(1);
   /** "highest_production" = max surface utilisée | "perfect_fit" = production ≈ consommation */
   const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
   const [companyEnrichmentLoading, setCompanyEnrichmentLoading] = useState(false);
@@ -321,16 +325,25 @@ export function ProspectDrawer({
   // Équipement propre au prospect : initialiser depuis prospect.panelReferenceId / etc. ou recommandé global
   useEffect(() => {
     if (!isOpen || !panelsData) return;
-    const byId = prospect?.panelReferenceId ? panelsData.find((r) => r.id === prospect.panelReferenceId) : null;
-    const recommended = panelsData.find((r) => r.recommended === true);
-    setUsedPanelRef(byId ?? recommended ?? panelsData[0] ?? getPanelReferences()[0] ?? null);
+    // Panneaux : un seul modèle "visible" doit être utilisé. Compat legacy : si `visible` est absent partout,
+    // on retombe sur la logique recommended/premier.
+    const visible = panelsData.find((r) => r.visible === true);
+    const legacyPick =
+      (prospect?.panelReferenceId ? panelsData.find((r) => r.id === prospect.panelReferenceId) : null) ??
+      panelsData.find((r) => r.recommended === true) ??
+      panelsData[0] ??
+      getPanelReferences()[0] ??
+      null;
+    setUsedPanelRef(visible ?? legacyPick);
   }, [isOpen, panelsData, prospect?.panelReferenceId]);
 
   useEffect(() => {
     if (!invertersData) return;
-    const byId = prospect?.inverterReferenceId ? invertersData.find((r) => r.id === prospect.inverterReferenceId) : null;
-    const recommended = invertersData.find((r) => r.recommended === true);
-    setUsedInverterRef(byId ?? recommended ?? invertersData[0] ?? getRecommendedInverterReferenceSync());
+    const visibleInverters = invertersData.filter((r) => r.visible !== false);
+    const byId =
+      prospect?.inverterReferenceId ? visibleInverters.find((r) => r.id === prospect.inverterReferenceId) : null;
+    const recommended = visibleInverters.find((r) => r.recommended === true);
+    setUsedInverterRef(byId ?? recommended ?? visibleInverters[0] ?? null);
   }, [invertersData, prospect?.inverterReferenceId]);
 
   // Mettre à jour l'adresse et le mode de config quand le prospect change
@@ -353,6 +366,7 @@ export function ProspectDrawer({
       ? `${prospect.id ?? "noid"}-${prospect.coordinates.lat}-${prospect.coordinates.lng}-${Math.round(totalAreaForKey)}`
       : null;
   const pvgisFetchInProgressRef = useRef(false);
+  const choiceCardsConfigLogKeyRef = useRef<string | null>(null);
 
   // Récupérer les données PVGIS une seule fois à l'ouverture du drawer pour ce prospect
   useEffect(() => {
@@ -542,6 +556,7 @@ export function ProspectDrawer({
         ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
         ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
         ...(usedBatteryRef?.id && { batteryReferenceId: usedBatteryRef.id }),
+        ...(usedBatteryRef && { batteryCount: Math.max(1, Math.min(usedBatteryRef.maxBatteriesPerRack ?? 20, batteryCount)) }),
         ...(pipelineOptions.estimatedKwp != null && {
           solarPotential: {
             ...prospect.solarPotential,
@@ -708,10 +723,14 @@ export function ProspectDrawer({
       highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount, kwp: fullKwp },
     };
     if (process.env.NODE_ENV === "development") {
-      console.log("[Production]", {
-        highest_production: { panneaux: config.highestProduction.panelCount, onduleurs: config.highestProduction.inverterCount },
-        perfect_fit: { panneaux: config.perfectFit.panelCount, onduleurs: config.perfectFit.inverterCount },
-      });
+      const key = `${config.highestProduction.panelCount},${config.highestProduction.inverterCount},${config.perfectFit.panelCount},${config.perfectFit.inverterCount}`;
+      if (choiceCardsConfigLogKeyRef.current !== key) {
+        choiceCardsConfigLogKeyRef.current = key;
+        console.log("[Production]", {
+          highest_production: { panneaux: config.highestProduction.panelCount, onduleurs: config.highestProduction.inverterCount },
+          perfect_fit: { panneaux: config.perfectFit.panelCount, onduleurs: config.perfectFit.inverterCount },
+        });
+      }
     }
     return config;
   }, [prospect, usedPanelRef, usedInverterRef]);
@@ -747,39 +766,85 @@ export function ProspectDrawer({
     return Math.round(Math.max(0, capacityKwh) * 10) / 10;
   }, [prospect, effectiveConfig.effectiveAnnualProductionKwh, effectiveConfig.effectiveKwp, effectiveConfig.productionPerKwp]);
 
-  /** Modèle batterie utilisateur dont la capacité (kWh) est la plus proche de la taille recommandée */
-  const recommendedBatteryFromSurplus = useMemo(() => {
-    if (!batteriesData?.length || recommendedBatteryKwh == null) return null;
-    return batteriesData.reduce((best, b) =>
-      Math.abs(b.capacityKwh - recommendedBatteryKwh) < Math.abs(best.capacityKwh - recommendedBatteryKwh) ? b : best
-    );
+  /**
+   * Composition recommandée :
+   * - Cible haute (>= plus grosse batterie) : on part de la plus grosse, on optimise le count.
+   *   Ex. 100 kWh, modèles 25 et 75 → 75×1=75 (écart 25) vs 75×2=150 (écart 50) → 1×75 kWh.
+   * - Cible basse (< plus grosse batterie) : meilleur match parmi tous les modèles.
+   *   Ex. 13,7 kWh, modèles 105 et 215 → 105×1 plus proche que 215×1 → 1×105 kWh.
+   */
+  const recommendedBatteryComposition = useMemo(() => {
+    const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
+    if (!visibleBatteries.length || recommendedBatteryKwh == null) return null;
+    const sortedByCapacity = [...visibleBatteries].sort((a, b) => b.capacityKwh - a.capacityKwh);
+    const largestModel = sortedByCapacity[0];
+    if (!largestModel) return null;
+
+    const target = recommendedBatteryKwh;
+
+    if (target >= largestModel.capacityKwh) {
+      // Cible haute : plus grosse batterie, optimiser le count
+      const maxPerRack = largestModel.maxBatteriesPerRack ?? 20;
+      let bestCount = 1;
+      let bestEcart = Math.abs(largestModel.capacityKwh - target);
+      for (let c = 2; c <= maxPerRack; c++) {
+        const totalKwh = largestModel.capacityKwh * c;
+        const ecart = Math.abs(totalKwh - target);
+        if (ecart < bestEcart) {
+          bestEcart = ecart;
+          bestCount = c;
+        }
+      }
+      return { model: largestModel, count: bestCount };
+    }
+
+    // Cible basse : meilleur match parmi tous les modèles
+    let best: { model: BatteryReference; count: number; ecart: number } | null = null;
+    for (const model of visibleBatteries) {
+      const maxPerRack = model.maxBatteriesPerRack ?? 20;
+      for (let c = 1; c <= maxPerRack; c++) {
+        const totalKwh = model.capacityKwh * c;
+        const ecart = Math.abs(totalKwh - target);
+        const isBetter =
+          best == null ||
+          ecart < best.ecart ||
+          (ecart === best.ecart && c < best.count) ||
+          (ecart === best.ecart && c === best.count && model.capacityKwh > best.model.capacityKwh);
+        if (isBetter) best = { model, count: c, ecart };
+      }
+    }
+    return best ? { model: best.model, count: best.count } : null;
   }, [batteriesData, recommendedBatteryKwh]);
 
   useEffect(() => {
-    if (recommendedBatteryKwh != null && process.env.NODE_ENV === "development") {
+    if (recommendedBatteryKwh != null && DEBUG_AUTOCONSO && process.env.NODE_ENV === "development") {
       console.log("[Batterie] Dimensionnement calculé:", {
         recommendedBatteryKwh,
-        modèleChoisi: recommendedBatteryFromSurplus?.name ?? null,
+        composition: recommendedBatteryComposition ? `${recommendedBatteryComposition.count}× ${recommendedBatteryComposition.model.name}` : null,
       });
     }
-  }, [recommendedBatteryKwh, recommendedBatteryFromSurplus?.id, recommendedBatteryFromSurplus?.name]);
+  }, [recommendedBatteryKwh, recommendedBatteryComposition?.model?.name, recommendedBatteryComposition?.count]);
 
-  // Batterie : toujours une ref issue de batteriesData (jamais DEFAULT_BATTERY_REFERENCES hors liste).
-  // Par défaut : choix prospect → batterie calculée (surplus) → premier avec flag recommandé → premier de la liste.
+  // Batterie : toujours une ref issue de batteriesData. Par défaut : choix prospect → composition recommandée → premier avec flag recommandé → premier de la liste.
   useEffect(() => {
     if (!isOpen || !prospect) return;
-    if (!batteriesData?.length) {
+    const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
+    if (!visibleBatteries.length) {
       setUsedBatteryRef(null);
+      setBatteryCount(1);
       return;
     }
-    const byId = prospect.batteryReferenceId ? batteriesData.find((r) => r.id === prospect.batteryReferenceId) : null;
+    const byId = prospect.batteryReferenceId ? visibleBatteries.find((r) => r.id === prospect.batteryReferenceId) : null;
     const chosen =
       byId ??
-      recommendedBatteryFromSurplus ??
-      batteriesData.find((r) => r.recommended === true) ??
-      batteriesData[0];
+      recommendedBatteryComposition?.model ??
+      visibleBatteries.find((r) => r.recommended === true) ??
+      visibleBatteries[0];
     setUsedBatteryRef(chosen);
-  }, [isOpen, batteriesData, prospect?.batteryReferenceId, prospect?.id, recommendedBatteryFromSurplus]);
+    const countFromProspect = prospect.batteryCount != null && prospect.batteryCount >= 1 ? prospect.batteryCount : null;
+    const countFromRec = recommendedBatteryComposition?.model?.id === chosen?.id ? recommendedBatteryComposition.count : null;
+    setBatteryCount(countFromProspect ?? countFromRec ?? 1);
+  }, [isOpen, batteriesData, prospect?.batteryReferenceId, prospect?.batteryCount, prospect?.id, recommendedBatteryComposition]);
 
   /** Nombre max d'onduleurs recommandé ; au-delà, le modèle n'est pas adapté */
   const MAX_INVERTER_COUNT = 8;
@@ -823,10 +888,16 @@ export function ProspectDrawer({
       const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
         buildTypicalConsumptionDayForMonth(placeType, m, totalArea)
       );
+      const scaledBattery = includeBatteryEffective && usedBatteryRef
+        ? scaleBatteryForCount(usedBatteryRef, batteryCount)
+        : null;
+      if (DEBUG_AUTOCONSO && process.env.NODE_ENV === "development" && scaledBattery) {
+        console.log("[Autoconsommation] ProspectDrawer — simulation avec", usedBatteryRef!.name, "×", batteryCount, "→ capacité totale:", scaledBattery.capacityKwh, "kWh");
+      }
       const simulationResult = runProductionSimulation({
         productionTypicalDayByMonth,
         consumptionTypicalDayByMonth,
-        battery: includeBatteryEffective && usedBatteryRef ? usedBatteryRef : null,
+        battery: scaledBattery,
       });
       annualSavings = estimateAnnualSavingsEurWithBattery(simulationResult);
       equipmentEur = estimateInstallationPriceEur(
@@ -834,7 +905,8 @@ export function ProspectDrawer({
         inverterCount,
         recommendedPanel,
         recommendedInverter,
-        includeBatteryEffective && usedBatteryRef ? usedBatteryRef : undefined
+        includeBatteryEffective && usedBatteryRef ? usedBatteryRef : undefined,
+        batteryCount
       );
       batteryByMonth = simulationResult.byMonth;
       selfConsumptionDirectKwhTotal = simulationResult.selfConsumptionDirectKwh;
@@ -871,7 +943,72 @@ export function ProspectDrawer({
     usedPanelRef,
     usedInverterRef,
     usedBatteryRef,
+    batteryCount,
     includeBatteryEffective,
+  ]);
+
+  const chartData = useMemo(() => {
+    const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+    const placeType = prospect?.placeType || "other";
+    if (!prospect || !effectiveConfig.productionPerKwp) return [];
+    const { monthlyProduction } = getProductionFromPerKwp(
+      effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+      effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+      effectiveConfig.effectiveKwp
+    );
+    const byMonth = financialSummary?.batteryByMonth;
+    return monthlyProduction.map((m) => {
+      const base = {
+        month: m.month,
+        production: m.production,
+        consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
+      };
+      if (byMonth?.[m.month - 1]) {
+        const b = byMonth[m.month - 1]!;
+        return {
+          ...base,
+          selfConsumptionDirect: b.selfConsumptionDirectKwh,
+          selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
+          injectionBattery: b.injectionBatteryKwh,
+          excess: b.injectionReseauKwh,
+          gridDraw: b.gridDrawKwh,
+        };
+      }
+      return base;
+    });
+  }, [prospect, effectiveConfig, financialSummary?.batteryByMonth]);
+
+  const chartDailyData = useMemo(() => {
+    const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+    if (!prospect || surfaceM2 <= 0 || !effectiveConfig.productionPerKwp) return undefined;
+    const placeType = prospect.placeType || "other";
+    const prodDay = buildTypicalDayForMonth(
+      effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+      chartSelectedMonthIndex,
+      effectiveConfig.effectiveKwp
+    );
+    const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
+    const batteryForChart = includeBatteryEffective && usedBatteryRef
+      ? scaleBatteryForCount(usedBatteryRef, batteryCount)
+      : null;
+    const hourly = runSimulationOneDayForChart(prodDay, consDay, batteryForChart);
+    return hourly.map((h, hour) => ({
+      hour,
+      production: prodDay[hour] ?? 0,
+      consumption: consDay[hour] ?? 0,
+      selfConsumptionDirect: h.selfConsumptionDirectKwh,
+      selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
+      injectionBattery: h.injectionBatteryKwh,
+      excess: h.injectionReseauKwh,
+      gridDraw: h.gridDrawKwh,
+    }));
+  }, [
+    prospect,
+    effectiveConfig,
+    chartSelectedMonthIndex,
+    includeBatteryEffective,
+    usedBatteryRef,
+    batteryCount,
   ]);
 
   return (
@@ -1484,59 +1621,8 @@ export function ProspectDrawer({
                         onViewModeChange={setChartViewMode}
                         selectedMonthIndex={chartSelectedMonthIndex}
                         onSelectedMonthIndexChange={setChartSelectedMonthIndex}
-                        data={(() => {
-                          const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
-                          const placeType = prospect.placeType || "other";
-                          if (!effectiveConfig.productionPerKwp) return [];
-                          const { monthlyProduction } = getProductionFromPerKwp(
-                            effectiveConfig.productionPerKwp.productionPerKwpAnnual,
-                            effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                            effectiveConfig.effectiveKwp
-                          );
-                          const byMonth = financialSummary?.batteryByMonth;
-                          return monthlyProduction.map((m) => {
-                            const base = {
-                              month: m.month,
-                              production: m.production,
-                              consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
-                            };
-                            if (byMonth?.[m.month - 1]) {
-                              const b = byMonth[m.month - 1]!;
-                              return {
-                                ...base,
-                                selfConsumptionDirect: b.selfConsumptionDirectKwh,
-                                selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
-                                injectionBattery: b.injectionBatteryKwh,
-                                excess: b.injectionReseauKwh,
-                                gridDraw: b.gridDrawKwh,
-                              };
-                            }
-                            return base;
-                          });
-                        })()}
-                        dailyData={(() => {
-                          const surfaceM2 = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
-                          if (surfaceM2 <= 0 || !effectiveConfig.productionPerKwp) return undefined;
-                          const placeType = prospect.placeType || "other";
-                          const prodDay = buildTypicalDayForMonth(
-                            effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                            chartSelectedMonthIndex,
-                            effectiveConfig.effectiveKwp
-                          );
-                          const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
-                          const batteryForChart = includeBatteryEffective && usedBatteryRef ? usedBatteryRef : null;
-                          const hourly = runSimulationOneDayForChart(prodDay, consDay, batteryForChart);
-                          return hourly.map((h, hour) => ({
-                            hour,
-                            production: prodDay[hour] ?? 0,
-                            consumption: consDay[hour] ?? 0,
-                            selfConsumptionDirect: h.selfConsumptionDirectKwh,
-                            selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
-                            injectionBattery: h.injectionBatteryKwh,
-                            excess: h.injectionReseauKwh,
-                            gridDraw: h.gridDrawKwh,
-                          }));
-                        })()}
+                        data={chartData}
+                        dailyData={chartDailyData}
                       />
                     </div>
                   </div>
@@ -1655,7 +1741,11 @@ export function ProspectDrawer({
                           <div>
                             <EquipmentSelectCard<PanelReference>
                               value={usedPanelRef}
-                              options={panelsData}
+                              options={
+                                panelsData.filter((p) => p.visible === true).length > 0
+                                  ? panelsData.filter((p) => p.visible === true)
+                                  : panelsData
+                              }
                               onChange={setUsedPanelRef}
                               getItemId={(p) => p.id}
                               showRecommendedBadge={!!usedPanelRef?.recommended}
@@ -1722,7 +1812,7 @@ export function ProspectDrawer({
                           <div>
                             <EquipmentSelectCard<InverterReference>
                               value={usedInverterRef}
-                              options={invertersData}
+                              options={invertersData.filter((i) => i.visible !== false)}
                               onChange={setUsedInverterRef}
                               getItemId={(i) => i.id}
                               showRecommendedBadge={!!usedInverterRef?.recommended && !inverterCountExceedsLimit}
@@ -1792,18 +1882,39 @@ export function ProspectDrawer({
                         )}
                         {includeBatteryEffective && (
                           <div className="space-y-1.5">
-                            {batteriesData && batteriesData.length > 0 ? (
+                            {recommendedBatteryKwh != null && (
+                              <div className="flex items-center justify-between rounded-md bg-muted/50 px-2 py-1.5">
+                                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Cible batterie</span>
+                                <span className="text-xs font-semibold tabular-nums">{recommendedBatteryKwh} kWh</span>
+                              </div>
+                            )}
+                            {batteriesData && batteriesData.filter((b) => b.visible !== false).length > 0 ? (
                               <BatterySelectCard
                                 value={usedBatteryRef}
                                 onChange={(b) => {
                                   setUsedBatteryRef(b);
+                                  const maxForNew = b?.maxBatteriesPerRack ?? 20;
+                                  const clampedCount = b ? Math.min(maxForNew, Math.max(1, batteryCount)) : 1;
+                                  setBatteryCount(clampedCount);
                                   if (b && prospect && onProspectUpdate) {
-                                    onProspectUpdate({ ...prospect, batteryReferenceId: b.id });
+                                    onProspectUpdate({ ...prospect, batteryReferenceId: b.id, batteryCount: clampedCount });
                                   }
                                 }}
-                                batteries={batteriesData}
-                                isRecommendedForProspect={usedBatteryRef?.id === recommendedBatteryFromSurplus?.id}
-                                recommendedBatteryIdForProspect={recommendedBatteryFromSurplus?.id ?? null}
+                                count={batteryCount}
+                                onCountChange={(n) => {
+                                  setBatteryCount(n);
+                                  if (prospect && onProspectUpdate) {
+                                    onProspectUpdate({ ...prospect, batteryCount: n });
+                                  }
+                                }}
+                                maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
+                                batteries={batteriesData.filter((b) => b.visible !== false)}
+                                isRecommendedForProspect={
+                                  !!recommendedBatteryComposition &&
+                                  usedBatteryRef?.id === recommendedBatteryComposition.model.id &&
+                                  batteryCount === recommendedBatteryComposition.count
+                                }
+                                recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
                               />
                             ) : (
                               <p className="text-xs text-muted-foreground">Aucune batterie configurée. Ajoutez-en dans Paramètres.</p>

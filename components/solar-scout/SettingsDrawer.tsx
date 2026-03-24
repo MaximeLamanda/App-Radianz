@@ -224,12 +224,14 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                   updatedRefs = panelReferences.map((r) => (r.id === ref.id ? ref : r));
                 }
               } else {
-                if (ref.recommended) {
-                  updatedRefs = panelReferences.map((r) => ({ ...r, recommended: false }));
-                  updatedRefs = [...updatedRefs, ref];
-                } else {
-                  updatedRefs = [...panelReferences, ref];
-                }
+                // Panneaux : un seul "visible" (utilisé dans les simulations). On met le nouveau panneau visible par défaut.
+                const nextRef: PanelReference = { ...ref, visible: true };
+                updatedRefs = panelReferences.map((r) => ({
+                  ...r,
+                  visible: false,
+                  ...(nextRef.recommended ? { recommended: false } : {}),
+                }));
+                updatedRefs = [...updatedRefs, nextRef];
               }
               
               savePanelReferences(updatedRefs);
@@ -263,30 +265,17 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
               setShowAddInverterRef(false);
               setEditingInverterRef(null);
             }}
-            onSave={(ref) => {
-              let updatedRefs: InverterReference[];
-              if (editingInverterRef) {
-                if (ref.recommended) {
-                  updatedRefs = inverterReferences.map((r) => 
-                    r.id === ref.id ? ref : { ...r, recommended: false }
-                  );
-                } else {
-                  updatedRefs = inverterReferences.map((r) => (r.id === ref.id ? ref : r));
-                }
-              } else {
-                if (ref.recommended) {
-                  updatedRefs = inverterReferences.map((r) => ({ ...r, recommended: false }));
-                  updatedRefs = [...updatedRefs, ref];
-                } else {
-                  updatedRefs = [...inverterReferences, ref];
-                }
-              }
-              
-              saveInverterReferences(updatedRefs);
+            onSave={async (ref) => {
+              const toSave: InverterReference = editingInverterRef
+                ? ({ ...inverterReferences.find((r) => r.id === ref.id), ...ref } as InverterReference)
+                : { ...ref, visible: true };
               if (userId) {
-                Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
-                  .then(() => mutateInverters())
-                  .catch((e) => console.error("Firebase save inverter refs:", e));
+                await saveInverterReferenceToFirebase(toSave, userId);
+                if (ref.recommended) {
+                  const prev = inverterReferences.find((r) => r.id !== ref.id && r.recommended);
+                  if (prev) await saveInverterReferenceToFirebase({ ...prev, recommended: false }, userId);
+                }
+                mutateInverters();
               }
               setShowAddInverterRef(false);
               setEditingInverterRef(null);
@@ -312,28 +301,17 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
               setShowAddBatteryRef(false);
               setEditingBatteryRef(null);
             }}
-            onSave={(ref) => {
-              let updatedRefs: BatteryReference[];
-              if (editingBatteryRef) {
-                if (ref.recommended) {
-                  updatedRefs = batteryReferences.map((r) =>
-                    r.id === ref.id ? ref : { ...r, recommended: false }
-                  );
-                } else {
-                  updatedRefs = batteryReferences.map((r) => (r.id === ref.id ? ref : r));
-                }
-              } else {
-                if (ref.recommended) {
-                  updatedRefs = batteryReferences.map((r) => ({ ...r, recommended: false }));
-                  updatedRefs = [...updatedRefs, ref];
-                } else {
-                  updatedRefs = [...batteryReferences, ref];
-                }
-              }
+            onSave={async (ref) => {
+              const toSave: BatteryReference = editingBatteryRef
+                ? ({ ...batteryReferences.find((r) => r.id === ref.id), ...ref } as BatteryReference)
+                : { ...ref, visible: true };
               if (userId) {
-                Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
-                  .then(() => mutateBatteries())
-                  .catch((e) => console.error("Firebase save battery refs:", e));
+                await saveBatteryReferenceToFirebase(toSave, userId);
+                if (ref.recommended) {
+                  const prev = batteryReferences.find((r) => r.id !== ref.id && r.recommended);
+                  if (prev) await saveBatteryReferenceToFirebase({ ...prev, recommended: false }, userId);
+                }
+                mutateBatteries();
               }
               setShowAddBatteryRef(false);
               setEditingBatteryRef(null);
@@ -465,18 +443,17 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                       </div>
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <Switch
-                          checked={ref.recommended ?? false}
+                          checked={
+                            (panelReferences.find((p) => p.visible === true)?.id ??
+                              panelReferences.find((p) => p.recommended === true)?.id ??
+                              panelReferences[0]?.id) === ref.id
+                          }
                           onCheckedChange={(checked) => {
                             let updatedRefs: PanelReference[];
-                            if (checked) {
-                              updatedRefs = panelReferences.map((r) => 
-                                r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }
-                              );
-                            } else {
-                              updatedRefs = panelReferences.map((r) => 
-                                r.id === ref.id ? { ...r, recommended: false } : r
-                              );
-                            }
+                            if (!checked) return; // un seul panneau "visible" doit rester sélectionné
+                            updatedRefs = panelReferences.map((r) =>
+                              r.id === ref.id ? { ...r, visible: true } : { ...r, visible: false }
+                            );
                             
                             savePanelReferences(updatedRefs);
                             if (userId) {
@@ -565,25 +542,25 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                       </div>
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <Switch
-                          checked={ref.recommended ?? false}
+                          checked={ref.visible === true}
                           onCheckedChange={(checked) => {
-                            let updatedRefs: InverterReference[];
-                            if (checked) {
-                              updatedRefs = inverterReferences.map((r) => 
-                                r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }
-                              );
-                            } else {
-                              updatedRefs = inverterReferences.map((r) => 
-                                r.id === ref.id ? { ...r, recommended: false } : r
-                              );
+                            const visibleCount = inverterReferences.filter((r) => r.visible === true).length;
+                            if (!checked && visibleCount === 1 && ref.visible === true) {
+                              console.log("[SettingsDrawer] inverter visible: blocage (revert_on)", { refId: ref.id, refName: ref.name });
+                              return;
                             }
-                            
-                            saveInverterReferences(updatedRefs);
-                            if (userId) {
-                              Promise.all(updatedRefs.map((r) => saveInverterReferenceToFirebase(r, userId)))
-                                .then(() => mutateInverters())
-                                .catch((e) => console.error("Firebase save inverter refs:", e));
+                            if (!userId) {
+                              console.warn("[SettingsDrawer] inverter visible: pas de userId, skip save");
+                              return;
                             }
+                            const updatedRef = { ...ref, visible: checked };
+                            const nextList = inverterReferences.map((r) => (r.id === ref.id ? updatedRef : r));
+                            mutateInverters(nextList, { revalidate: false });
+                            saveInverterReferenceToFirebase(updatedRef, userId)
+                              .catch((e) => {
+                                console.error("[SettingsDrawer] Firebase save inverter ref:", e);
+                                mutateInverters();
+                              });
                           }}
                           size="sm"
                         />
@@ -665,23 +642,25 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                       </div>
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <Switch
-                          checked={ref.recommended ?? false}
+                          checked={ref.visible === true}
                           onCheckedChange={(checked) => {
-                            let updatedRefs: BatteryReference[];
-                            if (checked) {
-                              updatedRefs = batteryReferences.map((r) =>
-                                r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }
-                              );
-                            } else {
-                              updatedRefs = batteryReferences.map((r) =>
-                                r.id === ref.id ? { ...r, recommended: false } : r
-                              );
+                            const visibleCount = batteryReferences.filter((r) => r.visible === true).length;
+                            if (!checked && visibleCount === 1 && ref.visible === true) {
+                              console.log("[SettingsDrawer] battery visible: blocage (revert_on)", { refId: ref.id, refName: ref.name });
+                              return;
                             }
-                            if (userId) {
-                              Promise.all(updatedRefs.map((r) => saveBatteryReferenceToFirebase(r, userId)))
-                                .then(() => mutateBatteries())
-                                .catch((e) => console.error("Firebase save battery refs:", e));
+                            if (!userId) {
+                              console.warn("[SettingsDrawer] battery visible: pas de userId, skip save");
+                              return;
                             }
+                            const updatedRef = { ...ref, visible: checked };
+                            const nextList = batteryReferences.map((r) => (r.id === ref.id ? updatedRef : r));
+                            mutateBatteries(nextList, { revalidate: false });
+                            saveBatteryReferenceToFirebase(updatedRef, userId)
+                              .catch((e) => {
+                                console.error("[SettingsDrawer] Firebase save battery ref:", e);
+                                mutateBatteries();
+                              });
                           }}
                           size="sm"
                         />

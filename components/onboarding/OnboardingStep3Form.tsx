@@ -54,83 +54,107 @@ export function OnboardingStep3Form({
 
   useEffect(() => {
     if (panelRefs.length > 0 && !defaultPanelRefId) {
+      const visible = panelRefs.find((r) => r.visible === true);
       const rec = panelRefs.find((r) => r.recommended) ?? panelRefs[0];
-      if (rec) setDefaultPanelRefId(rec.id);
+      const pick = visible ?? rec;
+      if (pick) setDefaultPanelRefId(pick.id);
     }
   }, [panelRefs, defaultPanelRefId]);
 
   useEffect(() => {
     if (inverterRefs.length > 0 && !defaultInverterRefId) {
+      const visible = inverterRefs.find((r) => r.visible === true);
       const rec = inverterRefs.find((r) => r.recommended) ?? inverterRefs[0];
-      if (rec) setDefaultInverterRefId(rec.id);
+      const pick = visible ?? rec;
+      if (pick) setDefaultInverterRefId(pick.id);
     }
   }, [inverterRefs, defaultInverterRefId]);
 
   useEffect(() => {
     if (batteryRefs.length > 0 && !defaultBatteryRefId) {
+      const visible = batteryRefs.find((r) => r.visible === true);
       const rec = batteryRefs.find((r) => r.recommended) ?? batteryRefs[0];
-      if (rec) setDefaultBatteryRefId(rec.id);
+      const pick = visible ?? rec;
+      if (pick) setDefaultBatteryRefId(pick.id);
     }
   }, [batteryRefs, defaultBatteryRefId]);
 
-  const handlePanelRecommended = async (ref: PanelReference, checked: boolean) => {
-    const normalized = checked
-      ? panelRefs.map((r) => (r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }))
-      : panelRefs.map((r) => (r.id === ref.id ? { ...r, recommended: false } : r));
+  // Panneaux : un seul modèle visible, utilisé dans les simulations.
+  const handlePanelVisible = async (ref: PanelReference, checked: boolean) => {
+    if (!checked) return; // évite de se retrouver sans panneau "visible"
+    const normalized = panelRefs.map((r) => (r.id === ref.id ? { ...r, visible: true } : { ...r, visible: false }));
     await Promise.all(normalized.map((r) => savePanelReferenceToFirebase(r, userId)));
     mutatePanels();
-    if (checked) setDefaultPanelRefId(ref.id);
+    setDefaultPanelRefId(ref.id);
   };
 
-  const handleInverterRecommended = async (ref: InverterReference, checked: boolean) => {
-    const normalized = checked
-      ? inverterRefs.map((r) =>
-          r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }
-        )
-      : inverterRefs.map((r) =>
-          r.id === ref.id ? { ...r, recommended: false } : r
-        );
-    await Promise.all(normalized.map((r) => saveInverterReferenceToFirebase(r, userId)));
+  const handleInverterVisible = async (ref: InverterReference, checked: boolean) => {
+    const visibleCount = inverterRefs.filter((r) => r.visible === true).length;
+    if (!checked && visibleCount === 1 && ref.visible === true) {
+      console.log("[Onboarding] inverter visible: blocage (revert_on), dernière visible non décochée", { refId: ref.id, refName: ref.name });
+      return;
+    }
+    console.log("[Onboarding] inverter visible: sauvegarde", { refId: ref.id, refName: ref.name, visible: checked });
+    await saveInverterReferenceToFirebase({ ...ref, visible: checked }, userId);
     mutateInverters();
     if (checked) setDefaultInverterRefId(ref.id);
+    if (!checked && ref.id === defaultInverterRefId) {
+      const other = inverterRefs.find((r) => r.id !== ref.id && r.visible === true);
+      if (other) {
+        console.log("[Onboarding] inverter visible: défaut basculé vers", { refId: other.id, refName: other.name });
+        setDefaultInverterRefId(other.id);
+      }
+    }
   };
 
   const handlePanelSave = async (ref: PanelReference) => {
-    await savePanelReferenceToFirebase(ref, userId);
+    // Pour les panneaux : considérer le nouveau panneau comme "visible" (unique).
+    const normalized = [...panelRefs.filter((r) => r.id !== ref.id).map((r) => ({ ...r, visible: false })), { ...ref, visible: true }];
+    await Promise.all(normalized.map((r) => savePanelReferenceToFirebase(r, userId)));
     mutatePanels();
-    if (panelRefs.length === 0) setDefaultPanelRefId(ref.id);
+    setDefaultPanelRefId(ref.id);
     setAddPanelOpen(false);
   };
 
   const handleInverterSave = async (ref: InverterReference) => {
-    await saveInverterReferenceToFirebase(ref, userId);
+    await saveInverterReferenceToFirebase({ ...ref, visible: true }, userId);
     mutateInverters();
     if (inverterRefs.length === 0) setDefaultInverterRefId(ref.id);
     setAddInverterOpen(false);
   };
 
-  const handleBatteryRecommended = async (ref: BatteryReference, checked: boolean) => {
-    const normalized = checked
-      ? batteryRefs.map((r) => (r.id === ref.id ? { ...r, recommended: true } : { ...r, recommended: false }))
-      : batteryRefs.map((r) => (r.id === ref.id ? { ...r, recommended: false } : r));
-    await Promise.all(normalized.map((r) => saveBatteryReferenceToFirebase(r, userId)));
+  const handleBatteryVisible = async (ref: BatteryReference, checked: boolean) => {
+    const visibleCount = batteryRefs.filter((r) => r.visible === true).length;
+    if (!checked && visibleCount === 1 && ref.visible === true) {
+      console.log("[Onboarding] battery visible: blocage (revert_on), dernière visible non décochée", { refId: ref.id, refName: ref.name });
+      return;
+    }
+    console.log("[Onboarding] battery visible: sauvegarde", { refId: ref.id, refName: ref.name, visible: checked });
+    await saveBatteryReferenceToFirebase({ ...ref, visible: checked }, userId);
     mutateBatteries();
     if (checked) setDefaultBatteryRefId(ref.id);
+    if (!checked && ref.id === defaultBatteryRefId) {
+      const other = batteryRefs.find((r) => r.id !== ref.id && r.visible === true);
+      if (other) {
+        console.log("[Onboarding] battery visible: défaut basculé vers", { refId: other.id, refName: other.name });
+        setDefaultBatteryRefId(other.id);
+      }
+    }
   };
 
   const handleBatterySave = async (ref: BatteryReference) => {
-    await saveBatteryReferenceToFirebase(ref, userId);
+    await saveBatteryReferenceToFirebase({ ...ref, visible: true }, userId);
     mutateBatteries();
     if (batteryRefs.length === 0) setDefaultBatteryRefId(ref.id);
     setAddBatteryOpen(false);
   };
 
   const defaultPanelId =
-    defaultPanelRefId || panelRefs.find((r) => r.recommended)?.id || panelRefs[0]?.id || "";
+    defaultPanelRefId || panelRefs.find((r) => r.visible === true)?.id || panelRefs.find((r) => r.recommended)?.id || panelRefs[0]?.id || "";
   const defaultInverterId =
-    defaultInverterRefId || inverterRefs.find((r) => r.recommended)?.id || inverterRefs[0]?.id || "";
+    defaultInverterRefId || inverterRefs.find((r) => r.visible === true)?.id || inverterRefs.find((r) => r.recommended)?.id || inverterRefs[0]?.id || "";
   const defaultBatteryId =
-    defaultBatteryRefId || batteryRefs.find((r) => r.recommended)?.id || batteryRefs[0]?.id || "";
+    defaultBatteryRefId || batteryRefs.find((r) => r.visible === true)?.id || batteryRefs.find((r) => r.recommended)?.id || batteryRefs[0]?.id || "";
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -167,7 +191,7 @@ export function OnboardingStep3Form({
                 <li
                   key={ref.id}
                   className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
-                  onClick={() => handlePanelRecommended(ref, true)}
+                  onClick={() => handlePanelVisible(ref, true)}
                 >
                   <div className="shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted">
                     {ref.imageUrl ? (
@@ -219,8 +243,8 @@ export function OnboardingStep3Form({
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <Switch
-                      checked={(ref.recommended ?? false) || ref.id === defaultPanelId}
-                      onCheckedChange={(checked) => handlePanelRecommended(ref, checked)}
+                      checked={ref.visible === true || ref.id === defaultPanelId}
+                      onCheckedChange={(checked) => handlePanelVisible(ref, checked)}
                       size="sm"
                     />
                   </div>
@@ -241,7 +265,7 @@ export function OnboardingStep3Form({
                 <li
                   key={ref.id}
                   className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
-                  onClick={() => handleInverterRecommended(ref, true)}
+                  onClick={() => handleInverterVisible(ref, true)}
                 >
                   <div className="shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted">
                     {ref.imageUrl ? (
@@ -293,8 +317,8 @@ export function OnboardingStep3Form({
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <Switch
-                      checked={(ref.recommended ?? false) || ref.id === defaultInverterId}
-                      onCheckedChange={(checked) => handleInverterRecommended(ref, checked)}
+                      checked={ref.visible === true}
+                      onCheckedChange={(checked) => handleInverterVisible(ref, checked)}
                       size="sm"
                     />
                   </div>
@@ -315,7 +339,7 @@ export function OnboardingStep3Form({
                 <li
                   key={ref.id}
                   className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
-                  onClick={() => handleBatteryRecommended(ref, true)}
+                  onClick={() => handleBatteryVisible(ref, true)}
                 >
                   <div className="shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted">
                     {ref.imageUrl ? (
@@ -355,8 +379,8 @@ export function OnboardingStep3Form({
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <Switch
-                      checked={(ref.recommended ?? false) || ref.id === defaultBatteryId}
-                      onCheckedChange={(checked) => handleBatteryRecommended(ref, checked)}
+                      checked={ref.visible === true}
+                      onCheckedChange={(checked) => handleBatteryVisible(ref, checked)}
                       size="sm"
                     />
                   </div>

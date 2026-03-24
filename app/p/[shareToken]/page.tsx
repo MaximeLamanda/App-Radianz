@@ -7,10 +7,17 @@ import { useParams } from "next/navigation";
 import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck } from "lucide-react";
+import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, Pencil } from "lucide-react";
 import {
   usePanelReferences,
   useInverterReferences,
@@ -33,7 +40,7 @@ import {
   buildTypicalDayForMonth,
 } from "@/lib/pvgis";
 import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
-import { runProductionSimulation, runSimulationOneDayForChart } from "@/lib/battery-simulation";
+import { runProductionSimulation, runSimulationOneDayForChart, scaleBatteryForCount } from "@/lib/battery-simulation";
 import {
   surfaceToKwp,
   getUsableRoofAreaM2,
@@ -79,29 +86,63 @@ export default function ProspectSharePage() {
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
   const [selectedInverterId, setSelectedInverterId] = useState<string | null>(null);
   const [selectedBatteryId, setSelectedBatteryId] = useState<string | null>(null);
+  const [selectedBatteryCount, setSelectedBatteryCount] = useState(1);
+  const [energyBillEurOverride, setEnergyBillEurOverride] = useState<number | undefined>(undefined);
+  const [energyBillDialogOpen, setEnergyBillDialogOpen] = useState(false);
+
+  const visiblePanels = useMemo(() => {
+    const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
+    if (withVisible.length > 0) return withVisible;
+    // Fallback legacy : aucun panneau n'a visible=true (ex. données anciennes), utiliser recommandé ou premier
+    if (panelsData && panelsData.length > 0) {
+      const fallback = panelsData.find((p) => p.recommended === true) ?? panelsData[0];
+      return fallback ? [fallback] : [];
+    }
+    return [];
+  }, [panelsData]);
+  const visibleInverters = useMemo(() => {
+    const withVisible = invertersData?.filter((i) => i.visible === true) ?? [];
+    if (withVisible.length > 0) return withVisible;
+    if (invertersData && invertersData.length > 0) {
+      const fallback = invertersData.find((i) => i.visible !== false) ?? invertersData.find((i) => i.recommended === true) ?? invertersData[0];
+      return fallback ? [fallback] : [];
+    }
+    return [];
+  }, [invertersData]);
+  const visibleBatteries = useMemo(() => {
+    const withVisible = batteriesData?.filter((b) => b.visible === true) ?? [];
+    if (withVisible.length > 0) return withVisible;
+    if (batteriesData && batteriesData.length > 0) {
+      const fallback = batteriesData.find((b) => b.visible !== false) ?? batteriesData.find((b) => b.recommended === true) ?? batteriesData[0];
+      return fallback ? [fallback] : [];
+    }
+    return [];
+  }, [batteriesData]);
 
   const usedPanelRef: PanelReference | null =
-    (selectedPanelId ? panelsData?.find((r) => r.id === selectedPanelId) ?? null : null) ??
-    panelsData?.find((r) => r.recommended) ??
-    panelsData?.[0] ??
-    getRecommendedPanelReferenceSync();
+    (selectedPanelId ? visiblePanels.find((r) => r.id === selectedPanelId) ?? null : null) ??
+    visiblePanels.find((r) => r.recommended) ??
+    visiblePanels[0] ??
+    null;
   const usedInverterRef: InverterReference | null =
-    (selectedInverterId ? invertersData?.find((r) => r.id === selectedInverterId) ?? null : null) ??
-    invertersData?.find((r) => r.recommended) ??
-    invertersData?.[0] ??
-    getRecommendedInverterReferenceSync();
+    (selectedInverterId ? visibleInverters.find((r) => r.id === selectedInverterId) ?? null : null) ??
+    visibleInverters.find((r) => r.recommended) ??
+    visibleInverters[0] ??
+    null;
   const usedBatteryRef: BatteryReference | null =
-    (selectedBatteryId ? batteriesData?.find((r) => r.id === selectedBatteryId) ?? null : null) ??
-    batteriesData?.find((r) => r.recommended) ??
-    batteriesData?.[0] ??
-    getRecommendedBatteryReferenceSync();
+    (selectedBatteryId ? visibleBatteries.find((r) => r.id === selectedBatteryId) ?? null : null) ??
+    visibleBatteries.find((r) => r.recommended) ??
+    visibleBatteries[0] ??
+    null;
   const includeBatteryEffective = includeBatteryLocal;
 
   useEffect(() => {
     if (prospect?.configurationMode) setConfigurationMode(prospect.configurationMode);
     if (prospect?.annualConsumptionKwhOverride != null) setAnnualConsumptionOverride(prospect.annualConsumptionKwhOverride);
     if (prospect != null) setIncludeBatteryLocal(prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true);
-  }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride, prospect?.includeBatteryOverride, prospect]);
+    if (prospect?.batteryReferenceId) setSelectedBatteryId(prospect.batteryReferenceId);
+    if (prospect?.batteryCount != null && prospect.batteryCount >= 1) setSelectedBatteryCount(prospect.batteryCount);
+  }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride, prospect?.includeBatteryOverride, prospect?.batteryReferenceId, prospect?.batteryCount, prospect]);
 
   /** production = productionPerKwp × kWp. kWp = surfaceToKwp(surface). */
   const effectiveConfig = useMemo(() => {
@@ -207,6 +248,7 @@ export default function ProspectSharePage() {
   const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
   const consoAnnuelleKwh = annualConsumptionOverride ?? consoFromType;
   const energyBillEur = estimateEnergyBillEur(consoAnnuelleKwh);
+  const displayEnergyBillEur = energyBillEurOverride ?? energyBillEur;
 
   const financialSummary = useMemo(() => {
     if (!prospect || surfaceM2 <= 0) return null;
@@ -233,10 +275,13 @@ export default function ProspectSharePage() {
       const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
         buildTypicalConsumptionDayForMonth(placeType, m, surfaceM2)
       );
+      const scaledBattery = includeBatteryEffective && usedBatteryRef
+        ? scaleBatteryForCount(usedBatteryRef, selectedBatteryCount)
+        : null;
       const simulationResult = runProductionSimulation({
         productionTypicalDayByMonth,
         consumptionTypicalDayByMonth,
-        battery: includeBatteryEffective && usedBatteryRef ? usedBatteryRef : null,
+        battery: scaledBattery,
       });
       annualSavings = estimateAnnualSavingsEurWithBattery(simulationResult);
       equipmentEur = estimateInstallationPriceEur(
@@ -244,7 +289,8 @@ export default function ProspectSharePage() {
         inverterCount,
         recommendedPanel,
         recommendedInverter,
-        includeBatteryEffective && usedBatteryRef ? usedBatteryRef : undefined
+        includeBatteryEffective && usedBatteryRef ? usedBatteryRef : undefined,
+        selectedBatteryCount
       );
       batteryByMonth = simulationResult.byMonth;
       selfConsumptionDirectKwhTotal = simulationResult.selfConsumptionDirectKwh;
@@ -281,7 +327,69 @@ export default function ProspectSharePage() {
       injectionReseauKwhTotal,
       breakdownFromHourlySim,
     };
-  }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, includeBatteryEffective]);
+  }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, selectedBatteryCount, includeBatteryEffective]);
+
+  const chartData = useMemo(() => {
+    if (!effectiveConfig.productionPerKwp) return [];
+    const { monthlyProduction } = getProductionFromPerKwp(
+      effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+      effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+      effectiveConfig.effectiveKwp
+    );
+    const byMonth = financialSummary?.batteryByMonth;
+    return monthlyProduction.map((m) => {
+      const base = {
+        month: m.month,
+        production: m.production,
+        consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
+      };
+      if (byMonth?.[m.month - 1]) {
+        const b = byMonth[m.month - 1]!;
+        return {
+          ...base,
+          selfConsumptionDirect: b.selfConsumptionDirectKwh,
+          selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
+          injectionBattery: b.injectionBatteryKwh,
+          excess: b.injectionReseauKwh,
+          gridDraw: b.gridDrawKwh,
+        };
+      }
+      return base;
+    });
+  }, [effectiveConfig.productionPerKwp, effectiveConfig.effectiveKwp, financialSummary?.batteryByMonth, placeType, surfaceM2]);
+
+  const chartDailyData = useMemo(() => {
+    if (!effectiveConfig.productionPerKwp) return undefined;
+    const prodDay = buildTypicalDayForMonth(
+      effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+      chartSelectedMonthIndex,
+      effectiveConfig.effectiveKwp
+    );
+    const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
+    const batteryForChart = includeBatteryEffective && usedBatteryRef
+      ? scaleBatteryForCount(usedBatteryRef, selectedBatteryCount)
+      : null;
+    const hourly = runSimulationOneDayForChart(prodDay, consDay, batteryForChart);
+    return hourly.map((h, hour) => ({
+      hour,
+      production: prodDay[hour] ?? 0,
+      consumption: consDay[hour] ?? 0,
+      selfConsumptionDirect: h.selfConsumptionDirectKwh,
+      selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
+      injectionBattery: h.injectionBatteryKwh,
+      excess: h.injectionReseauKwh,
+      gridDraw: h.gridDrawKwh,
+    }));
+  }, [
+    effectiveConfig.productionPerKwp,
+    effectiveConfig.effectiveKwp,
+    chartSelectedMonthIndex,
+    placeType,
+    surfaceM2,
+    includeBatteryEffective,
+    usedBatteryRef?.id,
+    selectedBatteryCount,
+  ]);
 
   const annualSavings = financialSummary?.annualSavings ?? 0;
   const selfConsumptionDirectKwhTotal = financialSummary?.selfConsumptionDirectKwhTotal ?? 0;
@@ -451,12 +559,12 @@ export default function ProspectSharePage() {
             </div>
           )}
 
-          {/* [3,1] Bloc finances minimaliste : titre + lignes label / valeur, responsive */}
-          <div className="order-6 rounded-xl px-3 py-3 sm:px-4 sm:py-4 min-h-0 flex flex-col justify-center bg-gray-100 overflow-y-auto overflow-x-hidden md:order-none md:col-start-2 md:row-start-7 md:row-span-2 md:min-h-[120px]">
+          {/* [3,1] Bloc finances minimaliste : titre + barre savings + lignes label / valeur, responsive */}
+          <div className="order-6 rounded-xl px-3 py-3 sm:px-4 sm:py-4 min-h-0 flex flex-col justify-start bg-gray-100 overflow-y-auto overflow-x-hidden md:order-none md:col-start-2 md:row-start-6 md:row-span-3 md:min-h-[120px]">
             <div className="flex items-center justify-between gap-1 mb-1.5 sm:mb-2">
               <span className="text-[10px] uppercase tracking-wide text-gray-500">Financial yearly</span>
             </div>
-            {annualSavings > 0 ? (
+            {annualSavings > 0 || displayEnergyBillEur > 0 ? (
               (() => {
                 const directKwh = selfConsumptionDirectKwhTotal;
                 const viaBatteryKwh = selfConsumptionViaBatteryKwhTotal;
@@ -468,16 +576,63 @@ export default function ProspectSharePage() {
                 const viaBatteryEur = viaBatteryKwh * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
                 const injectionReseauEur = injectionReseauKwh * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
 
+                const savingsPct = displayEnergyBillEur > 0 ? Math.min(100, (annualSavings / displayEnergyBillEur) * 100) : 0;
+                const totalSavings = viaBatteryEur + directEur + injectionReseauEur;
+                const pctBattery = totalSavings > 0 ? (viaBatteryEur / totalSavings) * 100 : 0;
+                const pctDirect = totalSavings > 0 ? (directEur / totalSavings) * 100 : 0;
+                const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
+                const autoKwh = directKwh + viaBatteryKwh;
+                const autoPct = productionKwh > 0 ? Math.round((autoKwh / productionKwh) * 100) : 0;
+
                 const row = (key: string, label: ReactNode, value: ReactNode, valueSmall?: boolean) => (
                   <div key={key} className="flex items-center justify-between gap-2 min-w-0 py-0 first:pt-0 last:pb-0">
                     <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">{label}</span>
                     <span className={`font-normal text-gray-500 shrink-0 tabular-nums ${valueSmall ? "text-[10px] sm:text-xs" : "text-xs sm:text-sm"}`}>{value}</span>
                   </div>
                 );
+
+                const energyBillValue = (
+                  <button
+                    type="button"
+                    onClick={() => setEnergyBillDialogOpen(true)}
+                    className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 hover:bg-gray-200/60 transition-colors text-left cursor-pointer shrink-0"
+                    aria-label="Modifier la facture annuelle"
+                  >
+                    <Pencil className="h-3 w-3 text-gray-400 shrink-0" />
+                    <span className="tabular-nums">
+                      {displayEnergyBillEur.toLocaleString("fr-FR")}
+                      <span className="text-gray-400 ml-0.5 font-light">€</span>
+                    </span>
+                  </button>
+                );
+
                 return (
                   <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
+                    {/* Barre minimaliste savings / energy bill */}
+                    {displayEnergyBillEur > 0 && (
+                      <div className="w-full mb-1.5 shrink-0">
+                        {productionKwh > 0 && (
+                          <div className="flex justify-end mb-0.5">
+                            <span className="text-[9px] text-gray-400 tabular-nums" title="Taux d'autoconsommation">
+                              {autoPct}%
+                            </span>
+                          </div>
+                        )}
+                        <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden flex">
+                          {savingsPct > 0 && breakdownFromHourlySim && totalSavings > 0 ? (
+                            <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>
+                              <div className="h-full bg-[#0000FF] shrink-0" style={{ width: `${pctBattery}%` }} title="Autoconsommation batterie" />
+                              <div className="h-full bg-[#4B5563] shrink-0" style={{ width: `${pctDirect}%` }} title="Autoconsommation directe" />
+                              <div className="h-full bg-[#32F490] shrink-0 flex-1" title="Injection réseau" />
+                            </div>
+                          ) : savingsPct > 0 ? (
+                            <div className="h-full rounded-l-full bg-gray-600" style={{ width: `${savingsPct}%` }} />
+                          ) : null}
+                        </div>
+                      </div>
+                    )}
                     {/* Principaux */}
-                    {row("energy-bill", "Est. Energy bill", <>{energyBillEur.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
+                    {row("energy-bill", "Est. Energy bill", energyBillValue)}
                     {row("savings", "Savings", <>{annualSavings.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
                     {/* Sous-section : répartition */}
                     {breakdownFromHourlySim ? (
@@ -509,9 +664,34 @@ export default function ProspectSharePage() {
               })()
             ) : (
               <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
+                {displayEnergyBillEur > 0 && (
+                  <div className="w-full mb-1.5 shrink-0">
+                    {effectiveConfig.effectiveAnnualProductionKwh > 0 && (
+                      <div className="flex justify-end mb-0.5">
+                        <span className="text-[9px] text-gray-400 tabular-nums" title="Taux d'autoconsommation">
+                          {Math.round(((selfConsumptionDirectKwhTotal + selfConsumptionViaBatteryKwhTotal) / effectiveConfig.effectiveAnnualProductionKwh) * 100)}%
+                        </span>
+                      </div>
+                    )}
+                    <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden flex">
+                      {displayEnergyBillEur > 0 && annualSavings > 0 && (
+                        <div className="h-full rounded-l-full bg-gray-600" style={{ width: `${Math.min(100, (annualSavings / displayEnergyBillEur) * 100)}%` }} />
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-2 min-w-0 py-0">
                   <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">Est. Energy bill</span>
-                  <span className="text-xs sm:text-sm font-normal text-gray-500 shrink-0 tabular-nums">{energyBillEur.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></span>
+                  <button
+                    type="button"
+                    onClick={() => setEnergyBillDialogOpen(true)}
+                    className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 hover:bg-gray-200/60 transition-colors text-left cursor-pointer shrink-0 tabular-nums text-xs sm:text-sm font-normal text-gray-500"
+                    aria-label="Modifier la facture annuelle"
+                  >
+                    <Pencil className="h-3 w-3 text-gray-400 shrink-0" />
+                    {displayEnergyBillEur.toLocaleString("fr-FR")}
+                    <span className="text-gray-400 ml-0.5 font-light">€</span>
+                  </button>
                 </div>
                 <div className="flex items-center justify-between gap-2 min-w-0 py-0">
                   <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">Savings</span>
@@ -637,55 +817,8 @@ export default function ProspectSharePage() {
                   onViewModeChange={setChartViewMode}
                   selectedMonthIndex={chartSelectedMonthIndex}
                   onSelectedMonthIndexChange={setChartSelectedMonthIndex}
-                  data={(() => {
-                    if (!effectiveConfig.productionPerKwp) return [];
-                    const { monthlyProduction } = getProductionFromPerKwp(
-                      effectiveConfig.productionPerKwp.productionPerKwpAnnual,
-                      effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                      effectiveConfig.effectiveKwp
-                    );
-                    const byMonth = financialSummary?.batteryByMonth;
-                    return monthlyProduction.map((m) => {
-                      const base = {
-                        month: m.month,
-                        production: m.production,
-                        consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
-                      };
-                      if (byMonth?.[m.month - 1]) {
-                        const b = byMonth[m.month - 1]!;
-                        return {
-                          ...base,
-                          selfConsumptionDirect: b.selfConsumptionDirectKwh,
-                          selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
-                          injectionBattery: b.injectionBatteryKwh,
-                          excess: b.injectionReseauKwh,
-                          gridDraw: b.gridDrawKwh,
-                        };
-                      }
-                      return base;
-                    });
-                  })()}
-                  dailyData={(() => {
-                    if (!effectiveConfig.productionPerKwp) return undefined;
-                    const prodDay = buildTypicalDayForMonth(
-                      effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                      chartSelectedMonthIndex,
-                      effectiveConfig.effectiveKwp
-                    );
-                    const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
-                    const batteryForChart = includeBatteryEffective && usedBatteryRef ? usedBatteryRef : null;
-                    const hourly = runSimulationOneDayForChart(prodDay, consDay, batteryForChart);
-                    return hourly.map((h, hour) => ({
-                      hour,
-                      production: prodDay[hour] ?? 0,
-                      consumption: consDay[hour] ?? 0,
-                      selfConsumptionDirect: h.selfConsumptionDirectKwh,
-                      selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
-                      injectionBattery: h.injectionBatteryKwh,
-                      excess: h.injectionReseauKwh,
-                      gridDraw: h.gridDrawKwh,
-                    }));
-                  })()}
+                  data={chartData}
+                  dailyData={chartDailyData}
                 />
               </div>
             </div>
@@ -693,16 +826,16 @@ export default function ProspectSharePage() {
 
           {/* [2,6] (remplacé par le bloc finances ci-dessus) */}
 
-          {/* [3,2-3] Équipement — colonne 3, 2 lignes (panneau, onduleur, batterie) */}
-          {(usedPanelRef || usedInverterRef || (usedBatteryRef && includeBatteryEffective)) && (
+          {/* [3,2-3] Équipement — colonne 3, 2 lignes (panneau, onduleur, batterie) ; uniquement visible === true */}
+          {(panelsData !== undefined || invertersData !== undefined || batteriesData !== undefined) && (
             <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-4">
               <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
               <div className="space-y-2">
-                {panelsData && panelsData.length > 0 && (
+                {visiblePanels.length > 0 ? (
                   <div>
                     <EquipmentSelectCard<PanelReference>
-                      value={usedPanelRef}
-                      options={panelsData}
+                      value={usedPanelRef ?? undefined}
+                      options={visiblePanels}
                       onChange={(p) => setSelectedPanelId(p ? p.id : null)}
                       getItemId={(p) => p.id}
                       showRecommendedBadge={!!usedPanelRef?.recommended}
@@ -768,12 +901,14 @@ export default function ProspectSharePage() {
                       )}
                     />
                   </div>
-                )}
-                {invertersData && invertersData.length > 0 && (
+                ) : panelsData !== undefined ? (
+                  <p className="text-xs text-muted-foreground py-2">Aucun panneau configuré</p>
+                ) : null}
+                {visibleInverters.length > 0 ? (
                   <div>
                     <EquipmentSelectCard<InverterReference>
-                      value={usedInverterRef}
-                      options={invertersData}
+                      value={usedInverterRef ?? undefined}
+                      options={visibleInverters}
                       onChange={(i) => setSelectedInverterId(i ? i.id : null)}
                       getItemId={(i) => i.id}
                       showRecommendedBadge={!!usedInverterRef?.recommended}
@@ -839,25 +974,38 @@ export default function ProspectSharePage() {
                       )}
                     />
                   </div>
-                )}
-                {batteriesData && batteriesData.length > 0 && includeBatteryEffective && (
+                ) : invertersData !== undefined ? (
+                  <p className="text-xs text-muted-foreground py-2">Aucun onduleur configuré</p>
+                ) : null}
+                {includeBatteryEffective && (visibleBatteries.length > 0 ? (
                   <div>
                     <BatterySelectCard
-                      value={usedBatteryRef}
-                      onChange={(b) => setSelectedBatteryId(b ? b.id : null)}
-                      batteries={batteriesData}
+                      value={usedBatteryRef ?? undefined}
+                      onChange={(b) => {
+                        setSelectedBatteryId(b ? b.id : null);
+                        if (b) {
+                          const maxForNew = b.maxBatteriesPerRack ?? 20;
+                          setSelectedBatteryCount((prev) => Math.min(maxForNew, Math.max(1, prev)));
+                        }
+                      }}
+                      count={selectedBatteryCount}
+                      onCountChange={setSelectedBatteryCount}
+                      maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
+                      batteries={visibleBatteries}
                       isRecommendedForProspect={!!usedBatteryRef?.recommended}
                       recommendedBatteryIdForProspect={usedBatteryRef?.id ?? null}
                     />
                   </div>
-                )}
+                ) : batteriesData !== undefined ? (
+                  <p className="text-xs text-muted-foreground py-2">Aucune batterie configurée</p>
+                ) : null)}
               </div>
             </div>
           )}
 
-          {/* Inclure / exclure batterie (même bloc que dans le drawer) */}
+          {/* [3,5] Inclure batterie — ligne en dessous du bloc équipement */}
           {(prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0) > 0 && usedBatteryRef && (
-            <div className="order-8 mt-2 md:mt-0 md:order-none md:col-start-2 md:row-start-6 flex h-full min-h-0">
+            <div className="order-8 mt-2 md:mt-0 md:order-none md:col-start-3 md:row-start-5 flex h-full min-h-0">
               <div className="flex flex-1 items-center justify-between rounded-xl border border-border bg-white p-3 min-h-0">
                 <div className="flex items-center gap-2">
                   <Battery className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -873,7 +1021,7 @@ export default function ProspectSharePage() {
             </div>
           )}
 
-          {/* [3,4-7] Référent — colonne 3, 4 lignes (design aligné sur IllustrationContactCard) */}
+          {/* [3,6-8] Référent — colonne 3, 4 lignes (design aligné sur IllustrationContactCard) */}
           {commercialReferent && (commercialReferent.name || commercialReferent.email || commercialReferent.phone) && (
             <div className="order-9 flex min-h-[200px] min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50 md:order-none md:col-start-3 md:row-start-6 md:row-span-3">
               <div className="flex w-full items-center justify-between">
@@ -945,6 +1093,36 @@ export default function ProspectSharePage() {
           )}
         </div>
       </div>
+
+      <Dialog open={energyBillDialogOpen} onOpenChange={setEnergyBillDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Ma facture annuelle (€)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 pt-2">
+            <Input
+              type="number"
+              min={0}
+              step={100}
+              placeholder={energyBillEur.toLocaleString("fr-FR")}
+              defaultValue={energyBillEurOverride ?? energyBillEur}
+              className="tabular-nums"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const v = parseFloat((e.target as HTMLInputElement).value);
+                  if (!Number.isNaN(v) && v >= 0) setEnergyBillEurOverride(v);
+                  setEnergyBillDialogOpen(false);
+                }
+              }}
+              onBlur={(e) => {
+                const v = parseFloat(e.target.value);
+                if (!Number.isNaN(v) && v >= 0) setEnergyBillEurOverride(v);
+              }}
+            />
+            <p className="text-xs text-gray-500">Estimation : {energyBillEur.toLocaleString("fr-FR")} €</p>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

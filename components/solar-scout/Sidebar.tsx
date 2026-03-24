@@ -959,7 +959,7 @@ export function Sidebar({
   const { data: osmBuildings = [] } = useOsmBuildings(onAnalyseBuildings ? osmBoundsToFetch ?? null : null);
   const wasAnalysingRef = useRef(false);
 
-  // À la fin d'une analyse : réinitialiser le filtre à 0 → max
+  // À la fin d'une analyse : mettre à jour le max si besoin, en conservant le min actuel (préréglage de l'utilisateur)
   useEffect(() => {
     if (wasAnalysingRef.current && !isAnalysingBuildings && osmBuildings.length > 0 && onSurfaceRangeChange) {
       const maxSurface = Math.max(
@@ -968,10 +968,10 @@ export function Sidebar({
           b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
         )
       );
-      onSurfaceRangeChange({ min: 0, max: maxSurface });
+      onSurfaceRangeChange({ min: surfaceRange.min, max: maxSurface });
     }
     wasAnalysingRef.current = isAnalysingBuildings;
-  }, [isAnalysingBuildings, osmBuildings, onSurfaceRangeChange]);
+  }, [isAnalysingBuildings, osmBuildings, onSurfaceRangeChange, surfaceRange.min]);
 
   const [address, setAddress] = useState(initialAddress || ""); // Champ vide par défaut
   const inputRef = useRef<HTMLInputElement>(null);

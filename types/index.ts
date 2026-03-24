@@ -139,6 +139,8 @@ export interface Prospect {
   inverterReferenceId?: string;
   /** ID de la référence batterie sélectionnée pour ce prospect */
   batteryReferenceId?: string;
+  /** Nombre de batteries (1 à maxBatteriesPerRack du modèle). Défaut 1 si absent. */
+  batteryCount?: number;
 }
 
 export interface Lead {
@@ -225,6 +227,11 @@ export interface PanelReference {
   warrantyYears?: number;
   /** Badge "Recommandé" */
   recommended?: boolean;
+  /**
+   * Contrôle la visibilité côté prospect et l’inclusion dans les simulations.
+   * Pour les panneaux : une seule ref doit être visible à la fois.
+   */
+  visible?: boolean;
 }
 
 /**
@@ -247,6 +254,8 @@ export interface InverterReference {
   warrantyYears?: number;
   /** Badge "Recommandé" */
   recommended?: boolean;
+  /** Contrôle la visibilité côté prospect et l’inclusion dans les simulations. */
+  visible?: boolean;
 }
 
 /**
@@ -268,6 +277,10 @@ export interface BatteryReference {
   recommended?: boolean;
   /** kWp max recommandé pour cette batterie (ex. 100 pour 215-2S10) */
   maxKwpRecommended?: number;
+  /** Nombre max de batteries par rack pour ce modèle. Défaut 20 si absent. */
+  maxBatteriesPerRack?: number;
+  /** Contrôle la visibilité côté prospect et l’inclusion dans les simulations. */
+  visible?: boolean;
 }
 
 /**

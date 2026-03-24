@@ -1,26 +1,76 @@
 "use client";
 
+import { useState } from "react";
 import { Battery, FileCheck } from "lucide-react";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import type { BatteryReference } from "@/types";
 import { EquipmentSelectCard, EquipmentThumbnail } from "./EquipmentSelectCard";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 export function BatterySelectCard({
   value,
   onChange,
   batteries,
+  count = 1,
+  onCountChange,
+  maxCount = 20,
   isRecommendedForProspect,
   recommendedBatteryIdForProspect,
 }: {
   value: BatteryReference | null;
   onChange: (b: BatteryReference | null) => void;
   batteries: BatteryReference[];
+  count?: number;
+  onCountChange?: (n: number) => void;
+  maxCount?: number;
   /** Affiche le badge "recommandé" sur la carte sélectionnée quand elle est recommandée pour ce prospect */
   isRecommendedForProspect?: boolean;
   /** Identifiant de la batterie recommandée pour ce prospect (pour le badge dans la liste) */
   recommendedBatteryIdForProspect?: string | null;
 }) {
   const showRecommended = value?.recommended === true || isRecommendedForProspect === true;
+  const [countPopoverOpen, setCountPopoverOpen] = useState(false);
+  const effectiveMax = Math.max(1, maxCount);
+  const clampedCount = Math.min(effectiveMax, Math.max(1, count));
+
+  const countBadge = (
+    <Popover open={countPopoverOpen} onOpenChange={setCountPopoverOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 cursor-pointer hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
+          title="Paramètres utilisés dans les calculs (injection / tirage batterie). Cliquer pour modifier le nombre."
+        >
+          {clampedCount}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-56 p-3" align="end">
+        <div className="space-y-2">
+          <Label htmlFor="battery-count">Nombre de batteries</Label>
+          <Input
+            id="battery-count"
+            type="number"
+            min={1}
+            max={effectiveMax}
+            value={clampedCount}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10);
+              if (!isNaN(v) && v >= 1 && v <= effectiveMax) {
+                onCountChange?.(v);
+              }
+            }}
+          />
+          <p className="text-[10px] text-muted-foreground">1 à {effectiveMax} (max par rack)</p>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 
   return (
     <EquipmentSelectCard<BatteryReference>
@@ -29,7 +79,7 @@ export function BatterySelectCard({
       onChange={onChange}
       getItemId={(b) => b.id}
       showRecommendedBadge={showRecommended}
-      rightBadge="1"
+      rightBadge={onCountChange ? countBadge : clampedCount}
       rightBadgeTitle="Paramètres utilisés dans les calculs (injection / tirage batterie)"
       placeholder={
         <>
