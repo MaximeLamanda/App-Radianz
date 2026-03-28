@@ -36,7 +36,7 @@ function parseSourceYears(value: string | null): number[] {
     .split(",")
     .map((v) => Number.parseInt(v.trim(), 10))
     .filter((v) => Number.isFinite(v) && v >= 2000 && v <= 2100);
-  return [...new Set(years)];
+  return Array.from(new Set(years));
 }
 
 export async function GET(request: NextRequest) {
@@ -111,12 +111,13 @@ export async function GET(request: NextRequest) {
 
     incrementQuotaAfterSuccess(uid, "sitadel_map");
 
+    const returned = result.rows.length;
     return NextResponse.json({
       opportunities: result.rows,
       meta: {
         limit,
-        returned: result.rowCount,
-        truncated: (result.rowCount ?? 0) >= limit,
+        returned,
+        truncated: returned >= limit,
       },
     });
   } catch (error) {
