@@ -1,4 +1,3 @@
-import Fuse from "fuse.js";
 import type { Prospect } from "@/types";
 
 /** Résultat d'enrichissement entreprise (api.gouv) pour un prospect */
@@ -20,18 +19,26 @@ export function extractCodePostal(address: string): string | null {
   return match ? match[1] : null;
 }
 
-/** Contexte parsé depuis l'adresse du prospect pour construire les requêtes */
-function parseAddressContext(prospect: Prospect): {
+/** Contexte parsé depuis l'adresse pour les requêtes api.gouv */
+export interface AddressSearchContext {
   name: string | null;
   commune: string | null;
   codePostal: string | null;
   streetSegment: string | null;
   zacSegment: string | null;
-} {
-  const name = prospect.name?.trim() || null;
-  const address = prospect.address?.trim() || "";
-  const codePostal = address ? extractCodePostal(address) : null;
-  const segments = address ? address.split(",").map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/**
+ * Parse nom + adresse pour construire les requêtes (partagé avec find-local-siren).
+ */
+export function parseAddressSearchContext(
+  name: string | null | undefined,
+  address: string | null | undefined
+): AddressSearchContext {
+  const n = name?.trim() || null;
+  const addressStr = address?.trim() || "";
+  const codePostal = addressStr ? extractCodePostal(addressStr) : null;
+  const segments = addressStr ? addressStr.split(",").map((s) => s.trim()).filter(Boolean) : [];
 
   const segmentWithCp = codePostal ? segments.find((s) => s.includes(codePostal)) : null;
   const commune = segmentWithCp
@@ -46,28 +53,25 @@ function parseAddressContext(prospect: Prospect): {
     ? segmentWithZac.replace(/\bde\s+/i, " ").trim()
     : null;
 
-  return { name, commune, codePostal, streetSegment, zacSegment };
+  return { name: n, commune, codePostal, streetSegment, zacSegment };
 }
 
 /**
- * Stratégie en 4 étapes (ordre de fallback) :
- * 1. NOM + VILLE/CP     "La Halle" Langueux 22360
- * 2. NOM + VILLE        "La Halle" Langueux
- * 3. RUE + VILLE/CP     "6 Rue Freyssinet" Langueux 22360
- * 4. ZAC + VILLE        "Zac Douvenant" Langueux
+ * Liste courte priorisée (adresse d'abord, puis nom) — au plus quelques entrées.
+ * Ordre : RUE+commune+CP → NOM+commune+CP → NOM+commune → ZAC+commune.
  */
-export function buildSearchQuerySteps(prospect: Prospect): string[] {
-  const { name, commune, codePostal, streetSegment, zacSegment } = parseAddressContext(prospect);
+export function buildPrioritizedSearchQueries(ctx: AddressSearchContext): string[] {
+  const { name, commune, codePostal, streetSegment, zacSegment } = ctx;
   const steps: string[] = [];
 
+  if (streetSegment && commune && codePostal) {
+    steps.push(`"${streetSegment}" ${commune} ${codePostal}`);
+  }
   if (name && commune && codePostal) {
     steps.push(`"${name}" ${commune} ${codePostal}`);
   }
   if (name && commune) {
     steps.push(`"${name}" ${commune}`);
-  }
-  if (streetSegment && commune && codePostal) {
-    steps.push(`"${streetSegment}" ${commune} ${codePostal}`);
   }
   if (zacSegment && commune) {
     steps.push(`"${zacSegment}" ${commune}`);
@@ -77,10 +81,21 @@ export function buildSearchQuerySteps(prospect: Prospect): string[] {
 }
 
 /**
+ * @deprecated Utiliser buildPrioritizedSearchQueries(parseAddressSearchContext(...))
+ */
+export function buildSearchQuerySteps(prospect: Prospect): string[] {
+  return buildPrioritizedSearchQueries(
+    parseAddressSearchContext(prospect.name, prospect.address)
+  );
+}
+
+/**
  * Une requête simple (compatibilité affichage "pour test") : premier step non vide.
  */
 export function buildSearchQuery(prospect: Prospect): string {
-  const steps = buildSearchQuerySteps(prospect);
+  const steps = buildPrioritizedSearchQueries(
+    parseAddressSearchContext(prospect.name, prospect.address)
+  );
   return steps[0] ?? prospect.name?.trim() ?? prospect.address?.trim() ?? "";
 }
 
@@ -91,6 +106,8 @@ export function buildApiGouvSearchUrl(q: string): string {
   return `${API_GOUV_SEARCH_BASE}?q=${encodeURIComponent(q)}`;
 }
 
+const DEFAULT_PER_PAGE = "20";
+
 /** Appel interne : un seul GET avec q (et optionnellement name pour Fuse côté route). */
 async function fetchStep(
   q: string,
@@ -98,6 +115,7 @@ async function fetchStep(
 ): Promise<EnrichmentResult | null> {
   const params = new URLSearchParams({ q });
   if (poiName) params.set("name", poiName);
+  params.set("per_page", DEFAULT_PER_PAGE);
   const res = await fetch(`/api/recherche-entreprises?${params.toString()}`);
   if (!res.ok) return null;
   const data = await res.json();
@@ -111,14 +129,15 @@ export interface FetchCompanyEnrichmentResult {
 }
 
 /**
- * Appelle la route API en 4 étapes (NOM+CP, NOM, RUE+CP, ZAC+ville).
- * À chaque étape, la route utilise Fuse.js pour choisir le résultat qui correspond au nom du POI.
- * Retourne l’enrichissement et la requête gagnante (pour afficher l’URL api.gouv directe).
+ * Appelle la route API en suivant la liste prioritaire (au plus 2–4 tentatives,
+ * s’arrête au premier résultat).
  */
 export async function fetchCompanyEnrichment(
   prospect: Prospect
 ): Promise<FetchCompanyEnrichmentResult> {
-  const steps = buildSearchQuerySteps(prospect);
+  const steps = buildPrioritizedSearchQueries(
+    parseAddressSearchContext(prospect.name, prospect.address)
+  );
   const poiName = prospect.name?.trim() || null;
 
   for (const q of steps) {

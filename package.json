@@ -11,9 +11,14 @@
     "lint": "next lint",
     "playwright:install": "playwright install chromium",
     "init-energy-data": "tsx scripts/init-energy-data.ts",
-    "update-hourly-consumption": "tsx scripts/update-hourly-consumption-firebase.ts"
+    "update-hourly-consumption": "tsx scripts/update-hourly-consumption-firebase.ts",
+    "test:apicarto": "node scripts/test-apicarto-cadastre.mjs",
+    "enrich:dep33": "node scripts/enrich-sitadel-dep33-apicarto.mjs",
+    "enrich:by-commune": "node scripts/enrich-sitadel-by-commune.mjs",
+    "enrich:by-department": "node scripts/enrich-sitadel-by-department.mjs"
   },
   "dependencies": {
+    "@googlemaps/markerclusterer": "^2.6.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-aspect-ratio": "^1.1.8",
@@ -55,6 +60,8 @@
     "lucide-react": "^0.427.0",
     "next": "^14.2.5",
     "next-themes": "^0.4.6",
+    "pg": "^8.20.0",
+    "pg-copy-streams": "^7.0.0",
     "playwright": "^1.49.0",
     "react": "^18.3.1",
     "react-day-picker": "^9.13.2",
@@ -71,6 +78,7 @@
     "@tailwindcss/postcss": "^4.2.1",
     "@types/google.maps": "^3.55.2",
     "@types/node": "^20.14.12",
+    "@types/pg": "^8.20.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.19",

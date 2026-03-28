@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, type ReactNode, type ComponentType } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode, type ComponentType } from "react";
 import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,8 +31,9 @@ import {
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
-import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar, Battery } from "lucide-react";
+import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar, Battery, ChevronLeft, ChevronRight } from "lucide-react";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
+import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 
 /** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
 const DEBUG_AUTOCONSO = false;
@@ -76,20 +77,34 @@ import {
   DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH,
   DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
 } from "@/lib/solar-settings";
-import { fetchCompanyEnrichment, buildApiGouvSearchUrl } from "@/lib/recherche-entreprises";
+import {
+  fetchCompanyEnrichment,
+  buildApiGouvSearchUrl,
+  type EnrichmentResult,
+} from "@/lib/recherche-entreprises";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { useAuth } from "@/lib/auth-context";
 import { getUserProfile } from "@/lib/firestore-user-profile";
+import { fetchWithAuth } from "@/lib/api-client";
+import { getPlaceDetailsNew } from "@/lib/places-new-api";
 import type { ScoredCandidate } from "@/lib/find-local-siren";
 import type { Prospect, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 
 /** Config des lignes données prospect : liste fixe, une entrée par ligne (skeleton / valeur / "No data"). */
+function websiteHref(raw: string): string {
+  const t = raw.trim();
+  if (!t) return "#";
+  if (/^https?:\/\//i.test(t)) return t;
+  return `https://${t}`;
+}
+
 const PROSPECT_DATA_ROWS: {
   label: string;
   icon: ComponentType<{ className?: string }>;
   getValue: (p: Prospect) => string | undefined;
   isBdnb: boolean;
   isPhone?: boolean;
+  isWebsite?: boolean;
 }[] = [
   { label: "SIREN", icon: Hash, getValue: (p) => p.siren ?? undefined, isBdnb: false },
   { label: "SIRET", icon: Hash, getValue: (p) => p.siret ?? undefined, isBdnb: false },
@@ -98,6 +113,13 @@ const PROSPECT_DATA_ROWS: {
   { label: "Code NAF", icon: Tag, getValue: (p) => p.companyNaf ?? undefined, isBdnb: false },
   { label: "Gérant", icon: User, getValue: (p) => p.companyManagerName ?? undefined, isBdnb: false },
   { label: "Téléphone", icon: Phone, getValue: (p) => (p.contact?.nationalPhoneNumber ?? p.contact?.internationalPhoneNumber) ?? undefined, isBdnb: false, isPhone: true },
+  {
+    label: "Site web",
+    icon: ExternalLink,
+    getValue: (p) => p.contact?.websiteUri ?? undefined,
+    isBdnb: false,
+    isWebsite: true,
+  },
   { label: "Année construction", icon: Calendar, getValue: (p) => (p.anneeConstruction != null ? String(p.anneeConstruction) : undefined), isBdnb: true },
 ];
 
@@ -120,10 +142,10 @@ function getPlaceTypeOptions(currentValue: string): { value: string; label: stri
   ];
 }
 
-/** Détermine le niveau de confiance basé sur le score (0-1000) */
+/** Détermine le niveau de confiance basé sur le score (0-1000), calibré après pondération adresse. */
 function getConfidenceLevel(score: number): "high" | "medium" | "low" {
-  if (score >= 700) return "high";
-  if (score >= 400) return "medium";
+  if (score >= 600) return "high";
+  if (score >= 350) return "medium";
   return "low";
 }
 
@@ -208,10 +230,25 @@ interface ProspectDrawerProps {
   onDrawingChange?: (isDrawing: boolean) => void;
   onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }>; orientation?: number }) => void;
   onSurfaceDelete?: (surfaceId: string) => void;
-  onProspectUpdate?: (prospect: Prospect) => void;
+  /** Patch fusionné dans le state parent (éviter `...prospect` depuis une closure async). */
+  onProspectUpdate?: (patch: Partial<Prospect>) => void;
   onValidateDrawing?: () => void;
   voirHref?: (prospectId: string) => string;
 }
+
+type NeonBdnbBatiment = {
+  id: string;
+  code_commune_insee: string | null;
+  annee_construction: number | null;
+  dpe_mix_arrete_classe: string | null;
+  nb_logements: number | null;
+  surface_habitable_logement: string | number | null;
+  usage_principal_bdnb_open: string | null;
+  geom_geojson_wgs84: string | null;
+  distance_m: number | null;
+};
+
+type NeonBdnbResponse = { batiment: NeonBdnbBatiment | null };
 
 export function ProspectDrawer({
   prospect,
@@ -252,74 +289,227 @@ export function ProspectDrawer({
   const [prospectDetailsOpen, setProspectDetailsOpen] = useState(false);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
   const { user } = useAuth();
+  const [neonBdnbLoading, setNeonBdnbLoading] = useState(false);
+  const [neonBdnbError, setNeonBdnbError] = useState<string | null>(null);
+  const [neonBdnb, setNeonBdnb] = useState<NeonBdnbBatiment | null>(null);
 
-  // Enrichissement entreprise (api.gouv) : une fois par prospect si pas déjà de SIREN (drawer ouvert)
-  useEffect(() => {
-    if (!isOpen || !prospect || !onProspectUpdate) return;
-    const hasQuery = !!(prospect.name?.trim() || prospect.address?.trim());
-    if (!hasQuery || prospect.siren) return;
+  /** Mis à true uniquement au clic sur Perfect fit / Highest production — resync batterie quand la cible kWh change. */
+  const pendingBatteryResyncAfterModeChangeRef = useRef(false);
 
-    let cancelled = false;
-    setCompanyEnrichmentLoading(true);
-    fetchCompanyEnrichment(prospect)
-      .then(({ enrichment, winningQuery }) => {
-        if (cancelled || !enrichment || !onProspectUpdate) return;
+  const handlePoiNavigate = useCallback(
+    async (delta: -1 | 1) => {
+      if (!onProspectUpdate || !prospect?.poiCandidates?.length) return;
+      const candidates = prospect.poiCandidates;
+      const n = candidates.length;
+      const idx = prospect.poiCandidateIndex ?? 0;
+      const next = idx + delta;
+      if (next < 0 || next >= n) return;
+      const c = candidates[next]!;
+      const poiCoordinates =
+        c.coordinates != null
+          ? { lat: c.coordinates.lat, lng: c.coordinates.lng }
+          : undefined;
+      const clearCompany: Partial<Prospect> = {
+        siren: undefined,
+        siret: undefined,
+        companyLegalName: undefined,
+        companyManagerName: undefined,
+        companyAddress: undefined,
+        companyNaf: undefined,
+        companyEnrichmentApiUrl: undefined,
+        companyPhone: undefined,
+      };
+      if (!c.placeId) {
         onProspectUpdate({
-          ...prospect,
-          siren: enrichment.siren ?? prospect.siren,
-          siret: enrichment.siret ?? prospect.siret,
-          companyLegalName: enrichment.companyLegalName ?? prospect.companyLegalName,
-          companyManagerName: enrichment.companyManagerName ?? prospect.companyManagerName,
-          companyAddress: enrichment.companyAddress ?? prospect.companyAddress,
-          companyNaf: enrichment.companyNaf ?? prospect.companyNaf,
-          companyEnrichmentApiUrl: winningQuery ? buildApiGouvSearchUrl(winningQuery) : undefined,
+          ...clearCompany,
+          name: c.name,
+          placeId: c.placeId,
+          poiCandidateIndex: next,
+          poiCoordinates,
         });
-      })
-      .finally(() => {
-        if (!cancelled) setCompanyEnrichmentLoading(false);
+        return;
+      }
+      const placeDetails = await getPlaceDetailsNew(c.placeId);
+      if (!placeDetails) {
+        onProspectUpdate({
+          ...clearCompany,
+          name: c.name,
+          placeId: c.placeId,
+          poiCandidateIndex: next,
+          poiCoordinates,
+        });
+        return;
+      }
+      const fullAddress = placeDetails.formattedAddress;
+      const displayName = placeDetails.displayName ?? c.name;
+      const placeType = (placeDetails.primaryTypeDisplayName ?? "other") as Prospect["placeType"];
+      const contact =
+        placeDetails.nationalPhoneNumber || placeDetails.internationalPhoneNumber
+          ? {
+              nationalPhoneNumber: placeDetails.nationalPhoneNumber ?? undefined,
+              internationalPhoneNumber: placeDetails.internationalPhoneNumber ?? undefined,
+              websiteUri: placeDetails.websiteURI ?? undefined,
+            }
+          : undefined;
+      onProspectUpdate({
+        ...clearCompany,
+        name: displayName,
+        placeId: c.placeId,
+        placeType,
+        poiCandidateIndex: next,
+        poiCoordinates,
+        contact,
+        ...(fullAddress != null ? { address: fullAddress } : {}),
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, prospect?.name, prospect?.address, prospect?.siren, onProspectUpdate]);
+    },
+    [onProspectUpdate, prospect]
+  );
 
-  // Scoring Phase 2 (find-local-siren) pour affichage sous le bloc API gouv
+  // Enrichissement api.gouv : un seul appel find-local-siren si GPS + nom + adresse, sinon recherche-entreprises (priorité rue).
   useEffect(() => {
     if (!isOpen || !prospect) {
       setPhase2Scoring(null);
       return;
     }
+    if (!onProspectUpdate) return;
+
+    const hasQuery = !!(prospect.name?.trim() || prospect.address?.trim());
+    if (!hasQuery || prospect.siren) return;
+
     const name = prospect.name?.trim();
     const address = prospect.address?.trim();
-    const coords = prospect.coordinates;
-    if (!name || !address || coords?.lat == null || coords?.lng == null) {
-      setPhase2Scoring(null);
-      return;
-    }
+    const lat = prospect.poiCoordinates?.lat ?? prospect.coordinates?.lat;
+    const lng = prospect.poiCoordinates?.lng ?? prospect.coordinates?.lng;
+    const canResolveLocal = !!(
+      name &&
+      address &&
+      lat != null &&
+      lng != null &&
+      Number.isFinite(lat) &&
+      Number.isFinite(lng)
+    );
+
     let cancelled = false;
-    setPhase2ScoringLoading(true);
+    setCompanyEnrichmentLoading(true);
+    setPhase2ScoringLoading(canResolveLocal);
     setPhase2Scoring(null);
-    const params = new URLSearchParams({
-      poiName: name,
-      address,
-      lat: String(coords.lat),
-      lon: String(coords.lng),
-      debug: "1",
-    });
-    fetch(`/api/find-local-siren?${params.toString()}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled || !data.phase2Scoring) return;
-        setPhase2Scoring(data.phase2Scoring);
-      })
+
+    const applyEnrichment = (enrichment: EnrichmentResult, winningQuery: string | null) => {
+      if (cancelled || !onProspectUpdate) return;
+      logPolygonDrawer("drawer:applyEnrichment", {
+        closureSurfaces: prospect.roofSurfaces?.length ?? 0,
+        closureRoofArea: prospect.roofSurface?.area,
+        siren: enrichment.siren,
+      });
+      // Ne pas spread `prospect` : la closure peut être périmée et réécraser adresse / POI.
+      onProspectUpdate({
+        siren: enrichment.siren ?? prospect.siren,
+        siret: enrichment.siret ?? prospect.siret,
+        companyLegalName: enrichment.companyLegalName ?? prospect.companyLegalName,
+        companyManagerName: enrichment.companyManagerName ?? prospect.companyManagerName,
+        companyAddress: enrichment.companyAddress ?? prospect.companyAddress,
+        companyNaf: enrichment.companyNaf ?? prospect.companyNaf,
+        companyEnrichmentApiUrl: winningQuery ? buildApiGouvSearchUrl(winningQuery) : undefined,
+      });
+    };
+
+    const run = async () => {
+      if (canResolveLocal) {
+        const params = new URLSearchParams({
+          poiName: name!,
+          address: address!,
+          lat: String(lat!),
+          lon: String(lng!),
+        });
+        const res = await fetch(`/api/find-local-siren?${params.toString()}`);
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          enrichment: EnrichmentResult | null;
+          winningQuery: string | null;
+          phase2Scoring: ScoredCandidate[] | null;
+        };
+        if (cancelled) return;
+        if (data.enrichment) {
+          applyEnrichment(data.enrichment, data.winningQuery ?? null);
+        }
+        setPhase2Scoring(data.phase2Scoring ?? null);
+        return;
+      }
+
+      const { enrichment, winningQuery } = await fetchCompanyEnrichment(prospect);
+      if (cancelled || !enrichment) return;
+      applyEnrichment(enrichment, winningQuery);
+      setPhase2Scoring(null);
+    };
+
+    run()
       .catch(() => {})
       .finally(() => {
-        if (!cancelled) setPhase2ScoringLoading(false);
+        if (!cancelled) {
+          setCompanyEnrichmentLoading(false);
+          setPhase2ScoringLoading(false);
+        }
       });
+
     return () => {
       cancelled = true;
     };
-  }, [isOpen, prospect?.name, prospect?.address, prospect?.coordinates?.lat, prospect?.coordinates?.lng]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- prospect utilisé dans applyEnrichment ; deps granulaires pour éviter re-fetch inutile
+  }, [
+    isOpen,
+    prospect?.id,
+    prospect?.name,
+    prospect?.address,
+    prospect?.siren,
+    prospect?.coordinates?.lat,
+    prospect?.coordinates?.lng,
+    prospect?.poiCoordinates?.lat,
+    prospect?.poiCoordinates?.lng,
+    prospect?.placeId,
+    prospect?.poiCandidateIndex,
+    onProspectUpdate,
+  ]);
+
+  // Test BDNB depuis Neon (lookup nearest par coordonnées)
+  useEffect(() => {
+    if (!isOpen || !prospect?.coordinates?.lat || !prospect?.coordinates?.lng) {
+      setNeonBdnb(null);
+      setNeonBdnbError(null);
+      setNeonBdnbLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setNeonBdnbLoading(true);
+    setNeonBdnbError(null);
+
+    const run = async () => {
+      const url = `/api/bdnb-neon?lat=${encodeURIComponent(String(prospect.coordinates.lat))}&lng=${encodeURIComponent(
+        String(prospect.coordinates.lng)
+      )}`;
+      const res = await fetchWithAuth(url);
+      if (cancelled) return;
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(json?.error || `Erreur ${res.status}`);
+      }
+      const data = (await res.json()) as NeonBdnbResponse;
+      if (cancelled) return;
+      setNeonBdnb(data?.batiment ?? null);
+    };
+
+    run()
+      .catch((e) => {
+        if (!cancelled) setNeonBdnbError(e instanceof Error ? e.message : "Erreur Neon inconnue");
+      })
+      .finally(() => {
+        if (!cancelled) setNeonBdnbLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, prospect?.coordinates?.lat, prospect?.coordinates?.lng]);
 
   const { data: panelsData } = usePanelReferences(user?.uid ?? null);
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
@@ -349,17 +539,33 @@ export function ProspectDrawer({
     setUsedInverterRef(byId ?? recommended ?? visibleInverters[0] ?? null);
   }, [invertersData, prospect?.inverterReferenceId]);
 
-  // Mettre à jour l'adresse et le mode de config quand le prospect change
+  // Adresse : suivre le prospect courant
   useEffect(() => {
     if (prospect?.address) {
       setAddress(prospect.address);
     }
-    if (prospect?.configurationMode) {
+  }, [prospect?.address]);
+
+  // Mode Perfect fit / Highest production : ne dépendre que de l'id et du champ persisté.
+  // Avant : [prospect] réexécutait l'effet à chaque merge (batterie, PVGIS…) et le `else` forçait
+  // "highest_production" quand configurationMode était encore absent du document — les boutons ne suivaient pas le clic.
+  useEffect(() => {
+    if (!isOpen || !prospect) return;
+    if (prospect.configurationMode) {
       setConfigurationMode(prospect.configurationMode);
     } else {
       setConfigurationMode("highest_production");
     }
-  }, [prospect]);
+  }, [isOpen, prospect?.id, prospect?.configurationMode]);
+
+  useEffect(() => {
+    logPolygonDrawer("drawer:prospect-sync", {
+      isOpen,
+      roofSurfacesCount: prospect?.roofSurfaces?.length ?? 0,
+      roofSurfaceArea: prospect?.roofSurface?.area,
+      addressPreview: prospect?.address?.slice(0, 36),
+    });
+  }, [prospect, isOpen]);
 
   // Clé stable : inclure la surface pour re-fetcher quand elle change (données PVGIS dépendent du kWp)
   const totalAreaForKey =
@@ -445,10 +651,12 @@ export function ProspectDrawer({
           maxArrayPanelsCount: prospect.solarPotential?.maxArrayPanelsCount || 0,
         };
 
-        onProspectUpdate({
-          ...prospect,
-          solarPotential: updatedSolarPotential,
+        logPolygonDrawer("drawer:pvgis-complete", {
+          closureSurfaces: prospect.roofSurfaces?.length ?? 0,
+          closureRoofArea: prospect.roofSurface?.area,
         });
+        // Uniquement solarPotential : le `prospect` de cette closure peut dater d'avant geocode/POI.
+        onProspectUpdate({ solarPotential: updatedSolarPotential });
       } catch (error) {
         console.error("Erreur lors de la récupération des données PVGIS:", error);
         setPvgisError(
@@ -608,7 +816,7 @@ export function ProspectDrawer({
         commercialReferent,
       });
       if (onProspectUpdate) {
-        onProspectUpdate({ ...prospect, shareToken, commercialReferent });
+        onProspectUpdate({ shareToken, commercialReferent });
       }
       const url = `${typeof window !== "undefined" ? window.location.origin : ""}/p/${shareToken}`;
       await navigator.clipboard.writeText(url);
@@ -816,9 +1024,13 @@ export function ProspectDrawer({
     }
   }, [recommendedBatteryKwh, recommendedBatteryComposition]);
 
+  useEffect(() => {
+    pendingBatteryResyncAfterModeChangeRef.current = false;
+  }, [prospect?.id]);
+
   // Batterie : toujours une ref issue de batteriesData. Par défaut : choix prospect → composition recommandée → premier avec flag recommandé → premier de la liste.
-  // Si le prospect a un batteryCount persisté, il prime ; sinon on suit la composition recommandée quand elle arrive
-  // (ex. après chargement des batteries / PVGIS) pour que le badge « recommandé » et les simulations soient cohérents.
+  // Après clic Perfect fit / Highest production : réaligner modèle + nombre sur recommendedBatteryComposition (y compris quand PVGIS / composition arrive après le clic).
+  // Si le prospect a un batteryCount persisté, il prime sinon ; hors resync explicite au changement de mode.
   useEffect(() => {
     if (!isOpen || !prospect) return;
     const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
@@ -827,6 +1039,20 @@ export function ProspectDrawer({
       setBatteryCount(1);
       return;
     }
+
+    if (pendingBatteryResyncAfterModeChangeRef.current && recommendedBatteryComposition != null) {
+      const { model, count } = recommendedBatteryComposition;
+      setUsedBatteryRef(model);
+      setBatteryCount(count);
+      pendingBatteryResyncAfterModeChangeRef.current = false;
+      // Patch partiel uniquement : ne pas spread `prospect` (closure périmée → réécrase configurationMode après clic mode).
+      onProspectUpdate?.({
+        batteryReferenceId: model.id,
+        batteryCount: count,
+      });
+      return;
+    }
+
     const byId = prospect.batteryReferenceId ? visibleBatteries.find((r) => r.id === prospect.batteryReferenceId) : null;
     const chosen =
       byId ??
@@ -837,7 +1063,7 @@ export function ProspectDrawer({
     const countFromProspect = prospect.batteryCount != null && prospect.batteryCount >= 1 ? prospect.batteryCount : null;
     const countFromRec = recommendedBatteryComposition?.model?.id === chosen?.id ? recommendedBatteryComposition.count : null;
     setBatteryCount(countFromProspect ?? countFromRec ?? 1);
-  }, [isOpen, batteriesData, prospect?.batteryReferenceId, prospect?.batteryCount, prospect?.id, recommendedBatteryComposition]);
+  }, [isOpen, batteriesData, prospect, recommendedBatteryComposition, configurationMode, onProspectUpdate]);
 
   /** Nombre max d'onduleurs recommandé ; au-delà, le modèle n'est pas adapté */
   const MAX_INVERTER_COUNT = 8;
@@ -1090,9 +1316,44 @@ export function ProspectDrawer({
                     </div>
                     <div className="space-y-0 [&>p]:m-0 [&>p]:leading-tight">
                     {prospect.name && (
-                      <p className="text-xl font-medium truncate" title={prospect.name}>
-                        {prospect.name}
-                      </p>
+                      <div className="flex items-center gap-1 min-w-0">
+                        <p className="text-xl font-medium truncate flex-1 min-w-0" title={prospect.name}>
+                          {prospect.name}
+                        </p>
+                        {prospect.poiCandidates && prospect.poiCandidates.length > 1 && onProspectUpdate && (
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
+                              disabled={
+                                companyEnrichmentLoading || (prospect.poiCandidateIndex ?? 0) <= 0
+                              }
+                              onClick={() => void handlePoiNavigate(-1)}
+                              aria-label="POI précédent"
+                              title="POI précédent"
+                            >
+                              <ChevronLeft className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
+                              disabled={
+                                companyEnrichmentLoading ||
+                                (prospect.poiCandidateIndex ?? 0) >= prospect.poiCandidates.length - 1
+                              }
+                              onClick={() => void handlePoiNavigate(1)}
+                              aria-label="POI suivant"
+                              title="POI suivant"
+                            >
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
                     )}
                     {prospect.address && (
                       <p className="text-xs text-white/80 truncate" title={prospect.address}>
@@ -1112,7 +1373,7 @@ export function ProspectDrawer({
                           value={prospect.placeType}
                           onValueChange={(value) => {
                             if (onProspectUpdate) {
-                              onProspectUpdate({ ...prospect, placeType: value });
+                              onProspectUpdate({ placeType: value });
                             }
                           }}
                           disabled={!onProspectUpdate}
@@ -1161,6 +1422,16 @@ export function ProspectDrawer({
                             ) : value ? (
                               row.isPhone ? (
                                 <a href={`tel:${value.replace(/\s/g, "")}`} className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline" title={value}>{value}</a>
+                              ) : row.isWebsite ? (
+                                <a
+                                  href={websiteHref(value)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline inline-flex items-center gap-1"
+                                  title={value}
+                                >
+                                  <span className="truncate">{value}</span>
+                                </a>
                               ) : (
                                 <span className={`truncate min-w-0 flex-1 text-left pl-1 ${row.label === "SIREN" || row.label === "SIRET" || row.label === "Code NAF" ? "font-mono text-white" : "text-white"}`} title={value}>{value}</span>
                               )
@@ -1211,7 +1482,6 @@ export function ProspectDrawer({
                                           onClick={() => {
                                             if (onProspectUpdate && prospect) {
                                               onProspectUpdate({
-                                                ...prospect,
                                                 siren: p.siren,
                                                 siret: p.siret,
                                                 companyLegalName: p.nom_complet,
@@ -1253,6 +1523,77 @@ export function ProspectDrawer({
                 </CardContent>
               </Card>
 
+              {/* Test: données BDNB depuis Neon */}
+              <Card className="bg-black border-0 text-white overflow-hidden rounded-xl">
+                <CardContent className="py-3 px-4">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="text-[10px] uppercase tracking-wide text-white/70">From Neon (test)</span>
+                    {neonBdnbLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-white/70" />}
+                  </div>
+
+                  {neonBdnbError ? (
+                    <div className="text-xs text-red-200 break-words">
+                      Erreur: {neonBdnbError}
+                    </div>
+                  ) : neonBdnbLoading ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-3.5 w-40 bg-white/20" />
+                      <Skeleton className="h-3.5 w-64 bg-white/20" />
+                      <Skeleton className="h-16 w-full bg-white/20" />
+                    </div>
+                  ) : neonBdnb ? (
+                    <div className="space-y-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-white/80">
+                        <span className="font-mono text-white">id: {neonBdnb.id}</span>
+                        <span>dist: {neonBdnb.distance_m != null ? `${Math.round(neonBdnb.distance_m)} m` : "—"}</span>
+                        <span>commune: {neonBdnb.code_commune_insee ?? "—"}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-white/70">
+                        <div>Année: <span className="text-white/90">{neonBdnb.annee_construction ?? "—"}</span></div>
+                        <div>DPE: <span className="text-white/90">{neonBdnb.dpe_mix_arrete_classe ?? "—"}</span></div>
+                        <div>Logements: <span className="text-white/90">{neonBdnb.nb_logements ?? "—"}</span></div>
+                        <div>Surf hab: <span className="text-white/90">{neonBdnb.surface_habitable_logement ?? "—"}</span></div>
+                        <div className="col-span-2">Usage: <span className="text-white/90">{neonBdnb.usage_principal_bdnb_open ?? "—"}</span></div>
+                      </div>
+
+                      <div className="pt-1">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-[10px] uppercase tracking-wide text-white/60">GeoJSON (WGS84)</span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-[10px] bg-white/0 border-white/20 text-white/80 hover:bg-white/10 hover:text-white"
+                            onClick={async () => {
+                              const g = neonBdnb.geom_geojson_wgs84;
+                              if (!g) return;
+                              try {
+                                await navigator.clipboard.writeText(g);
+                                toast.success("GeoJSON copié");
+                              } catch {
+                                toast.error("Impossible de copier");
+                              }
+                            }}
+                            disabled={!neonBdnb.geom_geojson_wgs84}
+                            title={neonBdnb.geom_geojson_wgs84 ? "Copier GeoJSON" : "Aucune géométrie"}
+                          >
+                            Copier
+                          </Button>
+                        </div>
+                        <pre className="max-h-28 overflow-auto rounded-md bg-white/10 p-2 text-[10px] leading-snug text-white/80 whitespace-pre-wrap break-words">
+                          {(neonBdnb.geom_geojson_wgs84 ?? "—").slice(0, 800)}
+                          {(neonBdnb.geom_geojson_wgs84 && neonBdnb.geom_geojson_wgs84.length > 800) ? "\n…(tronqué)" : ""}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-white/60">
+                      Aucun bâtiment trouvé (base Neon limitée à Bordeaux pour l’instant).
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
               <Dialog open={prospectDetailsOpen} onOpenChange={setProspectDetailsOpen}>
                 <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col p-0 bg-black border-0 [&>button]:text-white [&>button]:right-4 [&>button]:top-4 hover:[&>button]:bg-white/10 hover:[&>button]:text-white">
                   <DialogHeader className="px-4 md:px-5 pt-4 md:pt-5 pb-2">
@@ -1263,7 +1604,44 @@ export function ProspectDrawer({
                   <div className="flex-1 overflow-y-auto px-4 md:px-5 pb-4 md:pb-5 space-y-4">
                     <div className="space-y-0 [&>p]:m-0 [&>p]:leading-tight">
                       {prospect.name && (
-                        <p className="text-xl font-medium text-white" title={prospect.name}>{prospect.name}</p>
+                        <div className="flex items-center gap-1 min-w-0">
+                          <p className="text-xl font-medium text-white truncate flex-1 min-w-0" title={prospect.name}>
+                            {prospect.name}
+                          </p>
+                          {prospect.poiCandidates && prospect.poiCandidates.length > 1 && onProspectUpdate && (
+                            <div className="flex shrink-0 items-center gap-0.5">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
+                                disabled={
+                                  companyEnrichmentLoading || (prospect.poiCandidateIndex ?? 0) <= 0
+                                }
+                                onClick={() => void handlePoiNavigate(-1)}
+                                aria-label="POI précédent"
+                                title="POI précédent"
+                              >
+                                <ChevronLeft className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
+                                disabled={
+                                  companyEnrichmentLoading ||
+                                  (prospect.poiCandidateIndex ?? 0) >= prospect.poiCandidates.length - 1
+                                }
+                                onClick={() => void handlePoiNavigate(1)}
+                                aria-label="POI suivant"
+                                title="POI suivant"
+                              >
+                                <ChevronRight className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          )}
+                        </div>
                       )}
                       {prospect.address && (
                         <p className="text-sm text-white/80 mt-1 wrap-break-word" title={prospect.address}>{prospect.address}</p>
@@ -1293,7 +1671,7 @@ export function ProspectDrawer({
                         <span className="text-sm text-white">{prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}</span>
                       </div>
                     </div>
-                    {(prospect.siren || prospect.companyLegalName || prospect.companyManagerName || prospect.companyAddress || prospect.companyNaf || prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber) && (
+                    {(prospect.siren || prospect.companyLegalName || prospect.companyManagerName || prospect.companyAddress || prospect.companyNaf || prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber || prospect.contact?.websiteUri) && (
                       <div className="space-y-3 text-sm">
                         <div className="text-[10px] uppercase tracking-wide text-white/60">Entreprise</div>
                         <div className="space-y-2">
@@ -1319,6 +1697,20 @@ export function ProspectDrawer({
                             <div className="flex gap-3">
                               <span className="text-white/70 w-24 shrink-0">Téléphone</span>
                               <a href={`tel:${(prospect.contact?.internationalPhoneNumber || prospect.contact?.nationalPhoneNumber || "").replace(/\s/g, "")}`} className="text-white hover:underline">{prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber}</a>
+                            </div>
+                          )}
+                          {prospect.contact?.websiteUri && (
+                            <div className="flex gap-3 min-w-0">
+                              <span className="text-white/70 w-24 shrink-0">Site web</span>
+                              <a
+                                href={websiteHref(prospect.contact.websiteUri)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-white hover:underline truncate min-w-0"
+                                title={prospect.contact.websiteUri}
+                              >
+                                {prospect.contact.websiteUri}
+                              </a>
                             </div>
                           )}
                         </div>
@@ -1412,7 +1804,6 @@ export function ProspectDrawer({
                                     const totalArea = updatedSurfaces.reduce((sum, s) => sum + s.area, 0);
                                     
                                     onProspectUpdate({
-                                      ...prospect,
                                       roofSurfaces: updatedSurfaces,
                                       roofSurface: updatedSurfaces.length > 0 
                                         ? updatedSurfaces[0] 
@@ -1468,9 +1859,10 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => {
+                      pendingBatteryResyncAfterModeChangeRef.current = true;
                       setConfigurationMode("perfect_fit");
                       if (prospect && onProspectUpdate) {
-                        onProspectUpdate({ ...prospect, configurationMode: "perfect_fit" });
+                        onProspectUpdate({ configurationMode: "perfect_fit" });
                       }
                     }}
                     className={`cursor-pointer rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
@@ -1497,9 +1889,10 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => {
+                      pendingBatteryResyncAfterModeChangeRef.current = true;
                       setConfigurationMode("highest_production");
                       if (prospect && onProspectUpdate) {
-                        onProspectUpdate({ ...prospect, configurationMode: "highest_production" });
+                        onProspectUpdate({ configurationMode: "highest_production" });
                       }
                     }}
                     className={`cursor-pointer rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
@@ -1645,7 +2038,7 @@ export function ProspectDrawer({
                         checked={prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true}
                         onCheckedChange={(checked) => {
                           if (onProspectUpdate) {
-                            onProspectUpdate({ ...prospect, includeBatteryOverride: checked });
+                            onProspectUpdate({ includeBatteryOverride: checked });
                           }
                         }}
                       />
@@ -1937,14 +2330,14 @@ export function ProspectDrawer({
                                   const clampedCount = b ? Math.min(maxForNew, Math.max(1, batteryCount)) : 1;
                                   setBatteryCount(clampedCount);
                                   if (b && prospect && onProspectUpdate) {
-                                    onProspectUpdate({ ...prospect, batteryReferenceId: b.id, batteryCount: clampedCount });
+                                    onProspectUpdate({ batteryReferenceId: b.id, batteryCount: clampedCount });
                                   }
                                 }}
                                 count={batteryCount}
                                 onCountChange={(n) => {
                                   setBatteryCount(n);
                                   if (prospect && onProspectUpdate) {
-                                    onProspectUpdate({ ...prospect, batteryCount: n });
+                                    onProspectUpdate({ batteryCount: n });
                                   }
                                 }}
                                 maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}

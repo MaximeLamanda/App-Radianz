@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { MarkerClusterer } from "@googlemaps/markerclusterer";
 import { useOsmBuildings, type MapBounds, type OsmBuildingDisplay } from "@/lib/swr-hooks";
 import { fetchWithAuth } from "@/lib/api-client";
+import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 import { loadProspectSurfaces } from "@/lib/prospect-storage";
 import { getProspectByPlaceId } from "@/lib/firestore";
 import { loadMapPosition, saveMapPosition, getDefaultMapPosition } from "@/lib/map-position-storage";
@@ -64,7 +66,7 @@ function createValidationButtonOverlay() {
 }
 import { convertPlaceType, extractContact } from "@/lib/places";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
-import { searchPoiForPolygon, findNearestOsmBuildingToPoint } from "@/lib/poi-near-polygon";
+import { listPoisNearPolygon, findNearestOsmBuildingToPoint } from "@/lib/poi-near-polygon";
 import { toast } from "sonner";
 
 interface MapComponentProps {
@@ -94,6 +96,30 @@ interface MapComponentProps {
   onOsmEnrichmentChange?: (enriching: boolean) => void;
   /** Plage de surface (m²) pour filtrer l'affichage des bâtiments OSM (atténuation hors plage) */
   surfaceRange?: { min: number; max: number } | null;
+  onViewBoundsChange?: (bounds: MapBounds | null) => void;
+  /** Incrémenté pour recentrer la carte sur la position enregistrée (fermeture de la recherche bâtiments) */
+  mapViewResetKey?: number;
+  permisOpportunities?: Array<{
+    id: number;
+    lat: number;
+    lng: number;
+    num_permis: string | null;
+    comm: string | null;
+    surf_loc: number | null;
+    dest_loc: string | null;
+    nature_projet: string | null;
+    date_reelle_auth: string | null;
+    date_doc: string | null;
+    date_ouverture_chantier: string | null;
+    date_achevement_travaux: string | null;
+    annee_source: number | null;
+    ape_dem?: string | null;
+    cj_dem?: string | null;
+    denom_dem?: string | null;
+    siren_dem?: string | null;
+    siret_dem?: string | null;
+  }>;
+  showPermisLayer?: boolean;
 }
 
 export function MapComponent({
@@ -117,12 +143,20 @@ export function MapComponent({
   onOsmPolygonClick,
   onOsmEnrichmentChange,
   surfaceRange = null,
+  onViewBoundsChange,
+  mapViewResetKey = 0,
+  permisOpportunities = [],
+  showPermisLayer = false,
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
   const polygonRef = useRef<google.maps.Polygon | null>(null);
   const searchMarkersRef = useRef<google.maps.Marker[]>([]);
+  const permisMarkersRef = useRef<google.maps.Marker[]>([]);
+  const permisClusterRef = useRef<MarkerClusterer | null>(null);
+  const permisInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const clusterIconCacheRef = useRef<Map<number, string>>(new Map());
   const isFocusingOnResultRef = useRef<boolean>(false);
   const [validationButtonPosition, setValidationButtonPosition] = useState<{ lat: number; lng: number } | null>(null);
   const validationOverlayRef = useRef<google.maps.OverlayView | null>(null);
@@ -242,8 +276,7 @@ export function MapComponent({
       const getBounds = (): MapBounds | null => {
         if (!mapInstanceRef.current) return null;
         const bounds = mapInstanceRef.current.getBounds();
-        const zoom = mapInstanceRef.current.getZoom() ?? 0;
-        if (!bounds || zoom < 16) return null;
+        if (!bounds) return null;
         const ne = bounds.getNorthEast();
         const sw = bounds.getSouthWest();
         if (!ne || !sw) return null;
@@ -321,8 +354,7 @@ export function MapComponent({
         if (boundsDebounceRef.current) clearTimeout(boundsDebounceRef.current);
         boundsDebounceRef.current = setTimeout(() => {
           const bounds = map.getBounds();
-          const zoom = map.getZoom() ?? 0;
-          if (zoom >= 16 && bounds) {
+          if (bounds) {
             const ne = bounds.getNorthEast();
             const sw = bounds.getSouthWest();
             const latSw = sw?.lat?.() ?? NaN;
@@ -346,15 +378,18 @@ export function MapComponent({
             const key = `${q(latSw)},${q(lngSw)},${q(latNe)},${q(lngNe)}`;
             if (lastQuantizedKeyRef.current !== key) {
               lastQuantizedKeyRef.current = key;
-              setViewBounds({
+              const nextBounds = {
                 ne: { lat: latNe, lng: lngNe },
                 sw: { lat: latSw, lng: lngSw },
-              });
+              };
+              setViewBounds(nextBounds);
+              onViewBoundsChange?.(nextBounds);
             }
           } else {
             if (lastQuantizedKeyRef.current !== null) {
               lastQuantizedKeyRef.current = null;
               setViewBounds(null);
+              onViewBoundsChange?.(null);
             }
           }
           boundsDebounceRef.current = null;
@@ -829,6 +864,9 @@ export function MapComponent({
       qualityScore: totalAreaMinimal > 0 ? Math.min(100, 10 + Math.floor(totalAreaMinimal / 50)) : 10,
       name: undefined,
       placeId: undefined,
+      poiCandidates: undefined,
+      poiCandidateIndex: undefined,
+      poiCoordinates: undefined,
       contact: undefined,
       anneeConstruction: undefined,
       // Réinitialiser les champs data gouv pour que l'enrichissement se relance sur le nouveau bâtiment
@@ -846,6 +884,12 @@ export function MapComponent({
       batteryCount: undefined,
     };
     onProspectUpdateRef.current(minimalProspect);
+    logPolygonDrawer("osm-click:minimalProspect", {
+      clickId: myClickId,
+      osmId: osmBuilding.id,
+      surfacesCount: roofSurfacesMinimal.length,
+      totalArea: totalAreaMinimal,
+    });
 
     const geocodePromise = new Promise<string>((resolve) => {
       const geocoder = new maps.Geocoder();
@@ -863,7 +907,7 @@ export function MapComponent({
       .then((data) => (data?.batiment?.anneeConstruction != null ? data.batiment.anneeConstruction : undefined))
       .catch(() => undefined);
 
-    const poiPromise = searchPoiForPolygon(centroid, firstSurf.polygon).catch(() => null);
+    const poiPromise = listPoisNearPolygon(centroid, firstSurf.polygon).catch(() => []);
 
     const roofSurfacesForMerge: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
       id: `${osmBuilding.id}-${i}`,
@@ -877,6 +921,7 @@ export function MapComponent({
     geocodePromise
       .then((address) => {
         if (myClickId !== osmClickIdRef.current) return;
+        logPolygonDrawer("osm-click:geocode", { clickId: myClickId, addressPreview: address?.slice(0, 48) });
         onProspectUpdateRef.current({ address } as Prospect);
       })
       .catch((err) => {
@@ -887,6 +932,7 @@ export function MapComponent({
     bdnbPromise
       .then((anneeConstruction) => {
         if (myClickId !== osmClickIdRef.current) return;
+        logPolygonDrawer("osm-click:bdnb-year", { clickId: myClickId, anneeConstruction });
         onProspectUpdateRef.current({ anneeConstruction: anneeConstruction ?? undefined } as Prospect);
       })
       .catch((err) => {
@@ -900,15 +946,28 @@ export function MapComponent({
 
     // POI : nom, adresse, type, contact, etc. dès que disponible (en parallèle avec BDNB et geocode)
     poiPromise
-      .then((poi) => {
+      .then((pois) => {
         if (myClickId !== osmClickIdRef.current) return null;
+        const poi = pois[0];
+        const poiCandidates = pois.length > 0 ? pois : undefined;
+        const poiCandidateIndex = poiCandidates && poiCandidates.length > 0 ? 0 : undefined;
+        const poiCoordinates =
+          poi?.coordinates != null
+            ? { lat: poi.coordinates.lat, lng: poi.coordinates.lng }
+            : undefined;
         if (!poi?.placeId) {
-          if (poi?.name) onProspectUpdateRef.current({ name: poi.name } as Prospect);
+          if (poi?.name) {
+            onProspectUpdateRef.current({
+              name: poi.name,
+              poiCandidates,
+              poiCandidateIndex,
+              poiCoordinates,
+            } as Prospect);
+          }
           return null;
         }
         return getPlaceDetailsNew(poi.placeId).then((placeDetails) => {
           if (myClickId !== osmClickIdRef.current) return null;
-          const coords = poi.coordinates ?? centroid;
           const fullAddress = placeDetails?.formattedAddress;
           const displayName = placeDetails?.displayName ?? poi.name;
           const placeType = (placeDetails?.primaryTypeDisplayName ?? "other") as Prospect["placeType"];
@@ -923,11 +982,13 @@ export function MapComponent({
           const qualityScore = totalAreaForMerge > 0 ? Math.min(100, 10 + Math.floor(totalAreaForMerge / 50)) : 10;
           const update: Partial<Prospect> = {
             name: displayName,
-            coordinates: coords,
             placeId: poi.placeId,
             placeType,
             qualityScore,
             contact,
+            poiCandidates,
+            poiCandidateIndex,
+            poiCoordinates,
           };
           if (fullAddress != null) update.address = fullAddress;
           return update;
@@ -935,6 +996,11 @@ export function MapComponent({
       })
       .then((poiUpdate) => {
         if (poiUpdate && myClickId === osmClickIdRef.current) {
+          logPolygonDrawer("osm-click:poi-merge", {
+            clickId: myClickId,
+            placeId: (poiUpdate as Prospect).placeId,
+            name: (poiUpdate as Prospect).name,
+          });
           onProspectUpdateRef.current(poiUpdate as Prospect);
         }
       })
@@ -1197,6 +1263,25 @@ export function MapComponent({
     }
   }, [centerCoordinates]);
 
+  // Recentrage carte (position sauvegardée ou défaut) après fermeture de la recherche
+  useEffect(() => {
+    if (!mapViewResetKey) return;
+    const apply = () => {
+      if (!mapInstanceRef.current || !window.google?.maps) return false;
+      const saved = loadMapPosition();
+      const def = saved || getDefaultMapPosition();
+      mapInstanceRef.current.panTo(def.center);
+      mapInstanceRef.current.setZoom(def.zoom ?? 16);
+      return true;
+    };
+    if (!apply()) {
+      const t = window.setTimeout(() => {
+        apply();
+      }, 150);
+      return () => window.clearTimeout(t);
+    }
+  }, [mapViewResetKey]);
+
   // Afficher les marqueurs des résultats de recherche
   useEffect(() => {
     if (!mapInstanceRef.current) return;
@@ -1279,6 +1364,10 @@ export function MapComponent({
     }
 
     return () => {
+      if (permisInfoWindowRef.current) {
+        permisInfoWindowRef.current.close();
+        permisInfoWindowRef.current = null;
+      }
       // Nettoyage : supprimer les marqueurs
       searchMarkersRef.current.forEach((marker) => {
         marker.setMap(null);
@@ -1286,6 +1375,147 @@ export function MapComponent({
       searchMarkersRef.current = [];
     };
   }, [searchResults, onSearchResultClick, centerCoordinates]);
+
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return;
+
+    if (permisClusterRef.current) {
+      permisClusterRef.current.clearMarkers();
+      permisClusterRef.current = null;
+    }
+    if (permisInfoWindowRef.current) {
+      permisInfoWindowRef.current.close();
+      permisInfoWindowRef.current = null;
+    }
+    permisMarkersRef.current.forEach((marker) => marker.setMap(null));
+    permisMarkersRef.current = [];
+
+    if (!showPermisLayer || permisOpportunities.length === 0) return;
+
+    const infoWindow = new window.google.maps.InfoWindow();
+    permisInfoWindowRef.current = infoWindow;
+
+    const markers = permisOpportunities.map((opportunity) => {
+      const marker = new window.google.maps.Marker({
+        position: { lat: opportunity.lat, lng: opportunity.lng },
+        title: opportunity.num_permis ?? `Permis ${opportunity.id}`,
+        icon: {
+          path: window.google.maps.SymbolPath.CIRCLE,
+          scale: 8,
+          fillColor: "#E4FE55",
+          fillOpacity: 1,
+          strokeColor: "#FFFFFF",
+          strokeWeight: 2,
+        },
+      });
+      marker.addListener("click", () => {
+        const esc = (v: string | null | undefined) =>
+          (v == null || v === "" ? "n/a" : String(v))
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        const surf = opportunity.surf_loc != null ? `${Math.round(opportunity.surf_loc)} m²` : "n/a";
+        const source = opportunity.annee_source != null ? `SITADEL ${opportunity.annee_source}` : "SITADEL";
+        const typeProjet =
+          opportunity.nature_projet === "NC"
+            ? "Construction neuve"
+            : opportunity.nature_projet === "EX"
+              ? "Rénovation / existant"
+              : "n/a";
+        const dateAuth = esc(opportunity.date_reelle_auth);
+        const dateDoc = esc(opportunity.date_doc);
+        const dateOuverture = esc(opportunity.date_ouverture_chantier);
+        const dateAchevement = esc(opportunity.date_achevement_travaux);
+        const denom = esc(opportunity.denom_dem);
+        const siren = esc(opportunity.siren_dem);
+        const siret = esc(opportunity.siret_dem);
+        const cj = esc(opportunity.cj_dem);
+        const ape = esc(opportunity.ape_dem);
+        const numPermisTitle =
+          opportunity.num_permis != null && String(opportunity.num_permis).trim() !== ""
+            ? esc(opportunity.num_permis)
+            : "Permis";
+        infoWindow.setContent(
+          `<div style="font-size:12px;line-height:1.35">
+            <div><strong>${numPermisTitle}</strong></div>
+            <div>Commune: ${esc(opportunity.comm)}</div>
+            <div>Surface: ${surf}</div>
+            <div>Dest: ${esc(opportunity.dest_loc)}</div>
+            <div>Type projet: ${typeProjet}</div>
+            <div>Date autorisation: ${dateAuth}</div>
+            <div>Date DOC: ${dateDoc}</div>
+            <div>Début chantier: ${dateOuverture}</div>
+            <div>Fin travaux: ${dateAchevement}</div>
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb"><strong>Demandeur</strong></div>
+            <div>Dénomination: ${denom}</div>
+            <div>SIREN: ${siren}</div>
+            <div>SIRET: ${siret}</div>
+            <div>Cat. juridique (CJ): ${cj}</div>
+            <div>APE: ${ape}</div>
+            <div>Source: ${esc(source)}</div>
+          </div>`
+        );
+        infoWindow.open({ map, anchor: marker });
+      });
+      marker.addListener("dblclick", (e: google.maps.MapMouseEvent) => {
+        e.stop();
+        map.panTo({ lat: opportunity.lat, lng: opportunity.lng });
+        map.setZoom(18);
+      });
+      return marker;
+    });
+
+    permisMarkersRef.current = markers;
+    permisClusterRef.current = new MarkerClusterer({
+      map,
+      markers,
+      renderer: {
+        render: ({ count, position }) => {
+          const size = count < 10 ? 40 : count < 100 ? 46 : 52;
+          const cached = clusterIconCacheRef.current.get(size);
+          const svgB64 =
+            cached ??
+            window.btoa(
+              `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+  <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.48}" fill="#E4FE55" fill-opacity="0.28"/>
+  <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.38}" fill="#E4FE55" fill-opacity="0.55"/>
+  <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.28}" fill="#E4FE55" stroke="#111827" stroke-width="2"/>
+</svg>`
+            );
+          if (!cached) clusterIconCacheRef.current.set(size, svgB64);
+          return new window.google.maps.Marker({
+            position,
+            icon: {
+              url: `data:image/svg+xml;base64,${svgB64}`,
+              scaledSize: new window.google.maps.Size(size, size),
+            },
+            label: {
+              text: String(count),
+              color: "#111827",
+              fontSize: "12px",
+              fontWeight: "700",
+            },
+            zIndex: window.google.maps.Marker.MAX_ZINDEX + count,
+          });
+        },
+      },
+    });
+
+    return () => {
+      if (permisClusterRef.current) {
+        permisClusterRef.current.clearMarkers();
+        permisClusterRef.current = null;
+      }
+      if (permisInfoWindowRef.current) {
+        permisInfoWindowRef.current.close();
+        permisInfoWindowRef.current = null;
+      }
+      permisMarkersRef.current.forEach((marker) => marker.setMap(null));
+      permisMarkersRef.current = [];
+    };
+  }, [permisOpportunities, showPermisLayer]);
 
   const hasSurfaces =
     (currentProspect?.roofSurfaces?.length ?? 0) > 0 ||

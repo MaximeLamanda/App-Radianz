@@ -2,82 +2,23 @@ import Fuse from "fuse.js";
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-import type { EnrichmentResult } from "@/lib/recherche-entreprises";
+import {
+  mapResultatApiToEnrichment,
+  getSearchableTextFromResultat,
+  type ResultatApiRechercheEntreprises,
+} from "@/lib/api-gouv-enrichment-map";
 
 const API_GOUV_BASE = "https://recherche-entreprises.api.gouv.fr/search";
 
-/** Un établissement dans matching_etablissements */
-interface EtablissementMatch {
-  liste_enseignes?: string[] | null;
-}
-
-/** Un établissement siège dans la réponse API */
-interface SiegeApi {
-  siret?: string;
-  adresse?: string;
-  geo_adresse?: string;
-  code_postal?: string;
-  latitude?: string;
-  longitude?: string;
-}
-
-/** Un dirigeant personne physique */
-interface DirigeantPersonnePhysique {
-  nom?: string;
-  prenoms?: string;
-  qualite?: string;
-  type_dirigeant?: string;
-}
-
-/** Un résultat entreprise dans la réponse API */
-interface ResultatApi {
-  siren?: string;
-  nom_complet?: string;
-  nom_raison_sociale?: string;
-  siege?: SiegeApi;
-  activite_principale?: string;
-  dirigeants?: Array<DirigeantPersonnePhysique | { type_dirigeant?: string; denomination?: string }>;
-  matching_etablissements?: EtablissementMatch[];
-}
+const DEFAULT_PER_PAGE = 20;
 
 interface ResponseApiGouv {
-  results?: ResultatApi[];
+  results?: ResultatApiRechercheEntreprises[];
   total_results?: number;
 }
 
-function mapResultToEnrichment(result: ResultatApi): EnrichmentResult {
-  const siege = result.siege;
-  const firstDirigeantPhysique = result.dirigeants?.find(
-    (d): d is DirigeantPersonnePhysique =>
-      (d as { type_dirigeant?: string }).type_dirigeant === "personne physique" &&
-      "nom" in d &&
-      "prenoms" in d
-  );
-  const managerName = firstDirigeantPhysique
-    ? [firstDirigeantPhysique.prenoms, firstDirigeantPhysique.nom].filter(Boolean).join(" ") +
-      (firstDirigeantPhysique.qualite ? ` (${firstDirigeantPhysique.qualite})` : "")
-    : undefined;
-
-  return {
-    siren: result.siren ?? undefined,
-    siret: siege?.siret ?? undefined,
-    companyLegalName: result.nom_complet ?? result.nom_raison_sociale ?? undefined,
-    companyManagerName: managerName,
-    companyAddress: siege?.geo_adresse ?? siege?.adresse ?? undefined,
-    companyNaf: result.activite_principale ?? undefined,
-  };
-}
-
-/** Construit un texte searchable pour Fuse : dénomination + enseignes */
-function getSearchableText(r: ResultatApi): string {
-  const parts = [r.nom_complet ?? "", r.nom_raison_sociale ?? ""];
-  const enseignes =
-    r.matching_etablissements?.flatMap((e) => e.liste_enseignes ?? []) ?? [];
-  return [...parts, ...enseignes].filter(Boolean).join(" ");
-}
-
 /**
- * GET /api/recherche-entreprises?q=...&name=...
+ * GET /api/recherche-entreprises?q=...&name=...&per_page=...
  * Proxie vers l'API recherche-entreprises (api.gouv.fr).
  * Si name est fourni, utilise Fuse.js pour retourner le résultat qui correspond au nom du POI.
  */
@@ -86,6 +27,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const q = searchParams.get("q");
     const poiName = searchParams.get("name")?.trim() || null;
+    const perPageRaw = searchParams.get("per_page");
+    const perPage = perPageRaw ? Math.min(100, Math.max(1, parseInt(perPageRaw, 10) || DEFAULT_PER_PAGE)) : DEFAULT_PER_PAGE;
 
     if (!q || typeof q !== "string" || q.trim().length === 0) {
       return NextResponse.json(
@@ -96,6 +39,7 @@ export async function GET(request: NextRequest) {
 
     const url = new URL(API_GOUV_BASE);
     url.searchParams.set("q", q.trim());
+    url.searchParams.set("per_page", String(perPage));
 
     const res = await fetch(url.toString(), {
       headers: { Accept: "application/json" },
@@ -122,9 +66,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ result: null });
     }
 
-    let chosen: ResultatApi;
+    let chosen: ResultatApiRechercheEntreprises;
     if (poiName) {
-      const list = results.map((r) => ({ r, search: getSearchableText(r) }));
+      const list = results.map((r) => ({ r, search: getSearchableTextFromResultat(r) }));
       const fuse = new Fuse(list, {
         keys: ["search"],
         threshold: 0.4,
@@ -136,7 +80,7 @@ export async function GET(request: NextRequest) {
       chosen = results[0];
     }
 
-    return NextResponse.json({ result: mapResultToEnrichment(chosen) });
+    return NextResponse.json({ result: mapResultatApiToEnrichment(chosen) });
   } catch (e) {
     console.error("[recherche-entreprises]", e);
     return NextResponse.json(

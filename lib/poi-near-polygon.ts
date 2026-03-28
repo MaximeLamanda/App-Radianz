@@ -109,35 +109,58 @@ export interface PoiNearPolygonResult {
   coordinates?: { lat: number; lng: number };
 }
 
+function placeResultToPoi(place: google.maps.places.PlaceResult): PoiNearPolygonResult | null {
+  const name = place.name?.trim();
+  if (!name) return null;
+  const loc = place.geometry?.location;
+  return {
+    name,
+    placeId: place.place_id ?? undefined,
+    coordinates: loc ? { lat: loc.lat(), lng: loc.lng() } : undefined,
+  };
+}
+
+function sortPlacesByDistanceToCentroid(
+  places: google.maps.places.PlaceResult[],
+  centroid: AddressCoordinates
+): google.maps.places.PlaceResult[] {
+  return [...places].sort((a, b) => {
+    const locA = a.geometry?.location;
+    const locB = b.geometry?.location;
+    if (!locA) return 1;
+    if (!locB) return -1;
+    const distA = distanceToCentroid(locA.lat(), locA.lng(), centroid);
+    const distB = distanceToCentroid(locB.lat(), locB.lng(), centroid);
+    return distA - distB;
+  });
+}
+
 /**
- * Recherche un POI Google dans ou près d'un polygone.
- * Priorité : POI à l'intérieur du polygone, sinon le plus proche du centroïde.
- * Filtrage : type "establishment" + exclusion des types adresse.
- *
- * @returns Le POI trouvé avec son nom, ou null si aucun
+ * Liste tous les POI Google pertinents dans ou près d'un polygone, triés comme l'ancien « meilleur » en premier :
+ * d'abord ceux à l'intérieur (du plus proche au centroïde au plus loin), puis ceux à l'extérieur (idem).
  */
-export async function searchPoiForPolygon(
+export async function listPoisNearPolygon(
   centroid: AddressCoordinates,
   polygon: Array<{ lat: number; lng: number }>
-): Promise<PoiNearPolygonResult | null> {
+): Promise<PoiNearPolygonResult[]> {
   const maps = window.google?.maps;
-  if (!maps) return null;
+  if (!maps) return [];
 
-  let places = maps.places;
-  if (!places) {
+  let placesLib = maps.places;
+  if (!placesLib) {
     try {
-      places = await (maps as any).importLibrary?.("places");
+      placesLib = await (maps as any).importLibrary?.("places");
     } catch {
-      return null;
+      return [];
     }
   }
-  if (!places?.PlacesService) return null;
+  if (!placesLib?.PlacesService) return [];
 
   let service: google.maps.places.PlacesService;
   try {
-    service = new places.PlacesService(document.createElement("div"));
+    service = new placesLib.PlacesService(document.createElement("div"));
   } catch {
-    return null;
+    return [];
   }
 
   const diagonal = polygonBoundingBoxDiagonalMeters(polygon);
@@ -151,12 +174,11 @@ export async function searchPoiForPolygon(
     };
 
     service.nearbySearch(request, (results, status) => {
-      if (status !== places!.PlacesServiceStatus.OK || !results?.length) {
-        resolve(null);
+      if (status !== placesLib!.PlacesServiceStatus.OK || !results?.length) {
+        resolve([]);
         return;
       }
 
-      // 1. Exclure les résultats avec types non désirés
       const filtered = results.filter((place) => {
         const types = place.types || [];
         const hasExcluded = types.some((t) => EXCLUDED_TYPES.has(t));
@@ -164,58 +186,44 @@ export async function searchPoiForPolygon(
       });
 
       if (filtered.length === 0) {
-        resolve(null);
+        resolve([]);
         return;
       }
 
-      // 2. Priorité aux POI à l'intérieur du polygone
-      const inside = filtered.filter((place) => {
+      const insideRaw = filtered.filter((place) => {
         const loc = place.geometry?.location;
         if (!loc) return false;
         return pointInPolygon(loc.lat(), loc.lng(), polygon);
       });
-
-      let chosen: google.maps.places.PlaceResult;
-      if (inside.length > 0) {
-        chosen =
-          inside.reduce((a, b) => {
-            const distA = distanceToCentroid(
-              a.geometry!.location!.lat(),
-              a.geometry!.location!.lng(),
-              centroid
-            );
-            const distB = distanceToCentroid(
-              b.geometry!.location!.lat(),
-              b.geometry!.location!.lng(),
-              centroid
-            );
-            return distA <= distB ? a : b;
-          });
-      } else {
-        chosen = filtered.reduce((a, b) => {
-          const locA = a.geometry?.location;
-          const locB = b.geometry?.location;
-          if (!locA) return b;
-          if (!locB) return a;
-          const distA = distanceToCentroid(locA.lat(), locA.lng(), centroid);
-          const distB = distanceToCentroid(locB.lat(), locB.lng(), centroid);
-          return distA <= distB ? a : b;
-        });
-      }
-
-      const name = chosen.name?.trim();
-      if (!name) {
-        resolve(null);
-        return;
-      }
-      const loc = chosen.geometry?.location;
-      resolve({
-        name,
-        placeId: chosen.place_id ?? undefined,
-        coordinates: loc ? { lat: loc.lat(), lng: loc.lng() } : undefined,
+      const outsideRaw = filtered.filter((place) => {
+        const loc = place.geometry?.location;
+        if (!loc) return true;
+        return !pointInPolygon(loc.lat(), loc.lng(), polygon);
       });
+
+      const insideSorted = sortPlacesByDistanceToCentroid(insideRaw, centroid);
+      const outsideSorted = sortPlacesByDistanceToCentroid(outsideRaw, centroid);
+      const ordered = [...insideSorted, ...outsideSorted];
+
+      const out: PoiNearPolygonResult[] = [];
+      for (const place of ordered) {
+        const poi = placeResultToPoi(place);
+        if (poi) out.push(poi);
+      }
+      resolve(out);
     });
   });
+}
+
+/**
+ * Recherche un POI Google dans ou près d'un polygone (premier de {@link listPoisNearPolygon}).
+ */
+export async function searchPoiForPolygon(
+  centroid: AddressCoordinates,
+  polygon: Array<{ lat: number; lng: number }>
+): Promise<PoiNearPolygonResult | null> {
+  const list = await listPoisNearPolygon(centroid, polygon);
+  return list[0] ?? null;
 }
 
 /** Bâtiment OSM minimal pour findNearestOsmBuildingToPoint */

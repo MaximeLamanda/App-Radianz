@@ -16,10 +16,14 @@ export interface UserProfile {
   lastName?: string;
   /** Nombre de requêtes BDNB dans la période courante (mois ou jour selon statut) */
   bdnbRequestCount?: number;
+  /** Nombre de requêtes BDNB (via Neon) dans la période courante (mois ou jour selon statut) */
+  bdnbNeonRequestCount?: number;
   /** Statut du profil : admin, premium, starter, demo. Défaut: starter */
   status?: ProfileStatus;
   /** Nombre de requêtes OSM dans la période courante (mois ou jour selon statut) */
   osmRequestCount?: number;
+  /** Nombre de requêtes carte Sitadel dans la période courante (mois ou jour selon statut) */
+  sitadelMapRequestCount?: number;
   /** Début de la période courante (réinitialisation mensuelle ou quotidienne selon statut) */
   creditsResetAt?: { seconds: number; nanoseconds: number };
   // Onboarding
@@ -86,6 +90,20 @@ export async function incrementBdnbRequestCount(uid: string): Promise<void> {
       console.warn("[BDNB] Incrément compteur: règles Firestore ou accès refusé");
     } else {
       console.warn("[BDNB] Incrément compteur:", error);
+    }
+  }
+}
+
+/** Incrémente le compteur de requêtes BDNB Neon pour l'utilisateur (fire-and-forget, ne bloque pas l'UI) */
+export async function incrementBdnbNeonRequestCount(uid: string): Promise<void> {
+  try {
+    const ref = doc(db, COLLECTION, uid);
+    await setDoc(ref, { bdnbNeonRequestCount: increment(1) }, { merge: true });
+  } catch (error) {
+    if (isPermissionError(error)) {
+      console.warn("[BDNB-NEON] Incrément compteur: règles Firestore ou accès refusé");
+    } else {
+      console.warn("[BDNB-NEON] Incrément compteur:", error);
     }
   }
 }

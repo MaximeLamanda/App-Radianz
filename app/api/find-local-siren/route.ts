@@ -3,7 +3,6 @@ import {
   findLocalSiren,
   buildLocalSirenQueries,
   type ApiResultCompany,
-  type ScoredCandidate,
 } from "@/lib/find-local-siren";
 
 const API_GOUV_BASE = "https://recherche-entreprises.api.gouv.fr/search";
@@ -12,9 +11,8 @@ const API_GOUV_BASE = "https://recherche-entreprises.api.gouv.fr/search";
  * GET /api/find-local-siren?poiName=...&address=...&lat=...&lon=...
  * Ou POST avec body { poiName, address, lat, lon }.
  *
- * PHASE 1 : 4 requêtes parallèles vers api.gouv (per_page=20).
- * PHASE 2 : scoring composite (fuzzy nom 40%, rue 30%, CP 20%, distance 10%).
- * Retourne l'établissement LOCAL le plus pertinent (score 0–1000) ou null.
+ * 1–2 requêtes séquentielles vers api.gouv (per_page=20), arrêt dès résultats exploitables.
+ * Scoring composite orienté adresse ; retour enrichissement + phase2Scoring.
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -22,8 +20,6 @@ export async function GET(request: NextRequest) {
   const address = searchParams.get("address")?.trim() ?? "";
   const lat = parseFloat(searchParams.get("lat") ?? "");
   const lon = parseFloat(searchParams.get("lon") ?? "");
-  const debug = searchParams.get("debug") === "1" || searchParams.get("debug") === "true";
-
   if (!poiName || !address || !Number.isFinite(lat) || !Number.isFinite(lon)) {
     return NextResponse.json(
       {
@@ -34,11 +30,11 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  return runFindLocalSiren(poiName, address, lat, lon, debug);
+  return runFindLocalSiren(poiName, address, lat, lon);
 }
 
 export async function POST(request: NextRequest) {
-  let body: { poiName?: string; address?: string; lat?: number; lon?: number; debug?: boolean | string };
+  let body: { poiName?: string; address?: string; lat?: number; lon?: number };
   try {
     body = await request.json();
   } catch {
@@ -52,8 +48,6 @@ export async function POST(request: NextRequest) {
   const address = (body.address ?? "").toString().trim();
   const lat = typeof body.lat === "number" ? body.lat : parseFloat(String(body.lat));
   const lon = typeof body.lon === "number" ? body.lon : parseFloat(String(body.lon));
-  const debug = body.debug === true || body.debug === "1";
-
   if (!poiName || !address || !Number.isFinite(lat) || !Number.isFinite(lon)) {
     return NextResponse.json(
       {
@@ -64,15 +58,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return runFindLocalSiren(poiName, address, lat, lon, debug);
+  return runFindLocalSiren(poiName, address, lat, lon);
 }
 
 async function runFindLocalSiren(
   poiName: string,
   address: string,
   lat: number,
-  lon: number,
-  debug = false
+  lon: number
 ) {
   try {
     const fetcher = async (
@@ -99,24 +92,19 @@ async function runFindLocalSiren(
       return { results: data.results ?? [] };
     };
 
-    const result = await findLocalSiren(poiName, address, lat, lon, fetcher, { debug });
+    const result = await findLocalSiren(poiName, address, lat, lon, fetcher);
 
     if (!result) {
-      return NextResponse.json({ result: null });
+      return NextResponse.json({
+        result: null,
+        enrichment: null,
+        winningQuery: null,
+        attemptedQueries: buildLocalSirenQueries(poiName, address),
+        phase2Scoring: null,
+      });
     }
 
-    const response: {
-      result: {
-        siren: string;
-        siret: string;
-        nom_complet: string;
-        adresse: string;
-        code_postal: string;
-        score: number;
-      };
-      winningQueries: string[];
-      phase2Scoring?: ScoredCandidate[];
-    } = {
+    return NextResponse.json({
       result: {
         siren: result.siren,
         siret: result.siret,
@@ -124,13 +112,13 @@ async function runFindLocalSiren(
         adresse: result.adresse,
         code_postal: result.code_postal,
         score: result.score,
+        winningQuery: result.winningQuery,
       },
-      winningQueries: buildLocalSirenQueries(poiName, address),
-    };
-    if ("phase2Scoring" in result && result.phase2Scoring) {
-      response.phase2Scoring = result.phase2Scoring;
-    }
-    return NextResponse.json(response);
+      enrichment: result.enrichment,
+      winningQuery: result.winningQuery,
+      attemptedQueries: buildLocalSirenQueries(poiName, address),
+      phase2Scoring: result.phase2Scoring,
+    });
   } catch (e) {
     console.error("[find-local-siren]", e);
     return NextResponse.json(

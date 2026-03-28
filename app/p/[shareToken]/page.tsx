@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
@@ -61,6 +61,7 @@ import {
   estimateEnergyBillEur,
   getBreakEvenYears,
 } from "@/lib/solar-settings";
+import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
 import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProductionChart";
 import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scout/EquipmentSelectCard";
 import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
@@ -89,6 +90,8 @@ export default function ProspectSharePage() {
   const [selectedBatteryCount, setSelectedBatteryCount] = useState(1);
   const [energyBillEurOverride, setEnergyBillEurOverride] = useState<number | undefined>(undefined);
   const [energyBillDialogOpen, setEnergyBillDialogOpen] = useState(false);
+
+  const pendingBatteryResyncAfterModeChangeRef = useRef(false);
 
   const visiblePanels = useMemo(() => {
     const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
@@ -195,6 +198,84 @@ export default function ProspectSharePage() {
       productionPerKwp: perKwp,
     };
   }, [prospect, configurationMode, annualConsumptionOverride, usedPanelRef]);
+
+  const recommendedBatteryKwh = useMemo(() => {
+    const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+    if (!prospect || totalArea <= 0) return null;
+    const effectiveKwp = effectiveConfig.effectiveKwp;
+    const hasProductionData = effectiveConfig.productionPerKwp != null;
+    if (!hasProductionData || effectiveKwp <= 0) return null;
+    const placeType = prospect.placeType || "other";
+    const annualConsumptionKwh =
+      annualConsumptionOverride ?? getEnergyConsumption(placeType) * totalArea;
+    const annualProductionKwh = effectiveConfig.effectiveAnnualProductionKwh;
+    const monthly = effectiveConfig.productionPerKwp?.productionPerKwpMonthly;
+
+    return computeRecommendedBatteryTargetKwh({
+      productionPerKwpMonthly: monthly,
+      effectiveKwp,
+      annualProductionKwh,
+      annualConsumptionKwh,
+      placeType,
+      surfaceM2: totalArea,
+    });
+  }, [prospect, annualConsumptionOverride, effectiveConfig.effectiveAnnualProductionKwh, effectiveConfig.effectiveKwp, effectiveConfig.productionPerKwp]);
+
+  const recommendedBatteryComposition = useMemo(() => {
+    const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
+    if (!visibleBatteries.length || recommendedBatteryKwh == null) return null;
+    const sortedByCapacity = [...visibleBatteries].sort((a, b) => b.capacityKwh - a.capacityKwh);
+    const largestModel = sortedByCapacity[0];
+    if (!largestModel) return null;
+
+    const target = recommendedBatteryKwh;
+
+    if (target >= largestModel.capacityKwh) {
+      const maxPerRack = largestModel.maxBatteriesPerRack ?? 20;
+      let bestCount = 1;
+      let bestEcart = Math.abs(largestModel.capacityKwh - target);
+      for (let c = 2; c <= maxPerRack; c++) {
+        const totalKwh = largestModel.capacityKwh * c;
+        const ecart = Math.abs(totalKwh - target);
+        if (ecart < bestEcart) {
+          bestEcart = ecart;
+          bestCount = c;
+        }
+      }
+      return { model: largestModel, count: bestCount };
+    }
+
+    let best: { model: BatteryReference; count: number; ecart: number } | null = null;
+    for (const model of visibleBatteries) {
+      const maxPerRack = model.maxBatteriesPerRack ?? 20;
+      for (let c = 1; c <= maxPerRack; c++) {
+        const totalKwh = model.capacityKwh * c;
+        const ecart = Math.abs(totalKwh - target);
+        const isBetter =
+          best == null ||
+          ecart < best.ecart ||
+          (ecart === best.ecart && c < best.count) ||
+          (ecart === best.ecart && c === best.count && model.capacityKwh > best.model.capacityKwh);
+        if (isBetter) best = { model, count: c, ecart };
+      }
+    }
+    return best ? { model: best.model, count: best.count } : null;
+  }, [batteriesData, recommendedBatteryKwh]);
+
+  useEffect(() => {
+    pendingBatteryResyncAfterModeChangeRef.current = false;
+  }, [prospect?.id]);
+
+  /** Après clic sur Perfect fit / Highest production : aligner batterie sur la cible (y compris quand la composition arrive après PVGIS). */
+  useEffect(() => {
+    if (!prospect || !pendingBatteryResyncAfterModeChangeRef.current || recommendedBatteryComposition == null) {
+      return;
+    }
+    const { model, count } = recommendedBatteryComposition;
+    setSelectedBatteryId(model.id);
+    setSelectedBatteryCount(count);
+    pendingBatteryResyncAfterModeChangeRef.current = false;
+  }, [prospect, configurationMode, recommendedBatteryComposition]);
 
   /** production = productionPerKwp × kWp. */
   const choiceCardsConfig = useMemo(() => {
@@ -524,7 +605,10 @@ export default function ProspectSharePage() {
             <div className="order-3 grid grid-cols-2 gap-2 min-h-0 overflow-hidden md:order-none md:col-start-2 md:row-start-1">
               <button
                 type="button"
-                onClick={() => setConfigurationMode("perfect_fit")}
+                onClick={() => {
+                  pendingBatteryResyncAfterModeChangeRef.current = true;
+                  setConfigurationMode("perfect_fit");
+                }}
                 className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                   configurationMode === "perfect_fit"
                     ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
@@ -541,7 +625,10 @@ export default function ProspectSharePage() {
               </button>
               <button
                 type="button"
-                onClick={() => setConfigurationMode("highest_production")}
+                onClick={() => {
+                  pendingBatteryResyncAfterModeChangeRef.current = true;
+                  setConfigurationMode("highest_production");
+                }}
                 className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
                   configurationMode === "highest_production"
                     ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
@@ -998,8 +1085,12 @@ export default function ProspectSharePage() {
                       onCountChange={setSelectedBatteryCount}
                       maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
                       batteries={visibleBatteries}
-                      isRecommendedForProspect={!!usedBatteryRef?.recommended}
-                      recommendedBatteryIdForProspect={usedBatteryRef?.id ?? null}
+                      isRecommendedForProspect={
+                        !!recommendedBatteryComposition &&
+                        usedBatteryRef?.id === recommendedBatteryComposition.model.id &&
+                        selectedBatteryCount === recommendedBatteryComposition.count
+                      }
+                      recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
                     />
                   </div>
                 ) : batteriesData !== undefined ? (

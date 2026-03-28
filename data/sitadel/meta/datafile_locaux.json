@@ -1,0 +1,2424 @@
+{
+  "rid": "f8f0700f-806c-40a7-83b1-f21cf507e7c4",
+  "title": "Liste des autorisations d'urbanisme créant des locaux non résidentiels",
+  "description": "Données relatives aux permis de construire et déclarations préalables de création ou extension de locaux non résidentiels (y compris par transformation ou réhabilitation de locaux préexistants).\n  - Le fichier contient les données depuis 2013.\n  - Pour en savoir plus sur les  variables du fichier de données, voir le dictionnaire de variables (dictionnaire_variables locaux_permis_construire.xls).",
+  "created_at": "2023-09-29T08:16:10.028Z",
+  "last_modified": "2026-02-25T17:32:39.264Z",
+  "published": "2026-03-03T07:45:00.000Z",
+  "temporal_coverage": {
+    "start": "1996-01-01",
+    "end": "2026-01-31"
+  },
+  "legal_notice": "SDES",
+  "millesime": "2026-02",
+  "refs": [
+    {
+      "name": "referentiels/cog",
+      "filters": [
+        {
+          "field": "LEVEL",
+          "filter": "eq",
+          "value": "region"
+        },
+        {
+          "field": "MILLESIME",
+          "filter": "eq",
+          "value": "2015"
+        }
+      ],
+      "labelFilters": [
+        "LEVEL=region",
+        "MILLESIME=2015"
+      ]
+    },
+    {
+      "name": "referentiels/cog",
+      "filters": [
+        {
+          "field": "LEVEL",
+          "filter": "eq",
+          "value": "departement"
+        },
+        {
+          "field": "MILLESIME",
+          "filter": "eq",
+          "value": "2022"
+        }
+      ],
+      "labelFilters": [
+        "LEVEL=departement",
+        "MILLESIME=2022"
+      ]
+    }
+  ],
+  "availableValues": [
+    {
+      "column": "COMM",
+      "values": []
+    },
+    {
+      "column": "TYPE_DAU",
+      "values": [
+        "PC",
+        "DP",
+        "PA",
+        "PD"
+      ]
+    },
+    {
+      "column": "NUM_DAU",
+      "values": []
+    },
+    {
+      "column": "ETAT_DAU",
+      "values": [
+        6,
+        5,
+        2,
+        4
+      ]
+    },
+    {
+      "column": "DATE_REELLE_AUTORISATION",
+      "values": []
+    },
+    {
+      "column": "DATE_REELLE_DOC",
+      "values": []
+    },
+    {
+      "column": "DATE_REELLE_DAACT",
+      "values": []
+    },
+    {
+      "column": "AN_DEPOT",
+      "values": []
+    },
+    {
+      "column": "DPC_PREM",
+      "values": []
+    },
+    {
+      "column": "DPC_AUT",
+      "values": []
+    },
+    {
+      "column": "DPC_DOC",
+      "values": []
+    },
+    {
+      "column": "DPC_DERN",
+      "values": []
+    },
+    {
+      "column": "APE_DEM",
+      "values": []
+    },
+    {
+      "column": "CJ_DEM",
+      "values": []
+    },
+    {
+      "column": "DENOM_DEM",
+      "values": []
+    },
+    {
+      "column": "SIREN_DEM",
+      "values": []
+    },
+    {
+      "column": "SIRET_DEM",
+      "values": []
+    },
+    {
+      "column": "CODPOST_DEM",
+      "values": []
+    },
+    {
+      "column": "LOCALITE_DEM",
+      "values": []
+    },
+    {
+      "column": "REC_ARCHI",
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "column": "ADR_NUM_TER",
+      "values": []
+    },
+    {
+      "column": "ADR_TYPEVOIE_TER",
+      "values": []
+    },
+    {
+      "column": "ADR_LIBVOIE_TER",
+      "values": []
+    },
+    {
+      "column": "ADR_LIEUDIT_TER",
+      "values": []
+    },
+    {
+      "column": "ADR_LOCALITE_TER",
+      "values": []
+    },
+    {
+      "column": "ADR_CODPOST_TER",
+      "values": []
+    },
+    {
+      "column": "SEC_CADASTRE1",
+      "values": []
+    },
+    {
+      "column": "NUM_CADASTRE1",
+      "values": []
+    },
+    {
+      "column": "SEC_CADASTRE2",
+      "values": []
+    },
+    {
+      "column": "NUM_CADASTRE2",
+      "values": []
+    },
+    {
+      "column": "SEC_CADASTRE3",
+      "values": []
+    },
+    {
+      "column": "NUM_CADASTRE3",
+      "values": []
+    },
+    {
+      "column": "SUPERFICIE_TERRAIN",
+      "values": []
+    },
+    {
+      "column": "ZONE_OP",
+      "values": [
+        4,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "column": "NATURE_PROJET_DECLAREE",
+      "values": [
+        1,
+        2
+      ]
+    },
+    {
+      "column": "NATURE_PROJET_COMPLETEE",
+      "values": [
+        1,
+        3,
+        5,
+        2,
+        6,
+        4
+      ]
+    },
+    {
+      "column": "DESTINATION_PRINCIPALE",
+      "values": [
+        8,
+        1,
+        3,
+        6,
+        9,
+        7,
+        4,
+        5,
+        2
+      ]
+    },
+    {
+      "column": "TYPE_TRANSFO_PRINCIPAL",
+      "values": [
+        null,
+        3,
+        4,
+        2,
+        1
+      ]
+    },
+    {
+      "column": "TYPE_PRINCIP_LOCAUX_TRANSFORMES",
+      "values": [
+        null,
+        1,
+        8,
+        9,
+        7,
+        4,
+        5,
+        3,
+        6,
+        2
+      ]
+    },
+    {
+      "column": "I_EXTENSION",
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "column": "I_SURELEVATION",
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "column": "I_NIVSUPP",
+      "values": [
+        false,
+        true
+      ]
+    },
+    {
+      "column": "NB_NIV_MAX",
+      "values": []
+    },
+    {
+      "column": "NB_CHAMBRES",
+      "values": []
+    },
+    {
+      "column": "SURF_HAB_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_HAB_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_HAB_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_HAB_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_HAB_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_LOC_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_LOC_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_LOC_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_LOC_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_LOC_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_HEB_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_HEB_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_HEB_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_HEB_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_HEB_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_BUR_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_BUR_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_BUR_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_BUR_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_BUR_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_COM_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_COM_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_COM_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_COM_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_COM_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_ART_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_ART_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_ART_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_ART_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_ART_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_IND_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_IND_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_IND_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_IND_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_IND_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_AGR_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_AGR_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_AGR_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_AGR_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_AGR_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_ENT_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_ENT_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_ENT_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_ENT_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_ENT_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "SURF_PUB_AVANT",
+      "values": []
+    },
+    {
+      "column": "SURF_PUB_CREEE",
+      "values": []
+    },
+    {
+      "column": "SURF_PUB_ISSUE_TRANSFO",
+      "values": []
+    },
+    {
+      "column": "SURF_PUB_DEMOLIE",
+      "values": []
+    },
+    {
+      "column": "SURF_PUB_TRANSFORMEE",
+      "values": []
+    },
+    {
+      "column": "TYPE_SERVICE_PUBLIC",
+      "values": [
+        7,
+        5,
+        6,
+        2,
+        3,
+        4,
+        1,
+        8
+      ]
+    },
+    {
+      "column": "REG_CODE",
+      "values": []
+    },
+    {
+      "column": "REG_LIBELLE",
+      "values": []
+    },
+    {
+      "column": "DEP_CODE",
+      "values": []
+    },
+    {
+      "column": "DEP_LIBELLE",
+      "values": []
+    }
+  ],
+  "extendedFilters": [
+    {
+      "name": "REG",
+      "columns": [
+        "REG_CODE",
+        "REG_LIBELLE"
+      ],
+      "filters": [
+        "withinCogZones",
+        "withinGeometry"
+      ]
+    },
+    {
+      "name": "DEP",
+      "columns": [
+        "DEP_CODE",
+        "DEP_LIBELLE"
+      ],
+      "filters": [
+        "withinCogZones",
+        "withinGeometry"
+      ]
+    }
+  ],
+  "geoFields": [
+    "REG",
+    "DEP"
+  ],
+  "columns": [
+    {
+      "name": "REG_CODE",
+      "description": "Code de la région du lieu des travaux - Code de la zone",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "ref": "referentiels/cog (LEVEL=region, MILLESIME=2015)",
+      "availableValues": []
+    },
+    {
+      "name": "REG_LIBELLE",
+      "description": "Code de la région du lieu des travaux - Libellé de la zone",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DEP_CODE",
+      "description": "Code du département du lieu des travaux - Code de la zone",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "ref": "referentiels/cog (LEVEL=departement, MILLESIME=2022)",
+      "availableValues": []
+    },
+    {
+      "name": "DEP_LIBELLE",
+      "description": "Code du département du lieu des travaux - Libellé de la zone",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "COMM",
+      "description": "Code de la commune du lieu des travaux",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "TYPE_DAU",
+      "description": "Type de DAU -- demande d'autorisation d'urbanisme (PC ou DP généralement, rarement PA)",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        "PC",
+        "DP",
+        "PA",
+        "PD"
+      ]
+    },
+    {
+      "name": "NUM_DAU",
+      "description": "Numéro d'enregistrement de la DAU",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ETAT_DAU",
+      "description": "Etat d'avancement du projet",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        6,
+        5,
+        2,
+        4
+      ]
+    },
+    {
+      "name": "DATE_REELLE_AUTORISATION",
+      "description": "Date réelle d'autorisation (PC) ou de non-opposition (DP) initiale",
+      "unit": "n/a",
+      "type": "date",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DATE_REELLE_DOC",
+      "description": "Date réelle d'ouverture de chantier",
+      "unit": "n/a",
+      "type": "date",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DATE_REELLE_DAACT",
+      "description": "Date réelle d'achèvement des travaux",
+      "unit": "n/a",
+      "type": "date",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "AN_DEPOT",
+      "description": "Année de dépôt de la DAU",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DPC_PREM",
+      "description": "Date (mois) de prise en compte (DPC) du premier évènement reçu dans Sitadel (dépôt de la demande ou autorisation)",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DPC_AUT",
+      "description": "Date (mois) de prise en compte (DPC) de l'autorisation initiale",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DPC_DOC",
+      "description": "Date (mois) de prise en compte (DPC) de l'ouverture du chantier",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DPC_DERN",
+      "description": "Date (mois) (DPC) de dernière mise à jour des données",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "APE_DEM",
+      "description": "Code d'activité principale de l'établissement d'un demandeur avéré en tant que personne morale",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "CJ_DEM",
+      "description": "Catégorie juridique d'un demandeur avéré en tant que personne morale",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "DENOM_DEM",
+      "description": "Dénomination d'un demandeur avéré en tant que personne morale",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SIREN_DEM",
+      "description": "Numéro SIREN d'un demandeur avéré en tant que personne morale",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SIRET_DEM",
+      "description": "Numéro SIRET d'un demandeur avéré en tant que personne morale",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "CODPOST_DEM",
+      "description": "Code postal du demandeur",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "LOCALITE_DEM",
+      "description": "Localité du demandeur",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "REC_ARCHI",
+      "description": "Indicateur de recours à un architecte",
+      "unit": "n/a",
+      "type": "boolean",
+      "filters": [
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "ADR_NUM_TER",
+      "description": "Numéro de voie du terrain",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ADR_TYPEVOIE_TER",
+      "description": "Type de voie du terrain",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ADR_LIBVOIE_TER",
+      "description": "Libellé de la voie du terrain",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ADR_LIEUDIT_TER",
+      "description": "Lieu-dit du terrain",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ADR_LOCALITE_TER",
+      "description": "Localité du terrain",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ADR_CODPOST_TER",
+      "description": "Code postal du terrain",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SEC_CADASTRE1",
+      "description": "Section cadastrale 1",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "NUM_CADASTRE1",
+      "description": "Numéro parcelle cadastrale 1",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SEC_CADASTRE2",
+      "description": "Section cadastrale 2",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "NUM_CADASTRE2",
+      "description": "Numéro parcelle cadastrale 2",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SEC_CADASTRE3",
+      "description": "Section cadastrale 3",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "NUM_CADASTRE3",
+      "description": "Numéro parcelle cadastrale 3",
+      "unit": "n/a",
+      "type": "string",
+      "filters": [
+        "contains",
+        "eq",
+        "ne",
+        "startsWith",
+        "endsWith",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SUPERFICIE_TERRAIN",
+      "description": "Superficie du terrain",
+      "unit": "s/u",
+      "type": "number",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "ZONE_OP",
+      "description": "Code zone opératoire",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        4,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "name": "NATURE_PROJET_DECLAREE",
+      "description": "Nature du projet déclarée par le demandeur",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "NATURE_PROJET_COMPLETEE",
+      "description": "Nature de projet détaillée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        1,
+        3,
+        5,
+        2,
+        6,
+        4
+      ]
+    },
+    {
+      "name": "DESTINATION_PRINCIPALE",
+      "description": "Destination principale",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        8,
+        1,
+        3,
+        6,
+        9,
+        7,
+        4,
+        5,
+        2
+      ]
+    },
+    {
+      "name": "TYPE_TRANSFO_PRINCIPAL",
+      "description": "Type principal de transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        null,
+        3,
+        4,
+        2,
+        1
+      ]
+    },
+    {
+      "name": "TYPE_PRINCIP_LOCAUX_TRANSFORMES",
+      "description": "Type principal des locaux d'origine transformés",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        null,
+        1,
+        8,
+        9,
+        7,
+        4,
+        5,
+        3,
+        6,
+        2
+      ]
+    },
+    {
+      "name": "I_EXTENSION",
+      "description": "Indicateur d'extension",
+      "unit": "n/a",
+      "type": "boolean",
+      "filters": [
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "I_SURELEVATION",
+      "description": "Indicateur de surélévation",
+      "unit": "n/a",
+      "type": "boolean",
+      "filters": [
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "I_NIVSUPP",
+      "description": "Indicateur de création de niveau(x) supplémentaire(s)",
+      "unit": "n/a",
+      "type": "boolean",
+      "filters": [
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "NB_NIV_MAX",
+      "description": "Nombre de niveaux du bâtiment le plus élevé",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "NB_CHAMBRES",
+      "description": "Nombre de chambres (hôtels et autres hébergements, notamment sociaux)",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HAB_AVANT",
+      "description": "Surface de plancher de la destination Habitation existante avant travaux",
+      "unit": "s/u",
+      "type": "number",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HAB_CREEE",
+      "description": "Surface de plancher de la destination Habitation nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HAB_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Habitation issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HAB_DEMOLIE",
+      "description": "Surface de plancher de la destination Habitation supprimée (démolie)",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HAB_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Habitation transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_LOC_AVANT",
+      "description": "Surface de plancher de locaux non résidentiels (i.e. autres que d'habitation) existante avant travaux",
+      "unit": "s/u",
+      "type": "number",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_LOC_CREEE",
+      "description": "Surface de plancher de locaux non résidentiels (i.e. autres que d'habitation) nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_LOC_ISSUE_TRANSFO",
+      "description": "Surface de plancher de locaux non résidentiels (i.e. autres que d'habitation) issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_LOC_DEMOLIE",
+      "description": "Surface de plancher de locaux non résidentiels (i.e. autres que d'habitation) démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_LOC_TRANSFORMEE",
+      "description": "Surface de plancher de locaux non résidentiels (i.e. autres que d'habitation) transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HEB_AVANT",
+      "description": "Surface de plancher de la destination Hébergement hôtelier existante avant travaux",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HEB_CREEE",
+      "description": "Surface de plancher de la destination Hébergement hôtelier nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HEB_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Hébergement hôtelier issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HEB_DEMOLIE",
+      "description": "Surface de plancher de la destination Hébergement hôtelier démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_HEB_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Hébergement hôtelier transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_BUR_AVANT",
+      "description": "Surface de plancher de la destination Bureau existante avant travaux",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_BUR_CREEE",
+      "description": "Surface de plancher de la destination Bureau nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_BUR_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Bureau issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_BUR_DEMOLIE",
+      "description": "Surface de plancher de la destination Bureau démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_BUR_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Bureau transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_COM_AVANT",
+      "description": "Surface de plancher de la destination Commerce existante avant travaux",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_COM_CREEE",
+      "description": "Surface de plancher de la destination Commerce nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_COM_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Commerce issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_COM_DEMOLIE",
+      "description": "Surface de plancher de la destination Commerce démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_COM_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Commerce transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ART_AVANT",
+      "description": "Surface de plancher de la destination Artisanat existante avant travaux",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ART_CREEE",
+      "description": "Surface de plancher de la destination Artisanat nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ART_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Artisanat issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ART_DEMOLIE",
+      "description": "Surface de plancher de la destination Artisanat démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ART_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Artisanat transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_IND_AVANT",
+      "description": "Surface de plancher de la destination Industrie existante avant travaux",
+      "unit": "s/u",
+      "type": "number",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_IND_CREEE",
+      "description": "Surface de plancher de la destination Industrie nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_IND_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Industrie issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_IND_DEMOLIE",
+      "description": "Surface de plancher de la destination Industrie démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_IND_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Industrie transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_AGR_AVANT",
+      "description": "Surface de plancher de la destination Exploitation agricole ou forestière existante avant travaux",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_AGR_CREEE",
+      "description": "Surface de plancher de la destination Exploitation agricole ou forestière nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_AGR_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Exploitation agricole ou forestière issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_AGR_DEMOLIE",
+      "description": "Surface de plancher de la destination Exploitation agricole ou forestière démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_AGR_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Exploitation agricole ou forestière transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ENT_AVANT",
+      "description": "Surface de plancher de la destination Entrepôt existante avant travaux",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ENT_CREEE",
+      "description": "Surface de plancher de la destination Entrepôt nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ENT_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Entrepôt issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ENT_DEMOLIE",
+      "description": "Surface de plancher de la destination Entrepôt démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_ENT_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Entrepôt transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_PUB_AVANT",
+      "description": "Surface de plancher de la destination Services publics ou d'intérêt collectif' existante avant travaux",
+      "unit": "s/u",
+      "type": "number",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_PUB_CREEE",
+      "description": "Surface de plancher de la destination Services publics ou d'intérêt collectif nouvelle construite",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_PUB_ISSUE_TRANSFO",
+      "description": "Surface de plancher de la destination Services publics ou d'intérêt collectif issue d'une transformation",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_PUB_DEMOLIE",
+      "description": "Surface de plancher de la destination Services publics ou d'intérêt collectif démolie",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "SURF_PUB_TRANSFORMEE",
+      "description": "Surface de plancher de la destination Services publics ou d'intérêt collectif transformée",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": []
+    },
+    {
+      "name": "TYPE_SERVICE_PUBLIC",
+      "description": "Type de service public ou d'intérêt collectif",
+      "unit": "s/u",
+      "type": "integer",
+      "precision": null,
+      "filters": [
+        "eq",
+        "ne",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in",
+        "nin"
+      ],
+      "availableValues": [
+        7,
+        5,
+        6,
+        2,
+        3,
+        4,
+        1,
+        8
+      ]
+    }
+  ],
+  "rows": 811239,
+  "date_diffusion": "2026-03-03T07:45:00.000Z",
+  "weburl": "https://www.statistiques.developpement-durable.gouv.fr/catalogue?page=datafile&datafileRid=f8f0700f-806c-40a7-83b1-f21cf507e7c4&datafileMillesime=2026-02",
+  "views": 98291,
+  "downloads": 159900,
+  "dataset": {
+    "id": "6513f0189d7d312c80ec5b5b",
+    "title": "Liste des permis de construire et autres autorisations d’urbanisme",
+    "description": "Dans le cadre de l’ouverture des données publiques, le service des données et études statistiques, SDES, met à disposition une large partie des informations concernant les autorisations d’urbanisme renseignées dans la base de données Sitadel. L’essentiel des données de cette base, alimentée par les collectivités territoriales et les directions départementales du territoire, est diffusé chaque mois en même temps que les statistiques sur la construction neuve (logements et locaux). Sont mises à disposition les autorisations d’urbanisme délivrées depuis 2013, qu’il s’agisse de permis de construire (PC) et de déclarations préalables (DP) créant au moins un logement, de permis de construire et de déclarations préalables de création ou d’extension de locaux non résidentiels, de permis d’aménager (PA) ou encore de permis de démolir (PD).",
+    "topic": "Logement",
+    "tags": [
+      "construction-neuve",
+      "logement-neuf",
+      "sitadel"
+    ],
+    "license": "fr-lo",
+    "frequency": "monthly",
+    "frequency_date": "2026-03-31",
+    "spatial": {
+      "zones": [
+        "country:fr"
+      ],
+      "granularity": "fr:commune"
+    },
+    "temporal_coverage": {
+      "start": "2013-01-01",
+      "end": "2026-01-31"
+    },
+    "created_at": "2023-09-27T09:04:24.833Z",
+    "last_modified": "2026-03-17T17:34:07.484Z",
+    "last_update": "2026-03-17T17:34:07.484Z",
+    "organization": {
+      "id": "6273cf16ed00fe6d5495e145",
+      "title": "Bureau des statistiques de l'offre du logement et locaux",
+      "description": "Bureau des statistiques de l'offre du logement et locaux",
+      "acronym": "CGDD/SDES/SDSLC/BSOLL"
+    },
+    "weburl": "https://www.statistiques.developpement-durable.gouv.fr/catalogue?page=dataset&datasetId=6513f0189d7d312c80ec5b5b",
+    "views": 638782,
+    "attachments": [
+      {
+        "rid": "6a73fdde-02b1-4c7f-a81c-3c02da6bc4f6",
+        "type": "documentation",
+        "title": "Dictionnaire des variables des permis d’aménager",
+        "description": "Dictionnaire des variables des permis d’aménager",
+        "published": "2023-09-27T09:07:53.000Z",
+        "url": "https://data.statistiques.developpement-durable.gouv.fr/dido/api/files/6a73fdde-02b1-4c7f-a81c-3c02da6bc4f6",
+        "created_at": "2023-09-27T09:07:54.354Z",
+        "last_modified": "2023-09-27T09:07:54.645Z",
+        "downloads": 6407
+      },
+      {
+        "rid": "38ca96c1-c8af-42db-bba1-13cd4bc713f3",
+        "type": "documentation",
+        "title": "Dictionnaire des variables des permis de construire des locaux",
+        "description": "Dictionnaire des variables des permis de construire des locaux",
+        "published": "2023-09-27T09:07:38.000Z",
+        "url": "https://data.statistiques.developpement-durable.gouv.fr/dido/api/files/38ca96c1-c8af-42db-bba1-13cd4bc713f3",
+        "created_at": "2023-09-27T09:07:39.156Z",
+        "last_modified": "2023-09-27T09:07:39.558Z",
+        "downloads": 7901
+      },
+      {
+        "rid": "ab799b04-0b03-4f96-949c-eb23c478a8e8",
+        "type": "documentation",
+        "title": "Dictionnaire des variables des permis de construire des logements",
+        "description": "Dictionnaire des variables des permis de construire des logements",
+        "published": "2023-09-27T09:07:47.000Z",
+        "url": "https://data.statistiques.developpement-durable.gouv.fr/dido/api/files/ab799b04-0b03-4f96-949c-eb23c478a8e8",
+        "created_at": "2023-09-27T09:07:48.542Z",
+        "last_modified": "2023-09-27T09:07:48.879Z",
+        "downloads": 11095
+      },
+      {
+        "rid": "fafd6542-ecc2-4ee3-9130-f17f7de8da09",
+        "type": "documentation",
+        "title": "Dictionnaire des variables des permis de démolir",
+        "description": "Dictionnaire des variables des permis de démolir",
+        "published": "2023-09-27T09:07:29.000Z",
+        "url": "https://data.statistiques.developpement-durable.gouv.fr/dido/api/files/fafd6542-ecc2-4ee3-9130-f17f7de8da09",
+        "created_at": "2023-09-27T09:07:29.694Z",
+        "last_modified": "2023-09-27T09:07:29.973Z",
+        "downloads": 4241
+      },
+      {
+        "rid": "52ce326b-45b2-42ce-a2e7-4a60554ef559",
+        "type": "documentation",
+        "title": "Note de présentation de la base ouverte Sitadel",
+        "description": "Note de présentation de la base ouverte Sitadel",
+        "published": "2023-09-27T09:07:59.000Z",
+        "url": "https://data.statistiques.developpement-durable.gouv.fr/dido/api/files/52ce326b-45b2-42ce-a2e7-4a60554ef559",
+        "created_at": "2023-09-27T09:08:00.148Z",
+        "last_modified": "2023-09-27T09:08:00.523Z",
+        "downloads": 6400
+      }
+    ]
+  },
+  "next_millesime_href": "https://www.statistiques.developpement-durable.gouv.fr/catalogue?page=datafile&datafileRid=f8f0700f-806c-40a7-83b1-f21cf507e7c4&datafileMillesime=2026-01"
+}

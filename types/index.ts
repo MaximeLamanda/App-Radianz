@@ -97,6 +97,15 @@ export interface Prospect {
   exposure?: Exposure;
   placeType: PlaceType;
   placeId?: string; // Identifiant Google Places (pour recherche/détail)
+  /** POI candidats (nearby Google) pour navigation précédent/suivant ; index courant = poiCandidateIndex */
+  poiCandidates?: Array<{
+    name: string;
+    placeId?: string;
+    coordinates?: { lat: number; lng: number };
+  }>;
+  poiCandidateIndex?: number;
+  /** Position du POI sélectionné pour find-local-siren (le bâtiment reste dans coordinates) */
+  poiCoordinates?: AddressCoordinates;
   qualityScore: number; // 0-100
   contact?: Contact;
   thumbnailUrl?: string;

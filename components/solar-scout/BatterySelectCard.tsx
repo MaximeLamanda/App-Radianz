@@ -29,12 +29,12 @@ export function BatterySelectCard({
   count?: number;
   onCountChange?: (n: number) => void;
   maxCount?: number;
-  /** Affiche le badge "recommandé" sur la carte sélectionnée quand elle est recommandée pour ce prospect */
+  /** Badge « recommandé » (dimensionnement calculé pour ce prospect) — ne pas confondre avec le flag catalogue `value.recommended` */
   isRecommendedForProspect?: boolean;
-  /** Identifiant de la batterie recommandée pour ce prospect (pour le badge dans la liste) */
+  /** Modèle dont la ligne affiche « recommandé » dans la liste (= dimensionnement calculé, un seul id) */
   recommendedBatteryIdForProspect?: string | null;
 }) {
-  const showRecommended = value?.recommended === true || isRecommendedForProspect === true;
+  const showRecommended = isRecommendedForProspect === true;
   const [countPopoverOpen, setCountPopoverOpen] = useState(false);
   const effectiveMax = Math.max(1, maxCount);
   const clampedCount = Math.min(effectiveMax, Math.max(1, count));

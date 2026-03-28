@@ -15,6 +15,7 @@ import { getProspectById, getProspectByPlaceId, updateProspectInPipeline } from 
 import { useDrawer } from "@/lib/drawer-context";
 import { useAuth } from "@/lib/auth-context";
 import { fetchWithAuth } from "@/lib/api-client";
+import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 import { toast } from "sonner";
 import type { Prospect, AddressCoordinates, PlaceSearchResult } from "@/types";
 
@@ -27,6 +28,29 @@ type BdnbDataForClick = {
     totalAreaM2: number;
     anneeConstruction: number | null;
   };
+};
+
+type MapBounds = { ne: { lat: number; lng: number }; sw: { lat: number; lng: number } };
+
+type SitadelOpportunity = {
+  id: number;
+  num_permis: string | null;
+  comm: string | null;
+  dest_loc: string | null;
+  surf_loc: number | null;
+  nature_projet: string | null;
+  date_reelle_auth: string | null;
+  date_doc: string | null;
+  date_ouverture_chantier: string | null;
+  date_achevement_travaux: string | null;
+  annee_source: number | null;
+  lat: number;
+  lng: number;
+  ape_dem?: string | null;
+  cj_dem?: string | null;
+  denom_dem?: string | null;
+  siren_dem?: string | null;
+  siret_dem?: string | null;
 };
 
 // Fonction pour calculer le quality score
@@ -69,6 +93,16 @@ function SolarScoutContent() {
   const [surfaceRange, setSurfaceRange] = useState<{ min: number; max: number }>({ min: 200, max: 2000 });
   const [isAnalysingBuildings, setIsAnalysingBuildings] = useState(false);
   const [getMapBoundsFunc, setGetMapBoundsFunc] = useState<(() => { ne: { lat: number; lng: number }; sw: { lat: number; lng: number } } | null) | null>(null);
+  const [activeSidebarTab, setActiveSidebarTab] = useState<"analyser" | "recherche" | "permis">("recherche");
+  const [mapBoundsForPermis, setMapBoundsForPermis] = useState<MapBounds | null>(null);
+  const [sitadelOpportunities, setSitadelOpportunities] = useState<SitadelOpportunity[]>([]);
+  const [isSitadelLoading, setIsSitadelLoading] = useState(false);
+  const [sitadelError, setSitadelError] = useState<string | null>(null);
+  const [sitadelTruncated, setSitadelTruncated] = useState(false);
+  const [selectedSourceYears, setSelectedSourceYears] = useState<number[]>([
+    2020, 2021, 2022, 2023, 2024, 2025, 2026,
+  ]);
+  const hasAutoLoadedPermisRef = useRef(false);
 
   // À la fermeture du drawer : retirer prospectId de l'URL (sans recharger) mais garder le prospect/polygone sélectionné sur la carte
   const handleDrawerOpenChange = useCallback(
@@ -90,6 +124,8 @@ function SolarScoutContent() {
   );
   const [initialAddress, setInitialAddress] = useState<string>(""); // Champ adresse vide par défaut
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
+  /** Incrémenté pour recentrer la carte après fermeture de la recherche bâtiments */
+  const [mapViewResetKey, setMapViewResetKey] = useState(0);
   const [getMapCenterFunc, setGetMapCenterFunc] = useState<(() => AddressCoordinates | null) | null>(null);
   const [isBdnbEnrichingForProspect, setIsBdnbEnrichingForProspect] = useState(false);
   
@@ -118,6 +154,62 @@ function SolarScoutContent() {
       if (bounds) setOsmBoundsToFetch(bounds);
     }
   }, [getMapBoundsFunc]);
+
+  const handleResetSearch = useCallback(() => {
+    setSearchResults([]);
+    setCenterCoordinates(null);
+    setInitialAddress("");
+    setMapViewResetKey((k) => k + 1);
+  }, []);
+
+  const fetchSitadelOpportunities = useCallback(
+    async (boundsOverride?: MapBounds | null) => {
+      const bounds = boundsOverride ?? mapBoundsForPermis ?? getMapBoundsFunc?.() ?? null;
+      if (!bounds) return;
+      setIsSitadelLoading(true);
+      setSitadelError(null);
+      try {
+        const params = new URLSearchParams({
+          ne_lat: String(bounds.ne.lat),
+          ne_lng: String(bounds.ne.lng),
+          sw_lat: String(bounds.sw.lat),
+          sw_lng: String(bounds.sw.lng),
+          limit: "12000",
+        });
+        if (selectedSourceYears.length > 0) {
+          params.set("source_years", selectedSourceYears.join(","));
+        }
+        const res = await fetchWithAuth(`/api/sitadel-opportunities?${params.toString()}`);
+        if (res.status === 403) {
+          const json = await res.json().catch(() => ({}));
+          throw new Error(json.message ?? "Quota Sitadel carte atteint.");
+        }
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}));
+          throw new Error(json.error ?? "Erreur API Sitadel.");
+        }
+        const json = await res.json();
+        setSitadelOpportunities(Array.isArray(json.opportunities) ? json.opportunities : []);
+        setSitadelTruncated(Boolean(json.meta?.truncated));
+      } catch (error) {
+        setSitadelError(error instanceof Error ? error.message : "Erreur de chargement Sitadel.");
+        setSitadelOpportunities([]);
+        setSitadelTruncated(false);
+      } finally {
+        setIsSitadelLoading(false);
+      }
+    },
+    [getMapBoundsFunc, mapBoundsForPermis, selectedSourceYears]
+  );
+
+  useEffect(() => {
+    if (activeSidebarTab !== "permis") return;
+    if (hasAutoLoadedPermisRef.current) return;
+    const initialBounds = mapBoundsForPermis ?? getMapBoundsFunc?.() ?? null;
+    if (!initialBounds) return;
+    hasAutoLoadedPermisRef.current = true;
+    void fetchSitadelOpportunities(initialBounds);
+  }, [activeSidebarTab, mapBoundsForPermis, getMapBoundsFunc, fetchSitadelOpportunities]);
 
   const getMapCenter = useCallback(() => {
     if (getMapCenterFunc && typeof getMapCenterFunc === 'function') {
@@ -154,6 +246,14 @@ function SolarScoutContent() {
   // Ouvrir le drawer et mettre à jour le contenu quand un prospect est sélectionné
   useEffect(() => {
     if (prospect) {
+      logPolygonDrawer("page:drawer-effect", {
+        prospectId: prospect.id,
+        placeId: prospect.placeId,
+        addressPreview: prospect.address?.slice(0, 40),
+        roofSurfacesCount: prospect.roofSurfaces?.length ?? 0,
+        roofSurfaceArea: prospect.roofSurface?.area,
+        firstSurfaceId: prospect.roofSurfaces?.[0]?.id ?? "(roofSurface only)",
+      });
       setIsDrawerOpen(true);
       setDrawerContent(
         <ProspectDrawer
@@ -256,8 +356,9 @@ function SolarScoutContent() {
             // Merger dans le state courant pour ne pas écraser les surfaces BDNB
             // injectées après que la closure du drawer a capturé le prospect.
             setProspect((prev) => {
-              if (!prev || !updatedProspect) return updatedProspect;
-              return {
+              if (!updatedProspect) return prev;
+              if (!prev) return updatedProspect as Prospect;
+              const merged: Prospect = {
                 ...prev,
                 ...updatedProspect,
                 // Conserver les roofSurfaces du state courant si updatedProspect
@@ -265,6 +366,15 @@ function SolarScoutContent() {
                 roofSurfaces: updatedProspect.roofSurfaces ?? prev.roofSurfaces,
                 roofSurface: updatedProspect.roofSurface ?? prev.roofSurface,
               };
+              logPolygonDrawer("page:drawer-onProspectUpdate", {
+                source: "ProspectDrawer",
+                prevSurfaces: prev.roofSurfaces?.length ?? 0,
+                updatedHasRoofSurfaces: updatedProspect.roofSurfaces != null,
+                updatedSurfacesLen: updatedProspect.roofSurfaces?.length,
+                mergedSurfaces: merged.roofSurfaces?.length ?? 0,
+                keysPatch: Object.keys(updatedProspect),
+              });
+              return merged;
             });
           }}
           onValidateDrawing={() => {
@@ -294,6 +404,23 @@ function SolarScoutContent() {
 
     loadProspect();
   }, [searchParams]);
+
+  /** Tableau Analyser → « Voir » : carte + polygone OSM sans passer par handleAddressSelect (évite loadProspectSurfaces qui écrase les surfaces). */
+  const handleFocusBuildingFromAnalysis = useCallback(
+    (focused: Prospect, center: AddressCoordinates) => {
+      setCenterCoordinates(center);
+      setProspect((prev) => {
+        if (!prev) return focused;
+        return {
+          ...prev,
+          ...focused,
+          roofSurfaces: focused.roofSurfaces ?? prev.roofSurfaces,
+          roofSurface: focused.roofSurface ?? prev.roofSurface,
+        };
+      });
+    },
+    []
+  );
 
   const handleAddressSelect = (address: string, coordinates: AddressCoordinates) => {
     // Centrer la carte sur l'adresse sélectionnée
@@ -423,13 +550,21 @@ function SolarScoutContent() {
               pendingBdnbSurfacesRef.current = null;
               setProspect((prev) => {
                 if (!updatedProspect) return prev;
-                if (!prev) return updatedProspect;
-                return {
+                if (!prev) return updatedProspect as Prospect;
+                const merged: Prospect = {
                   ...prev,
                   ...updatedProspect,
                   roofSurfaces: updatedProspect.roofSurfaces ?? prev.roofSurfaces,
                   roofSurface: updatedProspect.roofSurface ?? prev.roofSurface,
                 };
+                logPolygonDrawer("page:map-onProspectUpdate", {
+                  prevSurfaces: prev.roofSurfaces?.length ?? 0,
+                  updatedHasRoofSurfaces: updatedProspect.roofSurfaces != null,
+                  updatedSurfacesLen: updatedProspect.roofSurfaces?.length,
+                  mergedSurfaces: merged.roofSurfaces?.length ?? 0,
+                  keysPatch: Object.keys(updatedProspect),
+                });
+                return merged;
               });
             }}
             isDrawing={isDrawing}
@@ -509,7 +644,14 @@ function SolarScoutContent() {
             surfaceRange={surfaceRange}
             onOsmBuildingsLoadingChange={setIsAnalysingBuildings}
             onGetMapBounds={handleGetMapBounds}
+            onViewBoundsChange={setMapBoundsForPermis}
+            mapViewResetKey={mapViewResetKey}
+            permisOpportunities={sitadelOpportunities}
+            showPermisLayer={activeSidebarTab === "permis"}
             onBdnbSurface={(bdnbSurfaces) => {
+              logPolygonDrawer("page:onBdnbSurface", {
+                bdnbCount: bdnbSurfaces?.length ?? 0,
+              });
               // Mémoriser dans le ref pour que onProspectUpdate puisse les réinjecter
               pendingBdnbSurfacesRef.current = bdnbSurfaces && bdnbSurfaces.length > 0 ? bdnbSurfaces : null;
 
@@ -592,18 +734,21 @@ function SolarScoutContent() {
       <div className="absolute top-6 left-6 z-50">
         <Sidebar 
           onAddressSelect={handleAddressSelect}
+          onFocusBuildingFromAnalysis={handleFocusBuildingFromAnalysis}
           initialAddress={initialAddress}
           isDrawing={isDrawing}
           onDrawingChange={setIsDrawing}
           onProspectUpdate={(updatedProspect) => {
             setProspect((prev) => {
-              if (!prev || !updatedProspect) return updatedProspect;
-              return {
+              if (!updatedProspect) return prev;
+              if (!prev) return updatedProspect as Prospect;
+              const merged: Prospect = {
                 ...prev,
                 ...updatedProspect,
                 roofSurfaces: updatedProspect.roofSurfaces ?? prev.roofSurfaces,
                 roofSurface: updatedProspect.roofSurface ?? prev.roofSurface,
               };
+              return merged;
             });
           }}
           onValidateDrawing={() => {
@@ -671,6 +816,28 @@ function SolarScoutContent() {
           osmBoundsToFetch={osmBoundsToFetch}
           surfaceRange={surfaceRange}
           onSurfaceRangeChange={setSurfaceRange}
+          onTabChange={setActiveSidebarTab}
+          onResetSearch={handleResetSearch}
+          permisState={{
+            loading: isSitadelLoading,
+            count: sitadelOpportunities.length,
+            truncated: sitadelTruncated,
+            error: sitadelError,
+          }}
+          onRefreshPermis={() => {
+            void fetchSitadelOpportunities();
+          }}
+          selectedSourceYears={selectedSourceYears}
+          onToggleSourceYear={(year) => {
+            setSelectedSourceYears((prev) => {
+              if (prev.includes(year)) {
+                // Garder au moins 1 source sélectionnée.
+                if (prev.length === 1) return prev;
+                return prev.filter((y) => y !== year);
+              }
+              return [...prev, year].sort();
+            });
+          }}
         />
       </div>
     </div>

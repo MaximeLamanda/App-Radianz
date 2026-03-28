@@ -1,12 +1,17 @@
 /**
- * findLocalSiren – matching établissement LOCAL vs sièges nationaux (API Sirene).
- * Stratégie : 4 requêtes parallèles → scoring composite (fuzzy nom, rue, CP, distance GPS).
+ * findLocalSiren – matching établissement LOCAL vs sièges nationaux (API recherche-entreprises).
+ * Stratégie : 1–2 requêtes séquentielles (priorité rue+CP) → scoring composite (adresse d'abord).
  */
 
 import Fuse from "fuse.js";
-import { extractCodePostal } from "./recherche-entreprises";
+import {
+  mapResultatApiToEnrichment,
+  type ResultatApiRechercheEntreprises,
+} from "@/lib/api-gouv-enrichment-map";
+import type { EnrichmentResult } from "./recherche-entreprises";
+import { buildPrioritizedSearchQueries, parseAddressSearchContext } from "./recherche-entreprises";
 
-/** Contexte parsé depuis l'adresse pour les 4 requêtes */
+/** Contexte parsé depuis l'adresse */
 export interface ParsedAddress {
   ville: string | null;
   codePostal: string | null;
@@ -22,6 +27,8 @@ export interface LocalSirenCandidate {
   code_postal: string;
   latitude: number | null;
   longitude: number | null;
+  /** Entrée API source (pour enrichissement prospect). */
+  sourceCompany: ResultatApiRechercheEntreprises;
 }
 
 /** Résultat retourné par findLocalSiren */
@@ -32,6 +39,8 @@ export interface FindLocalSirenResult {
   adresse: string;
   code_postal: string;
   score: number; // 0-1000
+  /** Requête q api.gouv qui a fourni les résultats retenus. */
+  winningQuery: string | null;
 }
 
 /** Un candidat scoré (pour debug / logs) */
@@ -49,53 +58,25 @@ const PER_PAGE = 20;
 const DISTANCE_KM_THRESHOLD = 1;
 const EARTH_RADIUS_KM = 6371;
 
+/** Pondérations sur 1000 : priorité adresse déclarée vs fuzzy nom. */
+const WEIGHT_NOM = 250;
+const WEIGHT_RUE = 380;
+const WEIGHT_CP = 270;
+const WEIGHT_DIST = 100;
+
 /**
  * Parse l'adresse pour extraire ville, CP et rue (segment avant "ville CP").
  */
 export function parseAddressForLocalSiren(address: string): ParsedAddress {
-  const raw = (address ?? "").trim();
-  const codePostal = raw ? extractCodePostal(raw) : null;
-  const segments = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
-
-  const segmentWithCp = codePostal ? segments.find((s) => s.includes(codePostal)) : null;
-  const ville = segmentWithCp
-    ? segmentWithCp.replace(/\d{5}\s*/, "").trim() || null
-    : null;
-
-  const cpIndex = segmentWithCp ? segments.findIndex((s) => s.includes(codePostal!)) : -1;
-  const rue = cpIndex > 0 ? segments[cpIndex - 1] : null;
-
-  return { ville, codePostal, rue };
+  const ctx = parseAddressSearchContext(null, address);
+  return { ville: ctx.commune, codePostal: ctx.codePostal, rue: ctx.streetSegment };
 }
 
 /**
- * Construit les 4 requêtes pour PHASE 1 (parallèles) :
- * q1: "${poiName}" + ville + CP
- * q2: "${poiName}" + ville
- * q3: rue + ville + CP
- * q4: ville + CP + rue
+ * Liste des requêtes prioritaires (alignée sur buildPrioritizedSearchQueries).
  */
-export function buildLocalSirenQueries(
-  poiName: string,
-  address: string
-): string[] {
-  const { ville, codePostal, rue } = parseAddressForLocalSiren(address);
-  const queries: string[] = [];
-
-  if (poiName && ville && codePostal) {
-    queries.push(`"${poiName.trim()}" ${ville} ${codePostal}`);
-  }
-  if (poiName && ville) {
-    queries.push(`"${poiName.trim()}" ${ville}`);
-  }
-  if (rue && ville && codePostal) {
-    queries.push(`"${rue}" ${ville} ${codePostal}`);
-  }
-  if (ville && codePostal && rue) {
-    queries.push(`${ville} ${codePostal} ${rue}`);
-  }
-
-  return queries;
+export function buildLocalSirenQueries(poiName: string, address: string): string[] {
+  return buildPrioritizedSearchQueries(parseAddressSearchContext(poiName, address));
 }
 
 /**
@@ -130,7 +111,7 @@ function normalizeForMatch(s: string): string {
 
 /**
  * Score composite 0–1000 :
- * 40% fuzzy_nom (Fuse), 30% exact_rue, 20% exact_CP, 10% distance < 1 km.
+ * ~25% fuzzy_nom (Fuse), ~38% rue, ~27% CP, ~10% distance &lt; 1 km.
  */
 export function scoreCandidate(
   poiName: string,
@@ -180,14 +161,14 @@ export function scoreCandidate(
   }
 
   return (
-    Math.round(400 * partNom) +
-    Math.round(300 * partRue) +
-    Math.round(200 * partCP) +
-    Math.round(100 * partDist)
+    Math.round(WEIGHT_NOM * partNom) +
+    Math.round(WEIGHT_RUE * partRue) +
+    Math.round(WEIGHT_CP * partCP) +
+    Math.round(WEIGHT_DIST * partDist)
   );
 }
 
-/** Structure minimale d'un résultat API (siège ou établissement) pour aplatissement */
+/** Structure minimale d'un établissement pour aplatissement */
 export interface ApiEtablissement {
   adresse?: string;
   geo_adresse?: string;
@@ -197,12 +178,7 @@ export interface ApiEtablissement {
   siret?: string;
 }
 
-export interface ApiResultCompany {
-  siren?: string;
-  nom_complet?: string;
-  siege?: ApiEtablissement;
-  matching_etablissements?: ApiEtablissement[];
-}
+export type ApiResultCompany = ResultatApiRechercheEntreprises;
 
 /**
  * Aplatit les résultats API (entreprises) en liste de candidats (un par siège + un par établissement).
@@ -229,6 +205,7 @@ export function flattenApiResultsToCandidates(
           code_postal: company.siege.code_postal ?? "",
           latitude: parseCoord(company.siege.latitude),
           longitude: parseCoord(company.siege.longitude),
+          sourceCompany: company,
         });
       }
     }
@@ -245,6 +222,7 @@ export function flattenApiResultsToCandidates(
           code_postal: etab.code_postal ?? "",
           latitude: parseCoord(etab.latitude),
           longitude: parseCoord(etab.longitude),
+          sourceCompany: company,
         });
       }
     }
@@ -259,46 +237,63 @@ function parseCoord(v: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export interface FindLocalSirenOptions {
-  /** Si true, la réponse inclut phase2Scoring pour debug. */
-  debug?: boolean;
+/** Raison sociale / dirigeants depuis l’entrée API, SIRET et adresse depuis l’établissement local retenu. */
+export function buildEnrichmentFromLocalMatch(
+  company: ResultatApiRechercheEntreprises,
+  local: LocalSirenCandidate
+): EnrichmentResult {
+  const base = mapResultatApiToEnrichment(company);
+  return {
+    ...base,
+    siret: local.siret || base.siret,
+    companyAddress: local.adresse || base.companyAddress,
+  };
 }
 
 /**
  * Trouve l'établissement LOCAL le plus pertinent (score 0–1000).
- * PHASE 1 : 4 requêtes parallèles (per_page=20).
- * PHASE 2 : scoring composite (fuzzy nom 40%, rue 30%, CP 20%, distance 10%).
- *
- * @param poiName – nom du POI (ex. "Decathlon Dreux")
- * @param address – adresse complète
- * @param lat – latitude du POI
- * @param lon – longitude du POI
- * @param fetcher – (q) => Promise<{ results: ApiResultCompany[] }> (ex. appel API gouv)
- * @param options – debug: true pour retourner phase2Scoring dans le résultat
+ * Phase données : 1–2 requêtes séquentielles (per_page=20), arrêt dès qu’il existe des candidats.
+ * Phase scoring : fuzzy nom, rue, CP, distance (pondération orientée adresse).
  */
 export async function findLocalSiren(
   poiName: string,
   address: string,
   lat: number,
   lon: number,
-  fetcher: (q: string, perPage: number) => Promise<{ results?: ApiResultCompany[] }>,
-  options?: FindLocalSirenOptions
-): Promise<FindLocalSirenResult | (FindLocalSirenResult & { phase2Scoring: ScoredCandidate[] }) | null> {
+  fetcher: (q: string, perPage: number) => Promise<{ results?: ApiResultCompany[] }>
+): Promise<
+  | (FindLocalSirenResult & {
+      phase2Scoring: ScoredCandidate[];
+      enrichment: EnrichmentResult;
+    })
+  | null
+> {
   const parsed = parseAddressForLocalSiren(address);
   const queries = buildLocalSirenQueries(poiName, address);
   if (queries.length === 0) return null;
 
   const allResults: ApiResultCompany[] = [];
-  await Promise.all(
-    queries.map(async (q) => {
-      const data = await fetcher(q, PER_PAGE);
-      const list = data.results ?? [];
-      allResults.push(...list);
-    })
-  );
+  let winningQuery: string | null = null;
+  let lastQueryWithApiHits: string | null = null;
+
+  for (const q of queries) {
+    if (!q) continue;
+    const data = await fetcher(q, PER_PAGE);
+    const list = data.results ?? [];
+    if (list.length > 0) lastQueryWithApiHits = q;
+    allResults.push(...list);
+
+    const candidatesSoFar = flattenApiResultsToCandidates(allResults);
+    if (candidatesSoFar.length > 0) {
+      winningQuery = q;
+      break;
+    }
+  }
 
   const candidates = flattenApiResultsToCandidates(allResults);
   if (candidates.length === 0) return null;
+
+  const effectiveWinningQuery = winningQuery ?? lastQueryWithApiHits;
 
   const scored = candidates.map((c) => {
     const s = scoreCandidate(
@@ -343,6 +338,8 @@ export async function findLocalSiren(
   if (!bestEntry) return null;
   const { candidate: best, score: bestScore } = bestEntry;
 
+  const enrichment = buildEnrichmentFromLocalMatch(best.sourceCompany, best);
+
   const result: FindLocalSirenResult = {
     siren: best.siren,
     siret: best.siret,
@@ -350,10 +347,8 @@ export async function findLocalSiren(
     adresse: best.adresse,
     code_postal: best.code_postal,
     score: bestScore,
+    winningQuery: effectiveWinningQuery,
   };
 
-  if (options?.debug) {
-    return { ...result, phase2Scoring };
-  }
-  return result;
+  return { ...result, phase2Scoring, enrichment };
 }

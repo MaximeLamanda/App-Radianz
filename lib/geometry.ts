@@ -1,5 +1,4 @@
-import type { AddressCoordinates } from "@/types";
-import type { Prospect } from "@/types";
+import type { AddressCoordinates, Prospect } from "@/types";
 
 /**
  * Calcule le centre (centroïde) d'un polygone à partir de ses sommets.

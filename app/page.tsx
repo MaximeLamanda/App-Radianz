@@ -428,13 +428,22 @@ function HomePage() {
           isOpen={true}
           onOpenChange={handleDrawerOpenChange}
           isDrawing={false}
-          onProspectUpdate={(p) => {
-            setSelectedProspect(p);
-            if (p.id) {
-              mutateProspects((prev) =>
-                prev ? prev.map((x) => (x.id === p.id ? p : x)) : prev
-              );
-            }
+          onProspectUpdate={(patch) => {
+            setSelectedProspect((prev) => {
+              if (!prev) return prev;
+              const merged: Prospect = {
+                ...prev,
+                ...patch,
+                roofSurfaces: patch.roofSurfaces ?? prev.roofSurfaces,
+                roofSurface: patch.roofSurface ?? prev.roofSurface,
+              };
+              if (merged.id) {
+                mutateProspects((list) =>
+                  list ? list.map((x) => (x.id === merged.id ? merged : x)) : list
+                );
+              }
+              return merged;
+            });
           }}
           onSurfaceDelete={(surfaceId) => {
             const prospect = selectedProspect;

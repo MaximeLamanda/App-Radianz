@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import Image from "next/image";
-import { Search, Plus, Loader2, MapPin, X, Trash2, Zap, FileCheck, MoreVertical, Pencil, ImagePlus, ArrowLeft, Building2 } from "lucide-react";
+import { Search, Plus, Loader2, MapPin, X, Trash2, Zap, FileCheck, MoreVertical, Pencil, ImagePlus, ArrowLeft, Building2, ListChecks, Eye, Send } from "lucide-react";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import { searchPlacesByType } from "@/lib/places-search";
@@ -36,10 +36,21 @@ import {
   deleteInverterReferenceFromFirebase,
 } from "@/lib/firestore-inverter-references";
 import { fetchWithAuth } from "@/lib/api-client";
+import { addProspectToPipeline } from "@/lib/firestore";
+import { useAuth } from "@/lib/auth-context";
 import { useOsmBuildings, type MapBounds } from "@/lib/swr-hooks";
+import { getPolygonCenter } from "@/lib/geometry";
 import { RangeSlider } from "@/components/ui/slider";
 import { StickSliderTrack } from "./StickSliderTrack";
 import { FilterLabel } from "./FilterLabel";
+import { listPoisNearPolygon } from "@/lib/poi-near-polygon";
+import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export function PanelReferenceForm({
   initialRef,
@@ -919,7 +930,7 @@ interface SidebarProps {
   onDrawingChange?: (isDrawing: boolean) => void;
   onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }>; orientation?: number }) => void;
   onSurfaceDelete?: (surfaceId: string) => void;
-  onProspectUpdate?: (prospect: Prospect) => void;
+  onProspectUpdate?: (patch: Partial<Prospect>) => void;
   onValidateDrawing?: () => void;
   searchResults?: PlaceSearchResult[];
   onSearchResults?: (results: PlaceSearchResult[]) => void;
@@ -935,6 +946,20 @@ interface SidebarProps {
   surfaceRange?: { min: number; max: number };
   /** Callback quand la plage surface change */
   onSurfaceRangeChange?: (range: { min: number; max: number }) => void;
+  onTabChange?: (tab: "analyser" | "recherche" | "permis") => void;
+  /** Vide les résultats de recherche et recentre la carte (état avant recherche) */
+  onResetSearch?: () => void;
+  /** Depuis le tableau d’analyse : focus carte + prospect avec polygones OSM (évite le merge destructif de onAddressSelect) */
+  onFocusBuildingFromAnalysis?: (prospect: Prospect, center: AddressCoordinates) => void;
+  permisState?: {
+    loading: boolean;
+    count: number;
+    truncated: boolean;
+    error?: string | null;
+  };
+  onRefreshPermis?: () => void;
+  selectedSourceYears?: number[];
+  onToggleSourceYear?: (year: number) => void;
 }
 
 export function Sidebar({
@@ -955,8 +980,16 @@ export function Sidebar({
   osmBoundsToFetch = null,
   surfaceRange = { min: 200, max: 2000 },
   onSurfaceRangeChange,
+  onTabChange,
+  onResetSearch,
+  onFocusBuildingFromAnalysis,
+  permisState,
+  onRefreshPermis,
+  selectedSourceYears = [],
+  onToggleSourceYear,
 }: SidebarProps) {
   const { data: osmBuildings = [] } = useOsmBuildings(onAnalyseBuildings ? osmBoundsToFetch ?? null : null);
+  const { user } = useAuth();
   const wasAnalysingRef = useRef(false);
 
   // À la fin d'une analyse : mettre à jour le max si besoin, en conservant le min actuel (préréglage de l'utilisateur)
@@ -983,6 +1016,13 @@ export function Sidebar({
   const [selectedDistance, setSelectedDistance] = useState<number>(1000);
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"analyser" | "recherche" | "permis">(
+    onAnalyseBuildings ? "analyser" : "recherche"
+  );
+
+  useEffect(() => {
+    onTabChange?.(activeTab);
+  }, [activeTab, onTabChange]);
 
   // Données BDNB (surface, année, batiment complet) par placeId pour les résultats de recherche
   const [bdnbByPlaceId, setBdnbByPlaceId] = useState<
@@ -1002,6 +1042,25 @@ export function Sidebar({
   const [inverterType, setInverterType] = useState<InverterType>("string_inverter");
   const [panelPowerW, setPanelPowerW] = useState<string>("400");
   const [panelEfficiency, setPanelEfficiency] = useState<string>("20");
+
+  type EnrichedOsmBuildingRow = {
+    osmBuildingId: string;
+    surfaceM2: number;
+    poiName: string | null;
+    poiPlaceId?: string;
+    poiCandidates?: Array<{
+      name: string;
+      placeId?: string;
+      coordinates?: { lat: number; lng: number };
+    }>;
+    anneeConstruction: number | null;
+    centroid: { lat: number; lng: number } | null;
+  };
+
+  const [enrichedBuildings, setEnrichedBuildings] = useState<EnrichedOsmBuildingRow[] | null>(null);
+  const [isEnrichingBuildings, setIsEnrichingBuildings] = useState(false);
+  const [enrichBuildingsError, setEnrichBuildingsError] = useState<string | null>(null);
+  const enrichAbortRef = useRef<AbortController | null>(null);
 
   // Charger les paramètres depuis localStorage au montage
   useEffect(() => {
@@ -1242,16 +1301,268 @@ export function Sidebar({
     { value: "shopping_mall", label: "Centre commercial" },
   ];
 
+  const MAX_ENRICHED_BUILDINGS = 50;
+  const ENRICH_CONCURRENCY = 5;
+  const POI_PREVIEW_MAX = 26;
+
+  const sumBuildingSurfaceM2 = (b: { polygonSurfaces: Array<{ areaM2: number }> }) =>
+    b.polygonSurfaces.reduce((s, surf) => s + (surf.areaM2 || 0), 0);
+
+  const polygonCentroid = (polygon: Array<{ lat: number; lng: number }>) => {
+    if (!polygon || polygon.length === 0) return null;
+    let sumLat = 0;
+    let sumLng = 0;
+    for (const p of polygon) {
+      sumLat += p.lat;
+      sumLng += p.lng;
+    }
+    return { lat: sumLat / polygon.length, lng: sumLng / polygon.length };
+  };
+
+  const toEllipsis = (value: string | null | undefined, max = POI_PREVIEW_MAX) => {
+    const text = (value ?? "—").trim() || "—";
+    if (text.length <= max) return text;
+    return `${text.slice(0, max).trimEnd()}...`;
+  };
+
+  const getBestPolygonForBuilding = (b: { polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number }> }) => {
+    if (!b.polygonSurfaces?.length) return null;
+    const best = [...b.polygonSurfaces].sort((a, c) => (c.areaM2 ?? 0) - (a.areaM2 ?? 0))[0];
+    return best?.polygon?.length ? best.polygon : null;
+  };
+
+  async function runPool<T, R>(
+    items: T[],
+    concurrency: number,
+    worker: (item: T, idx: number) => Promise<R>
+  ): Promise<R[]> {
+    const out: R[] = new Array(items.length);
+    let next = 0;
+    const n = Math.max(1, Math.min(concurrency, items.length || 1));
+    const runners = Array.from({ length: n }, async () => {
+      while (next < items.length) {
+        const current = next++;
+        out[current] = await worker(items[current]!, current);
+      }
+    });
+    await Promise.all(runners);
+    return out;
+  }
+
+  const handleEnrichFilteredBuildings = async () => {
+    if (isAnalysingBuildings) return;
+    if (!osmBuildings || osmBuildings.length === 0) {
+      setEnrichedBuildings([]);
+      setEnrichBuildingsError("Aucun bâtiment à enrichir. Lance d’abord « Analyser les bâtiments ».");
+      return;
+    }
+
+    enrichAbortRef.current?.abort();
+    const abortController = new AbortController();
+    enrichAbortRef.current = abortController;
+
+    setIsEnrichingBuildings(true);
+    setEnrichBuildingsError(null);
+    setEnrichedBuildings(null);
+
+    try {
+      let placesAvailable = false;
+      try {
+        const maps = window.google?.maps as any;
+        if (maps?.importLibrary) {
+          const placesLib = await maps.importLibrary("places");
+          placesAvailable = Boolean((placesLib as any)?.PlacesService);
+        } else {
+          placesAvailable = Boolean((window.google as any)?.maps?.places?.PlacesService);
+        }
+      } catch {
+        placesAvailable = false;
+      }
+
+      if (!placesAvailable) {
+        setEnrichBuildingsError(
+          "POI indisponible: la bibliothèque Google Places n’est pas accessible (clé non autorisée / Places API non activée)."
+        );
+      }
+
+      const filtered = osmBuildings
+        .map((b) => ({ b, surfaceM2: sumBuildingSurfaceM2(b) }))
+        .filter(({ surfaceM2 }) => surfaceM2 >= surfaceRange.min && surfaceM2 <= surfaceRange.max)
+        .sort((a, c) => c.surfaceM2 - a.surfaceM2)
+        .slice(0, MAX_ENRICHED_BUILDINGS);
+
+      const rows = await runPool(filtered, ENRICH_CONCURRENCY, async ({ b, surfaceM2 }) => {
+        if (abortController.signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+        const polygon = getBestPolygonForBuilding(b);
+        const centroid = polygon ? polygonCentroid(polygon) : null;
+
+        let poiName: string | null = null;
+        let poiPlaceId: string | undefined = undefined;
+        let poiCandidates: EnrichedOsmBuildingRow["poiCandidates"] = undefined;
+        if (placesAvailable && centroid && polygon) {
+          const pois = await listPoisNearPolygon(centroid, polygon);
+          poiCandidates = pois.length > 0 ? pois : undefined;
+          const first = pois[0];
+          poiName = first?.name ?? null;
+          poiPlaceId = first?.placeId;
+        }
+
+        let anneeConstruction: number | null = null;
+        if (centroid) {
+          const res = await fetchWithAuth(
+            `/api/bdnb-neon?lat=${centroid.lat}&lng=${centroid.lng}`,
+            { signal: abortController.signal }
+          );
+          if (res.status === 403) {
+            const json = await res.json().catch(() => ({}));
+            throw new Error(json.message ?? "Quota BDNB (Neon) atteint.");
+          }
+          if (res.ok) {
+            const data = await res.json().catch(() => null);
+            const year = data?.batiment?.annee_construction;
+            anneeConstruction = typeof year === "number" ? year : null;
+          }
+        }
+
+        return {
+          osmBuildingId: b.id,
+          surfaceM2,
+          poiName,
+          poiPlaceId,
+          poiCandidates,
+          anneeConstruction,
+          centroid,
+        } satisfies EnrichedOsmBuildingRow;
+      });
+
+      if (abortController.signal.aborted) return;
+      setEnrichedBuildings(rows);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      const message = err instanceof Error ? err.message : "Erreur lors de l’enrichissement.";
+      setEnrichBuildingsError(message);
+      setEnrichedBuildings([]);
+    } finally {
+      if (!abortController.signal.aborted) {
+        setIsEnrichingBuildings(false);
+      }
+    }
+  };
+
+  const handleViewLead = (row: EnrichedOsmBuildingRow) => {
+    if (!row.centroid) {
+      toast.error("Coordonnées du bâtiment indisponibles.");
+      return;
+    }
+    const building = osmBuildings.find((b) => b.id === row.osmBuildingId);
+    const firstSurf = building?.polygonSurfaces?.[0];
+    if (!building?.polygonSurfaces?.length || !firstSurf?.polygon?.length) {
+      toast.error(
+        "Polygone introuvable : zoomez sur la zone ou relancez l’analyse pour charger les bâtiments OSM."
+      );
+      onAddressSelect?.(row.poiName || `Bâtiment ${row.osmBuildingId.slice(0, 6)}`, row.centroid);
+      return;
+    }
+
+    const centroid = getPolygonCenter(firstSurf.polygon) ?? row.centroid;
+    const roofSurfaces = building.polygonSurfaces.map((s, i) => ({
+      id: `${building.id}-${i}`,
+      area: s.areaM2,
+      polygon: s.polygon,
+      orientation: s.orientation ?? undefined,
+    }));
+    const totalArea = roofSurfaces.reduce((sum, s) => sum + s.area, 0);
+    const displayName = row.poiName || `Bâtiment ${row.osmBuildingId.slice(0, 6)}`;
+    const addressPoint = `Point ${row.centroid.lat.toFixed(5)}, ${row.centroid.lng.toFixed(5)}`;
+    const firstPoi = row.poiCandidates?.[0];
+    const poiCoordinates =
+      firstPoi?.coordinates != null
+        ? { lat: firstPoi.coordinates.lat, lng: firstPoi.coordinates.lng }
+        : undefined;
+
+    const prospect: Prospect = {
+      name: displayName,
+      address: addressPoint,
+      coordinates: centroid,
+      roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
+      roofSurfaces,
+      placeType: row.poiName ? "establishment" : "other",
+      placeId: row.poiPlaceId,
+      poiCandidates: row.poiCandidates,
+      poiCandidateIndex:
+        row.poiCandidates && row.poiCandidates.length > 0 ? 0 : undefined,
+      poiCoordinates,
+      qualityScore: totalArea > 0 ? Math.min(100, 10 + Math.floor(totalArea / 50)) : 10,
+      anneeConstruction: row.anneeConstruction ?? undefined,
+      siren: undefined,
+      siret: undefined,
+      companyLegalName: undefined,
+      companyManagerName: undefined,
+      companyAddress: undefined,
+      companyNaf: undefined,
+      companyEnrichmentApiUrl: undefined,
+      batteryReferenceId: undefined,
+      batteryCount: undefined,
+    };
+
+    onFocusBuildingFromAnalysis?.(prospect, row.centroid);
+  };
+
+  const handleAddRowToPipeline = async (row: EnrichedOsmBuildingRow) => {
+    if (!row.centroid) {
+      toast.error("Impossible d'ajouter: coordonnées manquantes.");
+      return;
+    }
+    try {
+      const firstPoi = row.poiCandidates?.[0];
+      const poiCoordinates =
+        firstPoi?.coordinates != null
+          ? { lat: firstPoi.coordinates.lat, lng: firstPoi.coordinates.lng }
+          : undefined;
+      const prospect: Prospect = {
+        name: row.poiName || `Bâtiment ${row.osmBuildingId.slice(0, 6)}`,
+        address: `Point ${row.centroid.lat.toFixed(5)}, ${row.centroid.lng.toFixed(5)}`,
+        coordinates: row.centroid,
+        roofSurface: { area: Math.round(row.surfaceM2), polygon: [] },
+        roofSurfaces: [{ id: `osm-${row.osmBuildingId}`, area: Math.round(row.surfaceM2), polygon: [] }],
+        placeType: "establishment",
+        placeId: row.poiPlaceId,
+        poiCandidates: row.poiCandidates,
+        poiCandidateIndex:
+          row.poiCandidates && row.poiCandidates.length > 0 ? 0 : undefined,
+        poiCoordinates,
+        qualityScore: Math.min(100, Math.max(20, Math.round(row.surfaceM2 / 20))),
+        anneeConstruction: row.anneeConstruction ?? undefined,
+        bdnbBatimentId: row.osmBuildingId,
+        userId: user?.uid ?? undefined,
+      };
+      await addProspectToPipeline(prospect, undefined, user?.uid);
+      toast.success("Ajouté au pipeline");
+    } catch (e) {
+      toast.error("Erreur lors de l'ajout au pipeline");
+    }
+  };
+
 
   return (
     <div className="w-80 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
-      <Tabs defaultValue={onAnalyseBuildings ? "analyser" : "recherche"} className="w-full">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => {
+          const next = value as "analyser" | "recherche" | "permis";
+          setActiveTab(next);
+          onTabChange?.(next);
+        }}
+        className="w-full"
+      >
         <div className="mb-4 flex">
-          <TabsList className={`grid gap-1 rounded-xl p-1 h-auto! w-48 ${onAnalyseBuildings ? "grid-cols-2" : "grid-cols-1"}`}>
+          <TabsList className={`grid gap-1 rounded-xl p-1 h-auto! ${onAnalyseBuildings ? "w-72 grid-cols-3" : "w-64 grid-cols-2"}`}>
             {onAnalyseBuildings && (
               <TabsTrigger value="analyser" className="rounded-lg px-3 py-1 text-xs">Analyser</TabsTrigger>
             )}
             <TabsTrigger value="recherche" className="rounded-lg px-3 py-1 text-xs">Recherche</TabsTrigger>
+            <TabsTrigger value="permis" className="rounded-lg px-3 py-1 text-xs">Permis</TabsTrigger>
           </TabsList>
         </div>
 
@@ -1267,10 +1578,7 @@ export function Sidebar({
                       value={(() => {
                         const count =
                           osmBuildings?.filter((b) => {
-                            const surface = b.polygonSurfaces.reduce(
-                              (s, surf) => s + surf.areaM2,
-                              0
-                            );
+                            const surface = b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0);
                             return (
                               surface >= surfaceRange.min &&
                               surface <= surfaceRange.max
@@ -1279,8 +1587,9 @@ export function Sidebar({
                         return `${count} · ${surfaceRange.min} – ${surfaceRange.max} m²`;
                       })()}
                     />
-                      <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-xl bg-gray-200/80 dark:bg-gray-700/50 px-3 py-3">
-                      <StickSliderTrack
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-xl bg-gray-200/80 dark:bg-gray-700/50 px-3 py-3">
+                        <StickSliderTrack
                           segments={24}
                           selectedIndices={(() => {
                             const sliderMax =
@@ -1350,6 +1659,88 @@ export function Sidebar({
                           className="relative z-10 [&_[data-orientation=horizontal]]:flex [&_[data-orientation=horizontal]]:items-center [&_.relative.grow]:!min-h-[12px] [&_.relative.grow]:!overflow-visible [&_.relative.grow]:!bg-transparent [&_.absolute.h-full]:!bg-transparent [&_.block]:!invisible [&_.block]:!h-4 [&_.block]:!w-4 [&_.block]:!rounded-none [&_.block]:!border-0 [&_.block]:!bg-transparent [&_.block]:!ring-0 [&_.block]:!ring-offset-0"
                         />
                       </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-10 w-10 rounded-xl"
+                        onClick={handleEnrichFilteredBuildings}
+                        disabled={isEnrichingBuildings || isAnalysingBuildings}
+                        title="Créer la liste (surface · POI · année)"
+                      >
+                        {isEnrichingBuildings ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <ListChecks className="h-4 w-4" />
+                        )}
+                      </Button>
+                      </div>
+
+                      {(enrichBuildingsError || enrichedBuildings) && (
+                        <div className="rounded-xl bg-background/50 border border-border/60 overflow-hidden">
+                          {enrichBuildingsError && (
+                            <div className="text-xs text-destructive px-2 py-2">{enrichBuildingsError}</div>
+                          )}
+                          {enrichedBuildings && (
+                            <div className="w-full max-h-48 overflow-y-auto bg-background">
+                              <table className="w-full table-fixed text-xs tabular-nums">
+                                <thead className="sticky top-0 bg-background">
+                                  <tr className="text-[11px] text-muted-foreground border-b">
+                                    <th className="text-left font-medium px-2 py-1.5 w-[36%]">POI</th>
+                                    <th className="text-right font-medium px-2 py-1.5 w-[24%]">Surface</th>
+                                    <th className="text-right font-medium px-2 py-1.5 w-[16%]">Année</th>
+                                    <th className="text-right font-medium px-2 py-1.5 w-[24%]">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {enrichedBuildings.map((row) => (
+                                    <tr key={row.osmBuildingId} className="border-b last:border-b-0">
+                                      <td className="px-2 py-1.5 text-foreground/90">
+                                        <div className="block w-full truncate" title={row.poiName ?? row.osmBuildingId}>
+                                          {toEllipsis(row.poiName)}
+                                        </div>
+                                      </td>
+                                      <td className="px-2 py-1.5 text-right text-foreground/90 whitespace-nowrap">
+                                        {Math.round(row.surfaceM2)} m²
+                                      </td>
+                                      <td className="px-2 py-1.5 text-right text-foreground/90 whitespace-nowrap">
+                                        {row.anneeConstruction ?? "—"}
+                                      </td>
+                                      <td className="px-2 py-1.5">
+                                        <div className="flex items-center justify-end">
+                                          <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 shrink-0"
+                                                aria-label="Ouvrir les actions"
+                                              >
+                                                <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                                              </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="end">
+                                              <DropdownMenuItem onClick={() => handleViewLead(row)}>
+                                                <Eye className="mr-2 h-4 w-4 shrink-0" />
+                                                Voir
+                                              </DropdownMenuItem>
+                                              <DropdownMenuItem onClick={() => handleAddRowToPipeline(row)}>
+                                                <Send className="mr-2 h-4 w-4 shrink-0" />
+                                                Envoyer
+                                              </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                          </DropdownMenu>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <Button
@@ -1474,8 +1865,25 @@ export function Sidebar({
                   )}
 
                   {searchResults.length > 0 && (
-                    <div className="text-sm font-medium text-muted-foreground bg-muted/50 rounded-md p-2">
-                      {searchResults.length} résultat{searchResults.length > 1 ? "s" : ""} trouvé{searchResults.length > 1 ? "s" : ""}
+                    <div className="flex items-center justify-between gap-2 rounded-md bg-muted/50 p-2">
+                      <span className="text-sm font-medium text-muted-foreground min-w-0">
+                        {searchResults.length} résultat{searchResults.length > 1 ? "s" : ""} trouvé
+                        {searchResults.length > 1 ? "s" : ""}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="Fermer la recherche"
+                        onClick={() => {
+                          onResetSearch?.();
+                          setAddress("");
+                          setSearchError(null);
+                        }}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
                     </div>
                   )}
 
@@ -1527,6 +1935,60 @@ export function Sidebar({
                       ))}
                     </div>
                   )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="permis" className="mt-0">
+              <Card className="rounded-xl">
+                <CardContent className="space-y-4 p-4">
+                  <p className="text-xs text-muted-foreground">
+                    Opportunités Sitadel C&amp;I visibles dans la zone courante de la carte.
+                  </p>
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-medium text-muted-foreground">Sources</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[2020, 2021, 2022, 2023, 2024, 2025, 2026].map((year) => {
+                        const selected = selectedSourceYears.includes(year);
+                        return (
+                          <button
+                            key={year}
+                            type="button"
+                            onClick={() => onToggleSourceYear?.(year)}
+                            className={`cursor-pointer rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                              selected
+                                ? "bg-[#E4FE55] text-[#171717]"
+                                : "bg-muted/70 text-muted-foreground hover:bg-muted"
+                            }`}
+                          >
+                            SITADEL {year}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs">
+                    {permisState?.loading ? "Chargement des opportunités..." : `${permisState?.count ?? 0} point(s) chargé(s)`}
+                    {permisState?.truncated ? " (résultat tronqué)" : ""}
+                  </div>
+                  {permisState?.error ? (
+                    <div className="text-xs text-destructive bg-destructive/10 rounded-md p-2">
+                      {permisState.error}
+                    </div>
+                  ) : null}
+                  <Button
+                    onClick={() => onRefreshPermis?.()}
+                    className="w-full cursor-pointer"
+                    disabled={permisState?.loading}
+                  >
+                    {permisState?.loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Chargement...
+                      </>
+                    ) : (
+                      "Charger la zone visible"
+                    )}
+                  </Button>
                 </CardContent>
               </Card>
             </TabsContent>

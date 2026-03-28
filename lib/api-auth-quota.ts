@@ -77,7 +77,14 @@ export async function requireAuthAndQuota(
  * Incrémente le compteur après une requête réussie (fire-and-forget).
  */
 export function incrementQuotaAfterSuccess(uid: string, api: ApiType): void {
-  const field = api === "bdnb" ? "bdnbRequestCount" : "osmRequestCount";
+  const field =
+    api === "bdnb"
+      ? "bdnbRequestCount"
+      : api === "bdnb_neon"
+        ? "bdnbNeonRequestCount"
+        : api === "osm"
+          ? "osmRequestCount"
+          : "sitadelMapRequestCount";
   incrementServerCount(uid, field).catch((err) => {
     console.warn(`[${api}] Increment quota:`, err);
   });

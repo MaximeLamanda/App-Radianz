@@ -25,6 +25,13 @@ export interface ProspectDocument {
   coordinates: AddressCoordinates;
   placeType: string;
   placeId?: string;
+  poiCandidates?: Array<{
+    name: string;
+    placeId?: string;
+    coordinates?: { lat: number; lng: number };
+  }>;
+  poiCandidateIndex?: number;
+  poiCoordinates?: AddressCoordinates;
   roofSurfaces?: RoofSurface[];
   exposure?: Exposure;
   qualityScore: number;
@@ -176,6 +183,11 @@ export function prepareProspectForFirestore(
   };
 
   if (prospect.placeId) doc.placeId = prospect.placeId;
+  if (prospect.poiCandidates && prospect.poiCandidates.length > 0) {
+    doc.poiCandidates = prospect.poiCandidates;
+  }
+  if (prospect.poiCandidateIndex != null) doc.poiCandidateIndex = prospect.poiCandidateIndex;
+  if (prospect.poiCoordinates) doc.poiCoordinates = prospect.poiCoordinates;
   if (prospect.exposure) doc.exposure = prospect.exposure;
   if (prospect.contact) doc.contact = prospect.contact;
   if (thumbnailUrl) doc.thumbnailUrl = thumbnailUrl;
@@ -269,6 +281,9 @@ export function prospectFromFirestore(
     createdAt: data.createdAt?.toDate?.() ?? undefined,
     updatedAt: data.updatedAt?.toDate?.() ?? undefined,
   };
+  if (data.poiCandidates?.length) result.poiCandidates = data.poiCandidates;
+  if (data.poiCandidateIndex != null) result.poiCandidateIndex = data.poiCandidateIndex;
+  if (data.poiCoordinates) result.poiCoordinates = data.poiCoordinates;
   if (data.pipelineStatus) result.pipelineStatus = data.pipelineStatus;
   if (data.configurationMode) result.configurationMode = data.configurationMode;
   if (data.priceRangeMinEur != null) result.priceRangeMinEur = data.priceRangeMinEur;

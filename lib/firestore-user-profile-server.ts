@@ -40,7 +40,9 @@ export async function resetProfileCounters(
       {
         creditsResetAt: new Timestamp(data.creditsResetAt.seconds, data.creditsResetAt.nanoseconds),
         bdnbRequestCount: data.bdnbRequestCount ?? 0,
+        bdnbNeonRequestCount: data.bdnbNeonRequestCount ?? 0,
         osmRequestCount: data.osmRequestCount ?? 0,
+        sitadelMapRequestCount: data.sitadelMapRequestCount ?? 0,
       },
       { merge: true }
     );
@@ -52,7 +54,10 @@ export async function resetProfileCounters(
 /**
  * Incrémente le compteur BDNB ou OSM côté serveur.
  */
-export async function incrementServerCount(uid: string, field: "bdnbRequestCount" | "osmRequestCount"): Promise<void> {
+export async function incrementServerCount(
+  uid: string,
+  field: "bdnbRequestCount" | "bdnbNeonRequestCount" | "osmRequestCount" | "sitadelMapRequestCount"
+): Promise<void> {
   try {
     const db = getAdminDb();
     const ref = db.collection(COLLECTION).doc(uid);
