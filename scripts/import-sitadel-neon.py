@@ -56,16 +56,33 @@ def _read_env_from_dotenv(dotenv_path: Path) -> dict[str, str]:
 
 
 def get_neon_database_url() -> str:
-    v = os.getenv("NEON_DATABASE_URL")
-    if v:
-        return v
+    keys = (
+        "RADIANZ_DATABASE_URL",
+        "Radianz_DATABASE_URL",
+        "RADIANZ_POSTGRES_URL",
+        "Radianz_POSTGRES_URL",
+        "POSTGRES_URL",
+        "DATABASE_URL",
+        "NEON_DATABASE_URL",
+        "RADIANZ_DATABASE_URL_UNPOOLED",
+        "Radianz_DATABASE_URL_UNPOOLED",
+        "DATABASE_URL_UNPOOLED",
+        "RADIANZ_POSTGRES_URL_NON_POOLING",
+        "Radianz_POSTGRES_URL_NON_POOLING",
+        "POSTGRES_URL_NON_POOLING",
+    )
+    for k in keys:
+        v = os.getenv(k)
+        if v and str(v).strip():
+            return str(v).strip()
     dotenv = _read_env_from_dotenv(Path(".env.local"))
-    v2 = dotenv.get("NEON_DATABASE_URL")
-    if v2:
-        return v2
+    for k in keys:
+        v2 = dotenv.get(k)
+        if v2 and str(v2).strip():
+            return str(v2).strip()
     raise RuntimeError(
-        "NEON_DATABASE_URL introuvable (env ou .env.local). "
-        "Attendu: postgresql://user:password@host/dbname?sslmode=require"
+        "Aucune URL Postgres reconnue (priorité Radianz_DATABASE_URL ; voir lib/server-database-url.ts). "
+        "Env ou .env.local. Attendu: postgresql://…"
     )
 
 

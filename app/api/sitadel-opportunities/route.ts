@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Client } from "pg";
 import { incrementQuotaAfterSuccess, requireAuthAndQuota } from "@/lib/api-auth-quota";
+import {
+  getServerDatabaseUrl,
+  getServerDatabaseUrlEnvHint,
+  getServerDatabaseUrlEnvPresence,
+} from "@/lib/server-database-url";
 
 type SitadelRow = {
   id: number;
@@ -44,9 +49,15 @@ export async function GET(request: NextRequest) {
   if (!authResult.ok) return authResult.response;
   const { uid } = authResult.context;
 
-  const databaseUrl = process.env.NEON_DATABASE_URL || process.env.DATABASE_URL;
+  const databaseUrl = getServerDatabaseUrl();
   if (!databaseUrl) {
-    return NextResponse.json({ error: "NEON_DATABASE_URL ou DATABASE_URL manquant côté serveur" }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: `Variable Postgres manquante côté serveur (${getServerDatabaseUrlEnvHint()})`,
+        envPresence: getServerDatabaseUrlEnvPresence(),
+      },
+      { status: 500 }
+    );
   }
 
   const { searchParams } = request.nextUrl;

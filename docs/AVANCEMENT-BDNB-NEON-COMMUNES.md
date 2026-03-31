@@ -52,7 +52,7 @@ FROM public.bdnb_2025_07a_33;
 
 ## Commandes d’import
 
-Prérequis : `DATABASE_URL` dans `.env.local` (ou variable d’environnement).
+Prérequis : `Radianz_DATABASE_URL` dans `.env.local` (ou variable d’environnement ; voir `lib/server-database-url.ts`).
 
 **Ajouter des communes sans recréer la table** (recommandé) :
 

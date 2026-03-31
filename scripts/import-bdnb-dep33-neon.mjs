@@ -20,25 +20,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { Client } from "pg";
 import { from as copyFrom } from "pg-copy-streams";
-
-function getEnvValueFromDotenv(filePath, key) {
-  const content = fs.readFileSync(filePath, "utf8");
-  const lines = content.split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (!trimmed.startsWith(`${key}=`)) continue;
-    let v = trimmed.slice(key.length + 1);
-    if (
-      (v.startsWith('"') && v.endsWith('"')) ||
-      (v.startsWith("'") && v.endsWith("'"))
-    ) {
-      v = v.slice(1, -1);
-    }
-    return v;
-  }
-  return null;
-}
+import { resolveDatabaseUrl } from "./lib/resolve-database-url.mjs";
 
 async function copyCsvFile(client, { table, columns, filePath }) {
   const sql = `COPY ${table}(${columns.join(",")}) FROM STDIN WITH (FORMAT csv, DELIMITER ';', HEADER true, QUOTE '\"')`;
@@ -198,16 +180,11 @@ function stripCsvQuotes(s) {
 async function main() {
   const { commune: communeFilter, communes: communesFilters, all: importAll, append } = parseArgs();
   const repoRoot = process.cwd();
-  const dotenvPath = path.join(repoRoot, ".env.local");
-  const databaseUrl =
-    process.env.DATABASE_URL ??
-    (fs.existsSync(dotenvPath)
-      ? getEnvValueFromDotenv(dotenvPath, "DATABASE_URL")
-      : null);
+  const databaseUrl = resolveDatabaseUrl(repoRoot);
 
   if (!databaseUrl) {
     throw new Error(
-      "DATABASE_URL introuvable (env ou .env.local)."
+      "Aucune URL Postgres reconnue (priorité Radianz_DATABASE_URL ; voir lib/server-database-url.ts ; env ou .env.local)."
     );
   }
 

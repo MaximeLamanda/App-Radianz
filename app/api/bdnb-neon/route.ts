@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuthAndQuota, incrementQuotaAfterSuccess } from "@/lib/api-auth-quota";
+import {
+  getServerDatabaseUrl,
+  getServerDatabaseUrlEnvHint,
+  getServerDatabaseUrlEnvPresence,
+} from "@/lib/server-database-url";
 import { Client } from "pg";
 
 // Conversion WGS84 → Lambert93 (EPSG:2154)
@@ -70,10 +75,13 @@ export async function GET(request: NextRequest) {
   if (!authResult.ok) return authResult.response;
   const { uid } = authResult.context;
 
-  const databaseUrl = process.env.DATABASE_URL;
+  const databaseUrl = getServerDatabaseUrl();
   if (!databaseUrl) {
     return NextResponse.json(
-      { error: "DATABASE_URL manquant côté serveur" },
+      {
+        error: `Variable Postgres manquante côté serveur (${getServerDatabaseUrlEnvHint()})`,
+        envPresence: getServerDatabaseUrlEnvPresence(),
+      },
       { status: 500 }
     );
   }

@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "pg";
+import { pickDatabaseUrlFromEnvObject } from "./lib/resolve-database-url.mjs";
 
 const TABLE = "public.sitadel_locaux_ci";
 
@@ -61,9 +62,10 @@ function loadEnvFromDotenv(dotenvPath) {
 }
 
 function getDatabaseUrl() {
-  if (process.env.NEON_DATABASE_URL) return process.env.NEON_DATABASE_URL;
+  const fromProcess = pickDatabaseUrlFromEnvObject(process.env);
+  if (fromProcess) return fromProcess;
   const env = loadEnvFromDotenv(path.resolve(".env.local"));
-  return env.NEON_DATABASE_URL || env.DATABASE_URL || null;
+  return pickDatabaseUrlFromEnvObject(env);
 }
 
 function sleep(ms) {
@@ -143,7 +145,7 @@ async function main() {
   const args = parseArgs(process.argv);
   const dbUrl = getDatabaseUrl();
   if (!dbUrl) {
-    console.error("NEON_DATABASE_URL introuvable");
+    console.error("URL Postgres introuvable (priorité Radianz_DATABASE_URL ; voir lib/server-database-url.ts)");
     process.exit(2);
   }
 
