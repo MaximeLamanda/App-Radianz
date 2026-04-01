@@ -799,32 +799,43 @@ export function ProspectDrawer({
     }
   };
 
-  const handleGenerateLink = async () => {
+  const handleOpenSharePage = async () => {
     if (!prospect?.id) return;
+
+    const open = (shareToken: string) => {
+      if (typeof window === "undefined") return;
+      const w = window.open(`/p/${shareToken}`, "_blank", "noopener,noreferrer");
+      if (w) w.opener = null;
+    };
+
+    // Si déjà généré, on ouvre directement (pas de loading inutile)
+    if (prospect.shareToken) {
+      open(prospect.shareToken);
+      return;
+    }
+
     setIsGeneratingLink(true);
     try {
-      const shareToken = prospect.shareToken ?? crypto.randomUUID();
+      const shareToken = crypto.randomUUID();
       let commercialReferent: CommercialReferent;
       if (user) {
         const userProfile = await getUserProfile(user.uid);
-        commercialReferent = buildCommercialReferentFromUser(user, userProfile);
+        const fromUser = buildCommercialReferentFromUser(user, userProfile);
+        const fromSettings = getCommercialReferent();
+        commercialReferent = {
+          ...fromUser,
+          calendlyUrl: fromSettings.calendlyUrl || fromUser.calendlyUrl,
+        };
       } else {
         commercialReferent = getCommercialReferent();
       }
-      await updateProspect(prospect.id, {
-        shareToken,
-        commercialReferent,
-      });
-      if (onProspectUpdate) {
-        onProspectUpdate({ shareToken, commercialReferent });
-      }
-      const url = `${typeof window !== "undefined" ? window.location.origin : ""}/p/${shareToken}`;
-      await navigator.clipboard.writeText(url);
-      toast.success("Lien copié", {
-        description: "Le lien prospect a été copié dans le presse-papiers.",
-      });
-    } catch (error) {
-      toast.error("Erreur lors de la génération du lien", {
+
+      await updateProspect(prospect.id, { shareToken, commercialReferent });
+      onProspectUpdate?.({ shareToken, commercialReferent });
+
+      open(shareToken);
+    } catch {
+      toast.error("Erreur lors de l’ouverture de la page partagée", {
         description: "Veuillez réessayer.",
       });
     } finally {
@@ -2189,11 +2200,16 @@ export function ProspectDrawer({
                                   Choisir un panneau
                                 </span>
                               }
-                              renderTriggerContent={(p) => (
+                              renderTriggerContent={(p, { badges }) => (
                                 <>
                                   <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
                                   <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                                    <div className="font-semibold text-xs text-foreground truncate">{p.name}</div>
+                                    <div className="flex w-full items-start justify-between gap-2">
+                                      <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{p.name}</div>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        {badges}
+                                      </div>
+                                    </div>
                                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                                       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{p.costEur}</span>
                                       <span className="text-muted-foreground/40 text-xs">|</span>
@@ -2261,11 +2277,16 @@ export function ProspectDrawer({
                                   Choisir un onduleur
                                 </span>
                               }
-                              renderTriggerContent={(i) => (
+                              renderTriggerContent={(i, { badges }) => (
                                 <>
                                   <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
                                   <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                                    <div className="font-semibold text-xs text-foreground truncate">{i.name}</div>
+                                    <div className="flex w-full items-start justify-between gap-2">
+                                      <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{i.name}</div>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        {badges}
+                                      </div>
+                                    </div>
                                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                                       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{i.costEur}</span>
                                       <span className="text-muted-foreground/40 text-xs">|</span>
@@ -2398,30 +2419,17 @@ export function ProspectDrawer({
                 variant="default"
                 size="icon"
                 className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
-                onClick={handleGenerateLink}
+                onClick={handleOpenSharePage}
                 disabled={isGeneratingLink}
-                title={isGeneratingLink ? "Génération..." : "Générer le lien prospect et copier dans le presse-papiers"}
-                aria-label={isGeneratingLink ? "Génération..." : "Lien prospect"}
+                title={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
+                aria-label={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
               >
                 {isGeneratingLink ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Link2 className="h-4 w-4" />
+                  <ExternalLink className="h-4 w-4" />
                 )}
               </Button>
-              {prospect.shareToken && (
-                <Link href={`/p/${prospect.shareToken}`} target="_blank" rel="noopener noreferrer">
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
-                    title="Voir la page partagée"
-                    aria-label="Voir la page partagée"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </Link>
-              )}
               <Button
                 onClick={handleSave}
                 className="flex-1 min-w-0"

@@ -15,6 +15,7 @@ export const DEFAULT_COMMERCIAL_REFERENT: CommercialReferent = {
   phone: "+33 6 12 34 56 78",
   company: "Solar Pro France",
   logoUrl: undefined,
+  calendlyUrl: undefined,
 };
 
 /**

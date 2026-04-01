@@ -713,6 +713,16 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                       />
                     </div>
                     <div className="space-y-2">
+                      <Label htmlFor="account-calendly">Calendly</Label>
+                      <Input
+                        id="account-calendly"
+                        value={accountInfo.calendlyUrl ?? ""}
+                        onChange={(e) => handleAccountChange("calendlyUrl", e.target.value || undefined)}
+                        placeholder="https://calendly.com/..."
+                        className="bg-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
                       <Label htmlFor="account-company" className="flex items-center gap-2">
                         <Building2 className="h-4 w-4 text-muted-foreground" />
                         Nom de l&apos;entreprise

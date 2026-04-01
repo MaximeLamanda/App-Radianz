@@ -6,6 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Image from "next/image";
+import calendlyLogo from "@/calendly.png";
 import {
   Dialog,
   DialogContent,
@@ -418,6 +419,25 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
                               value={profileForm.phone}
                               onChange={(e) => setProfileForm((f) => ({ ...f, phone: e.target.value }))}
                               placeholder="+33 6 12 34 56 78"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label htmlFor="profile-calendly" className="flex items-center gap-2">
+                              <Image
+                                src={calendlyLogo}
+                                alt="Calendly"
+                                width={16}
+                                height={16}
+                                className="rounded-[3px]"
+                              />
+                              Calendly
+                            </Label>
+                            <Input
+                              id="profile-calendly"
+                              value={accountInfo.calendlyUrl ?? ""}
+                              onChange={(e) => handleAccountChange("calendlyUrl", e.target.value || undefined)}
+                              placeholder="https://calendly.com/..."
                             />
                           </div>
                         </div>

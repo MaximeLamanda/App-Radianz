@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import React, { useState, type ReactNode } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,7 +15,7 @@ export interface EquipmentSelectCardProps<T> {
   onChange: (item: T | null) => void;
   getItemId: (item: T) => string;
   /** Contenu du trigger quand un élément est sélectionné (image/icône + nom + métadonnées) */
-  renderTriggerContent: (item: T) => ReactNode;
+  renderTriggerContent: (item: T, ctx: { badges: ReactNode }) => ReactNode;
   /** Contenu de chaque option dans la liste du popover */
   renderOptionContent: (item: T, selected: boolean) => ReactNode;
   /** Icône ou texte affiché quand aucune sélection (ex. "Choisir un panneau") */
@@ -47,30 +47,35 @@ export function EquipmentSelectCard<T>({
 
   if (!options.length) return null;
 
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <div className="flex justify-end items-center gap-1.5 mb-1">
-        {warningBadge ?? (showRecommendedBadge && (
-          <span className="inline-flex items-center rounded-md bg-gray-900 px-1.5 py-0.5 text-[10px] font-medium text-white">
-            recommandé
+  const badges = (
+    <>
+      {warningBadge}
+      {rightBadge != null && (
+        React.isValidElement(rightBadge) ? (
+          <span className="inline-flex items-center" title={rightBadgeTitle}>
+            {rightBadge}
           </span>
-        ))}
-        {rightBadge != null && (
+        ) : (
           <span
             className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700"
             title={rightBadgeTitle}
           >
             {rightBadge}
           </span>
-        )}
-      </div>
+        )
+      )}
+    </>
+  );
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
-          className="w-full h-auto rounded-xl border border-border bg-white p-3 flex items-stretch gap-3 justify-start text-left hover:bg-muted/50 focus:outline-none font-normal text-xs"
+          className="w-full h-auto rounded-xl border border-border bg-white px-2.5 py-2 flex items-stretch gap-2 justify-start text-left hover:bg-muted/50 focus:outline-none font-normal text-[11px]"
         >
           {value ? (
-            renderTriggerContent(value)
+            renderTriggerContent(value, { badges })
           ) : (
             <div className="w-full flex items-center justify-center gap-2 py-2 text-muted-foreground text-xs">
               {placeholder}
@@ -94,7 +99,7 @@ export function EquipmentSelectCard<T>({
                   onChange(option);
                   setOpen(false);
                 }}
-                className={`w-full rounded-xl border p-2.5 flex items-stretch gap-2.5 text-left transition-colors hover:bg-muted/50 focus:outline-none ${
+                className={`w-full rounded-xl border p-2 flex items-stretch gap-2 text-left transition-colors hover:bg-muted/50 focus:outline-none ${
                   selected
                     ? "border-[#E4FE55] bg-[#E4FE55]/10 ring-1 ring-[#E4FE55]/40"
                     : "border-border bg-white"

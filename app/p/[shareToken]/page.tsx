@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, Pencil } from "lucide-react";
+import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, Pencil, ArrowUpRight, Info } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   usePanelReferences,
   useInverterReferences,
@@ -67,6 +69,9 @@ import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scou
 import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
 import type { Prospect, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { toast } from "sonner";
+import { RoiComboChart } from "@/components/solar-scout/RoiChart";
+
+type FinancingMode = "capex" | "lease" | "ppa";
 
 export default function ProspectSharePage() {
   const params = useParams();
@@ -75,6 +80,7 @@ export default function ProspectSharePage() {
   const { data: prospectData } = useProspectByShareToken(shareToken);
   const prospect = prospectData ?? null;
   const ownerUserId = prospect?.userId ?? null;
+  const [financingMode, setFinancingMode] = useState<FinancingMode>("capex");
   const { data: panelsData } = usePanelReferences(ownerUserId);
   const { data: invertersData } = useInverterReferences(ownerUserId);
   const { data: batteriesData } = useBatteryReferences(ownerUserId);
@@ -487,9 +493,15 @@ export default function ProspectSharePage() {
         : `${breakEvenMin} – ${breakEvenMax} ans`
       : "—";
 
+  const formatPower = (powerW: number) => {
+    if (!Number.isFinite(powerW)) return "—";
+    if (powerW >= 1000) return `${(powerW / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })}kW`;
+    return `${Math.round(powerW)}W`;
+  };
+
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
@@ -497,7 +509,7 @@ export default function ProspectSharePage() {
 
   if (!prospect) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
         <Card className="max-w-md w-full">
           <CardContent className="pt-6 text-center">
             <p className="text-muted-foreground">Prospect introuvable ou lien invalide.</p>
@@ -520,13 +532,36 @@ export default function ProspectSharePage() {
     );
   };
 
+  const portalCompanyName =
+    commercialReferent?.company?.trim() ||
+    prospect.name?.trim() ||
+    "Entreprise";
+
+  const productionGwh = effectiveConfig.effectiveAnnualProductionKwh > 0
+    ? effectiveConfig.effectiveAnnualProductionKwh / 1_000_000
+    : 0;
+  const selfConsumptionPct = consoAnnuelleKwh > 0
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          ((selfConsumptionDirectKwhTotal + selfConsumptionViaBatteryKwhTotal) / consoAnnuelleKwh) * 100
+        )
+      )
+    : 0;
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <div className="max-w-7xl mx-auto p-4 sm:p-5 flex flex-col w-full gap-4">
+    <div className="min-h-screen bg-zinc-50 flex flex-col">
+      <div className="max-w-5xl mx-auto p-4 sm:p-5 flex flex-col w-full gap-4">
         {/* Barre admin : visible uniquement pour le compte ayant généré la page */}
         {isOwner && (
           <div className="flex items-center justify-between shrink-0">
-            <Button variant="default" size="icon" className="h-9 w-9 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700" asChild>
+            <Button
+              variant="default"
+              size="icon"
+              className="h-9 w-9 shrink-0 border-0 bg-zinc-100 text-zinc-700 shadow-none transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50"
+              asChild
+            >
               <Link href="/" title="Retour" aria-label="Retour">
                 <ArrowLeft className="h-4 w-4" />
               </Link>
@@ -534,7 +569,7 @@ export default function ProspectSharePage() {
             <Button
               variant="default"
               size="icon"
-              className="h-9 w-9 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
+              className="h-9 w-9 shrink-0 border-0 bg-zinc-100 text-zinc-700 shadow-none transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50"
               onClick={copyShareLink}
               title="Copier le lien"
               aria-label="Copier le lien"
@@ -544,650 +579,821 @@ export default function ProspectSharePage() {
           </div>
         )}
 
-        {/* Grille bento : 3 colonnes × 8 lignes ; mobile : compact (hauteur contenu), md : hauteur fixe (pas adaptée à l'écran) */}
-        <div className="grid grid-cols-1 md:grid-cols-3 md:grid-rows-8 gap-2 sm:gap-3 md:gap-4 w-full auto-rows-min md:auto-rows-fr md:h-[720px] shrink-0">
-          {/* [1,1] Logo + Nom entreprise — 1 ligne (au-dessus de la carte) */}
-          {commercialReferent && (commercialReferent.logoUrl || commercialReferent.company) && (
-            <div className="order-1 flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 shadow-xs min-h-0 overflow-hidden md:order-none md:col-start-1 md:row-start-1">
-              {commercialReferent.logoUrl && (
-                <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50">
-                  <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-1" />
-                </div>
-              )}
-              <p className="font-medium text-zinc-800 truncate">
-                {commercialReferent.company || "Entreprise"}
+        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] md:gap-10 w-full">
+          <nav className="md:sticky md:top-6 self-start">
+            <div className="rounded-xl border border-zinc-200 bg-white shadow-xs p-3">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mb-2">
+                Sommaire
               </p>
-            </div>
-          )}
-
-          {/* [1,2-4] ou [1,1-3] Carte adresse / type / surface / orientation */}
-          <div
-            className={`order-2 min-h-0 flex flex-col overflow-hidden md:order-none md:col-start-1 md:row-span-3 ${
-              commercialReferent && (commercialReferent.logoUrl || commercialReferent.company)
-                ? "md:row-start-2"
-                : "md:row-start-1"
-            }`}
-          >
-            <Card className="bg-black border-0 text-white overflow-hidden rounded-xl h-full flex flex-col">
-              <CardContent className="p-4 flex-1 flex flex-col justify-start">
-                <div className="mb-3">
-                  <h1 className="text-xl font-semibold truncate">{prospect.name || prospect.address}</h1>
-                  {prospect.address && (
-                    <p className="text-sm text-white/80 truncate mt-1">{prospect.address}</p>
-                  )}
-                </div>
-                <div className="rounded-lg px-3 py-2 bg-white/10 flex gap-4">
-                  <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
-                    <span className="text-[10px] uppercase tracking-wide text-white/60">Type</span>
-                    <div className="px-3 py-1.5 rounded-md text-[10px] uppercase text-white/80 min-w-fit">
-                      {translatePlaceType(prospect.placeType)}
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
-                    <span className="text-[10px] uppercase tracking-wide text-white/60">Surface</span>
-                    <div className="px-3 py-1.5 rounded-md text-[10px] uppercase text-white/80 min-w-fit">
-                      {surfaceM2.toFixed(0)} m²
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1">
-                    <span className="text-[10px] uppercase tracking-wide text-white/60" title="Année de construction (BDNB)">Année</span>
-                    <div className="px-3 py-1.5 rounded-md text-[10px] uppercase text-white/80 min-w-fit">
-                      {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* [2,1] Perfect fit / Highest production */}
-          {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) && surfaceM2 > 0 && (
-            <div className="order-3 grid grid-cols-2 gap-2 min-h-0 overflow-hidden md:order-none md:col-start-2 md:row-start-1">
-              <button
-                type="button"
-                onClick={() => {
-                  pendingBatteryResyncAfterModeChangeRef.current = true;
-                  setConfigurationMode("perfect_fit");
-                }}
-                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
-                  configurationMode === "perfect_fit"
-                    ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                    : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-gray-500">Perfect fit</span>
-                </div>
-                <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-gray-700"}`}>
-                  {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
-                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-gray-400"}`}>kWp</span>
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  pendingBatteryResyncAfterModeChangeRef.current = true;
-                  setConfigurationMode("highest_production");
-                }}
-                className={`rounded-xl px-4 py-4 text-left transition-colors h-full flex flex-col justify-between overflow-hidden ${
-                  configurationMode === "highest_production"
-                    ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                    : "border border-transparent bg-gray-100 hover:bg-gray-200/80"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-gray-500">Highest production</span>
-                </div>
-                <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-gray-700"}`}>
-                  {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
-                  <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-gray-400"}`}>kWp</span>
-                </div>
-              </button>
-            </div>
-          )}
-
-          {/* [3,1] Bloc finances minimaliste : titre + barre savings + lignes label / valeur, responsive */}
-          <div className="order-6 rounded-xl px-3 py-3 sm:px-4 sm:py-4 min-h-0 flex flex-col justify-start bg-gray-100 overflow-y-auto overflow-x-hidden md:order-none md:col-start-2 md:row-start-6 md:row-span-3 md:min-h-[120px]">
-            <div className="flex items-center justify-between gap-1 mb-1.5 sm:mb-2">
-              <span className="text-[10px] uppercase tracking-wide text-gray-500">Financial yearly</span>
-            </div>
-            {annualSavings > 0 || displayEnergyBillEur > 0 ? (
-              (() => {
-                const directKwh = selfConsumptionDirectKwhTotal;
-                const viaBatteryKwh = selfConsumptionViaBatteryKwhTotal;
-                const injectionReseauKwh = injectionReseauKwhTotal;
-                const fmtPart = (eur: number) =>
-                  eur >= 1000 ? `${Math.round(eur / 100) / 10} k€` : `${Math.round(eur)} €`;
-
-                const directEur = directKwh * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-                const viaBatteryEur = viaBatteryKwh * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-                const injectionReseauEur = injectionReseauKwh * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
-
-                const totalSavings = viaBatteryEur + directEur + injectionReseauEur;
-                const savingsPctRaw = displayEnergyBillEur > 0 ? (annualSavings / displayEnergyBillEur) * 100 : 0;
-                const savingsPct = Math.min(100, savingsPctRaw);
-                const pctBattery = totalSavings > 0 ? (viaBatteryEur / totalSavings) * 100 : 0;
-                const pctDirect = totalSavings > 0 ? (directEur / totalSavings) * 100 : 0;
-                const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
-                const autoKwh = directKwh + viaBatteryKwh;
-                const autoPct = productionKwh > 0 ? Math.round((autoKwh / productionKwh) * 100) : 0;
-
-                const row = (key: string, label: ReactNode, value: ReactNode, valueSmall?: boolean) => (
-                  <div key={key} className="flex items-center justify-between gap-2 min-w-0 py-0 first:pt-0 last:pb-0">
-                    <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">{label}</span>
-                    <span className={`font-normal text-gray-500 shrink-0 tabular-nums ${valueSmall ? "text-[10px] sm:text-xs" : "text-xs sm:text-sm"}`}>{value}</span>
-                  </div>
-                );
-
-                const energyBillValue = (
-                  <button
-                    type="button"
-                    onClick={() => setEnergyBillDialogOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 hover:bg-gray-200/60 transition-colors text-left cursor-pointer shrink-0"
-                    aria-label="Modifier la facture annuelle"
+              <div className="flex flex-row md:flex-col gap-2 md:gap-1 text-sm">
+                {[
+                  { id: "recap", label: "Recap" },
+                  { id: "projet", label: "Projet" },
+                  { id: "finance", label: "Finance" },
+                  { id: "contact", label: "Contact" },
+                ].map((item) => (
+                  <a
+                    key={item.id}
+                    href={`#${item.id}`}
+                    className="rounded-md px-2 py-1 text-zinc-700 transition-[background-color,transform] duration-150 ease-out text-xs font-medium hover:bg-zinc-100 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
                   >
-                    <Pencil className="h-3 w-3 text-gray-400 shrink-0" />
-                    <span className="tabular-nums">
-                      {displayEnergyBillEur.toLocaleString("fr-FR")}
-                      <span className="text-gray-400 ml-0.5 font-light">€</span>
-                    </span>
-                  </button>
-                );
+                    {item.label}
+                  </a>
+                ))}
+              </div>
+            </div>
 
-                return (
-                  <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
-                    {/* Barre minimaliste savings / energy bill */}
-                    {displayEnergyBillEur > 0 && (
-                      <div className="w-full mb-1.5 shrink-0">
-                        <div className="flex justify-between items-center mb-0.5">
-                          {displayEnergyBillEur > 0 && annualSavings > 0 && (
-                            <span className="text-[9px] text-gray-400 tabular-nums" title="Économies en % de la facture énergétique">
-                              {Math.round(savingsPctRaw)}%
-                            </span>
-                          )}
-                          {productionKwh > 0 && (
-                            <span className="text-[9px] text-gray-400 tabular-nums" title="Taux d'autoconsommation">
-                              {autoPct}%
-                            </span>
-                          )}
-                        </div>
-                        <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden flex">
-                          {savingsPct > 0 && breakdownFromHourlySim && totalSavings > 0 ? (
-                            <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>
-                              <div className="h-full bg-[#0000FF] shrink-0" style={{ width: `${pctBattery}%` }} title="Autoconsommation batterie" />
-                              <div className="h-full bg-[#4B5563] shrink-0" style={{ width: `${pctDirect}%` }} title="Autoconsommation directe" />
-                              <div className="h-full bg-[#32F490] shrink-0 flex-1" title="Injection réseau" />
-                            </div>
-                          ) : savingsPct > 0 ? (
-                            <div className="h-full rounded-l-full bg-gray-600" style={{ width: `${savingsPct}%` }} />
-                          ) : null}
-                        </div>
-                      </div>
-                    )}
-                    {/* Principaux */}
-                    {row("energy-bill", "Est. Energy bill", energyBillValue)}
-                    {row("savings", "Savings", <>{annualSavings.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></>)}
-                    {/* Sous-section : répartition */}
-                    {breakdownFromHourlySim ? (
-                      <>
-                        {row(
-                          "battery",
-                          <span className="flex items-center gap-1.5 truncate text-[9px] sm:text-[10px]"><span className="w-2 h-2 rounded-[2px] bg-[#0000FF] shrink-0" />Autoconsommation batterie</span>,
-                          fmtPart(viaBatteryEur),
-                          true
-                        )}
-                        {row(
-                          "direct",
-                          <span className="flex items-center gap-1.5 truncate text-[9px] sm:text-[10px]"><span className="w-2 h-2 rounded-[2px] bg-[#4B5563] shrink-0" />Autoconsommation directe</span>,
-                          fmtPart(directEur),
-                          true
-                        )}
-                        {row(
-                          "injection",
-                          <span className="flex items-center gap-1.5 truncate text-[9px] sm:text-[10px]"><span className="w-2 h-2 rounded-[2px] bg-[#32F490] shrink-0" />Injection réseau</span>,
-                          fmtPart(injectionReseauEur),
-                          true
-                        )}
-                      </>
+            {commercialReferent?.calendlyUrl ? (
+              <a
+                href={commercialReferent.calendlyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 group flex items-center gap-2 rounded-xl border border-zinc-200 bg-white shadow-xs px-3 py-2 text-xs font-medium text-zinc-800 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50"
+              >
+                <span className="relative size-7 shrink-0 overflow-hidden rounded-full bg-zinc-200">
+                  {commercialReferent.photoURL ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <span className="flex h-full w-full items-center justify-center">
+                      <User className="size-3.5 text-zinc-500" />
+                    </span>
+                  )}
+                </span>
+                <span className="flex-1 min-w-0 truncate">Contacter</span>
+                <ArrowUpRight className="size-3.5 text-zinc-500 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+              </a>
+            ) : null}
+          </nav>
+
+          <div className="min-w-0 flex flex-col gap-10 py-1">
+            <section id="recap" className="scroll-mt-24">
+              <div
+                className="relative mb-4 h-[240px] overflow-hidden rounded-xl border border-zinc-200 bg-zinc-900/5"
+                style={{
+                  backgroundImage: "url(/images/recap-hero.png)",
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                }}
+              >
+                <div className="absolute top-4 right-4">
+                  <div className="size-14 rounded-xl border border-zinc-200 bg-white/70 backdrop-blur-sm shadow-xs overflow-hidden">
+                    {commercialReferent?.logoUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={commercialReferent.logoUrl}
+                        alt=""
+                        className="h-full w-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
                     ) : (
-                      <p className="text-[10px] text-gray-500 py-0">Répartition non disponible sans données mensuelles</p>
-                    )}
-                  </div>
-                );
-              })()
-            ) : (
-              <div className="flex flex-col gap-y-1 sm:gap-y-1.5 text-xs">
-                {displayEnergyBillEur > 0 && (
-                  <div className="w-full mb-1.5 shrink-0">
-                    {effectiveConfig.effectiveAnnualProductionKwh > 0 && (
-                      <div className="flex justify-end mb-0.5">
-                        <span className="text-[9px] text-gray-400 tabular-nums" title="Taux d'autoconsommation">
-                          {Math.round(((selfConsumptionDirectKwhTotal + selfConsumptionViaBatteryKwhTotal) / effectiveConfig.effectiveAnnualProductionKwh) * 100)}%
+                      <div className="h-full w-full flex items-center justify-center">
+                        <span className="text-xs font-semibold text-zinc-700">
+                          {(portalCompanyName?.trim()?.[0] ?? "—").toUpperCase()}
                         </span>
                       </div>
                     )}
-                    <div className="w-full h-2 rounded-full bg-gray-200 overflow-hidden flex">
-                      {displayEnergyBillEur > 0 && annualSavings > 0 && (
-                        <div className="h-full rounded-l-full bg-gray-600" style={{ width: `${Math.min(100, (annualSavings / displayEnergyBillEur) * 100)}%` }} />
-                      )}
-                    </div>
                   </div>
-                )}
-                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
-                  <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">Est. Energy bill</span>
-                  <button
-                    type="button"
-                    onClick={() => setEnergyBillDialogOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 hover:bg-gray-200/60 transition-colors text-left cursor-pointer shrink-0 tabular-nums text-xs sm:text-sm font-normal text-gray-500"
-                    aria-label="Modifier la facture annuelle"
-                  >
-                    <Pencil className="h-3 w-3 text-gray-400 shrink-0" />
-                    {displayEnergyBillEur.toLocaleString("fr-FR")}
-                    <span className="text-gray-400 ml-0.5 font-light">€</span>
-                  </button>
                 </div>
-                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
-                  <span className="text-[10px] sm:text-xs text-gray-500 uppercase tracking-wide truncate min-w-0">Savings</span>
-                  <span className="text-xs sm:text-sm font-normal text-gray-500 shrink-0 tabular-nums">{annualSavings.toLocaleString("fr-FR")}<span className="text-gray-400 ml-0.5 font-light">€</span></span>
-                </div>
-                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
-                  <span className="flex items-center gap-1.5 text-[9px] sm:text-[10px] text-gray-500 truncate min-w-0"><span className="w-2 h-2 rounded-[2px] bg-[#0000FF] shrink-0" />Autoconsommation batterie</span>
-                  <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 tabular-nums">—</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
-                  <span className="flex items-center gap-1.5 text-[9px] sm:text-[10px] text-gray-500 truncate min-w-0"><span className="w-2 h-2 rounded-[2px] bg-[#4B5563] shrink-0" />Autoconsommation directe</span>
-                  <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 tabular-nums">—</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 min-w-0 py-0">
-                  <span className="flex items-center gap-1.5 text-[9px] sm:text-[10px] text-gray-500 truncate min-w-0"><span className="w-2 h-2 rounded-[2px] bg-[#32F490] shrink-0" />Injection réseau</span>
-                  <span className="text-[10px] sm:text-xs text-gray-500 shrink-0 tabular-nums">—</span>
+
+                <div className="relative h-full flex flex-col justify-end p-6">
+                  <div className="text-2xl sm:text-3xl font-semibold tracking-tight text-white drop-shadow-sm">
+                    Hello <span aria-hidden>👋</span>
+                  </div>
+                  <p className="mt-1 text-sm font-medium text-white/80 drop-shadow-sm">
+                    Welcome to the {portalCompanyName} Portal
+                  </p>
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* [1,5-8] Image satellite — span 4 rows */}
-          {prospect.coordinates && (
-            <div className="order-7 rounded-xl overflow-hidden border shadow-xs min-h-0 flex flex-col md:order-none md:col-start-1 md:row-start-5 md:row-span-4">
-              <SatelliteImage
-                key={`sat-${imageCenter.lat}-${imageCenter.lng}`}
-                coordinates={imageCenter}
-                address={prospect.address}
-                zoom={17}
-                width={600}
-                height={320}
-                className="w-full h-full min-h-[140px] md:min-h-[180px] object-cover"
-                showOverlays={false}
-              />
-            </div>
-          )}
+              {/* Carte projet (au-dessus des KPI) */}
+              <div className="">
+                <div className="grid grid-cols-[110px_1fr] sm:grid-cols-[140px_1fr] gap-4">
+                  <figure className="rounded-xl overflow-hidden w-[110px] sm:w-[140px] aspect-square max-w-full">
+                    {prospect.coordinates ? (
+                      <SatelliteImage
+                        key={`sat-recap-${imageCenter.lat}-${imageCenter.lng}`}
+                        coordinates={imageCenter}
+                        address={prospect.address}
+                        zoom={17}
+                        width={160}
+                        height={160}
+                        className="w-full h-full object-cover"
+                        showOverlays={false}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Building2 className="h-5 w-5 text-zinc-400" />
+                      </div>
+                    )}
+                  </figure>
 
-          {/* [2,2-5] Graphique production — 4 lignes */}
-          {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) && surfaceM2 > 0 && (
-            <div className="order-4 min-h-[280px] bg-gray-100 rounded-xl py-3 px-4 pb-2 flex flex-col overflow-hidden h-full max-h-[260px] md:max-h-none md:order-none md:col-start-2 md:row-start-2 md:row-span-4 md:min-h-0">
-              <div className="flex flex-col gap-1.5 mb-2 shrink-0">
-                {/* Ligne 1 : label Production + onglets */}
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] uppercase tracking-wide text-gray-500">Production</span>
-                  <div
-                    role="tablist"
-                    className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
-                    aria-label="Vue du graphique"
-                  >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={chartViewMode === "monthly"}
-                      onClick={() => setChartViewMode("monthly")}
-                      className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                        chartViewMode === "monthly" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      Mensuel
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={chartViewMode === "daily"}
-                      onClick={() => setChartViewMode("daily")}
-                      className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                        chartViewMode === "daily" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      Journalier
-                    </button>
+                  <div className="min-w-0 flex flex-col">
+                    <p className="text-sm text-zinc-900 font-medium">
+                      {prospect.name || prospect.address}
+                    </p>
+                    {prospect.address && (
+                      <p className="text-xs text-zinc-500 mt-1 truncate">{prospect.address}</p>
+                    )}
+
+                    <dl className="mt-3 grid gap-2">
+                      <div className="grid grid-cols-[72px_1fr] items-baseline gap-x-3 gap-y-1 min-w-0">
+                        <dt className="text-[10px] uppercase tracking-wide text-zinc-500">Type</dt>
+                        <dd className="text-[11px] text-zinc-800 min-w-0">
+                          {translatePlaceType(prospect.placeType)}
+                        </dd>
+
+                        <dt className="text-[10px] uppercase tracking-wide text-zinc-500">Surface</dt>
+                        <dd className="text-[11px] text-zinc-800 tabular-nums">
+                          {surfaceM2.toFixed(0)} m²
+                        </dd>
+
+                        <dt className="text-[10px] uppercase tracking-wide text-zinc-500" title="Année de construction (BDNB)">
+                          Année
+                        </dt>
+                        <dd className="text-[11px] text-zinc-800 tabular-nums">
+                          {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
+                        </dd>
+                      </div>
+                    </dl>
                   </div>
                 </div>
-                {/* Ligne 2 : les deux valeurs GWh côte à côte */}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-gray-600">
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="rounded-xl bg-zinc-100 p-4 py-5 min-h-[110px] flex flex-col justify-between">
+                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Économies</p>
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-2xl font-mono font-semibold tabular-nums text-zinc-900 leading-none">
+                      {annualSavings.toLocaleString("fr-FR")}
+                      <span className="text-zinc-400 font-light ml-1">€</span>
+                    </p>
+                    <span className="text-[11px] text-zinc-500 leading-none">/ an</span>
+                  </div>
+                </div>
+                <div className="rounded-xl bg-zinc-100 p-4 py-5 min-h-[110px] flex flex-col justify-between">
+                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Rentabilité</p>
                   {(() => {
-                    if (chartViewMode === "daily" && effectiveConfig.productionPerKwp) {
-                      const { dailyTypical } = getProductionFromPerKwp(
-                        effectiveConfig.productionPerKwp.productionPerKwpAnnual,
-                        effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                        effectiveConfig.effectiveKwp
-                      );
-                      const dailyProductionKwh = dailyTypical.reduce((s, v) => s + (v ?? 0), 0);
-                      const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
-                      const dailyConsumptionKwh = surfaceM2 * (hourlyConsumptionPerM2?.reduce((s, v) => s + (v ?? 0), 0) ?? 0);
-                      const fmt = (kwh: number) => (kwh >= 1000 ? `${(kwh / 1000).toFixed(2)} MWh` : `${Math.round(kwh)} kWh`);
-                      return (
-                        <>
-                          <span className="flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#0000FF] shrink-0" />
-                            {fmt(dailyProductionKwh)} /j
-                          </span>
-                          <span className="flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" />
-                            {fmt(dailyConsumptionKwh)} /j
-                          </span>
-                        </>
-                      );
-                    }
-                    const totalConsumptionKwh = getEnergyConsumption(placeType) * surfaceM2;
-                    const consumptionGwh = totalConsumptionKwh / 1_000_000;
-                    const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
-                    const productionGwh = productionKwh / 1_000_000;
+                    const label = breakEvenLabel;
+                    const match = typeof label === "string" ? label.match(/^(.*?)(?:\s*(ans?))$/i) : null;
+                    const valuePart = match?.[1]?.trim() || label;
+                    const unitPart = match?.[2] || null;
                     return (
-                      <>
-                        <span className="flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#0000FF] shrink-0" />
-                          {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
-                        </span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0" />
-                          {consumptionGwh >= 0.001 ? consumptionGwh.toFixed(3) : consumptionGwh.toFixed(6)} GWh
-                        </span>
-                      </>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-2xl font-mono font-semibold tabular-nums text-zinc-900 leading-none">
+                          {valuePart}
+                        </p>
+                        {unitPart ? (
+                          <span className="text-[11px] text-zinc-500 leading-none">{unitPart}</span>
+                        ) : null}
+                      </div>
                     );
                   })()}
                 </div>
-              </div>
-              <div className="flex-1 min-h-0 flex flex-col">
-                <MonthlyProductionChart
-                  key={configurationMode}
-                  viewMode={chartViewMode}
-                  onViewModeChange={setChartViewMode}
-                  selectedMonthIndex={chartSelectedMonthIndex}
-                  onSelectedMonthIndexChange={setChartSelectedMonthIndex}
-                  data={chartData}
-                  dailyData={chartDailyData}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* [2,6] (remplacé par le bloc finances ci-dessus) */}
-
-          {/* [3,2-3] Équipement — colonne 3, 2 lignes (panneau, onduleur, batterie) ; uniquement visible === true */}
-          {(panelsData !== undefined || invertersData !== undefined || batteriesData !== undefined) && (
-            <div className="order-8 bg-gray-100 rounded-xl py-3 px-4 min-h-0 overflow-auto md:order-none md:col-start-3 md:row-start-1 md:row-span-4">
-              <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-3">Équipement</div>
-              <div className="space-y-2">
-                {visiblePanels.length > 0 ? (
-                  <div>
-                    <EquipmentSelectCard<PanelReference>
-                      value={usedPanelRef ?? undefined}
-                      options={visiblePanels}
-                      onChange={(p) => setSelectedPanelId(p ? p.id : null)}
-                      getItemId={(p) => p.id}
-                      showRecommendedBadge={!!usedPanelRef?.recommended}
-                      rightBadge={usedPanelRef ? String(effectiveConfig.effectivePanelCount) : undefined}
-                      placeholder={
-                        <span className="flex items-center gap-2">
-                          <Zap className="h-5 w-5" />
-                          Choisir un panneau
-                        </span>
-                      }
-                      renderTriggerContent={(p) => (
-                        <>
-                          <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                            <div className="font-semibold text-xs text-foreground truncate">{p.name}</div>
-                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{p.costEur}</span>
-                              <span className="text-muted-foreground/40 text-xs">|</span>
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                <Zap className="h-3 w-3 text-muted-foreground/80" />
-                                {p.powerW}W
-                              </span>
-                              {p.warrantyYears != null && (
-                                <>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                    <FileCheck className="h-3 w-3 text-muted-foreground/80" />
-                                    {p.warrantyYears}y
-                                  </span>
-                                </>
-                              )}
-                              {p.countryCode && (
-                                <>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="inline-flex shrink-0" title={p.countryOfOrigin}>
-                                    <img
-                                      src={getCountryFlagUrl(p.countryCode)}
-                                      alt=""
-                                      className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                    />
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </>
-                      )}
-                      renderOptionContent={(p) => (
-                        <>
-                          <EquipmentThumbnail imageUrl={p.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center">
-                            <div className="font-medium text-xs text-foreground truncate">{p.name}</div>
-                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
-                              <span>€{p.costEur}</span>
-                              <span>·</span>
-                              <span>{p.powerW}W</span>
-                              {p.recommended && (
-                                <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                              )}
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    />
-                  </div>
-                ) : panelsData !== undefined ? (
-                  <p className="text-xs text-muted-foreground py-2">Aucun panneau configuré</p>
-                ) : null}
-                {visibleInverters.length > 0 ? (
-                  <div>
-                    <EquipmentSelectCard<InverterReference>
-                      value={usedInverterRef ?? undefined}
-                      options={visibleInverters}
-                      onChange={(i) => setSelectedInverterId(i ? i.id : null)}
-                      getItemId={(i) => i.id}
-                      showRecommendedBadge={!!usedInverterRef?.recommended}
-                      rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
-                      placeholder={
-                        <span className="flex items-center gap-2">
-                          <Zap className="h-5 w-5" />
-                          Choisir un onduleur
-                        </span>
-                      }
-                      renderTriggerContent={(i) => (
-                        <>
-                          <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                            <div className="font-semibold text-xs text-foreground truncate">{i.name}</div>
-                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{i.costEur}</span>
-                              <span className="text-muted-foreground/40 text-xs">|</span>
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                <Zap className="h-3 w-3 text-muted-foreground/80" />
-                                {i.powerW}W
-                              </span>
-                              {i.warrantyYears != null && (
-                                <>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                    <FileCheck className="h-3 w-3 text-muted-foreground/80" />
-                                    {i.warrantyYears}y
-                                  </span>
-                                </>
-                              )}
-                              {i.countryCode && (
-                                <>
-                                  <span className="text-muted-foreground/40 text-xs">|</span>
-                                  <span className="inline-flex shrink-0" title={i.countryOfOrigin}>
-                                    <img
-                                      src={getCountryFlagUrl(i.countryCode)}
-                                      alt=""
-                                      className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                    />
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </>
-                      )}
-                      renderOptionContent={(i) => (
-                        <>
-                          <EquipmentThumbnail imageUrl={i.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center">
-                            <div className="font-medium text-xs text-foreground truncate">{i.name}</div>
-                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
-                              <span>€{i.costEur}</span>
-                              <span>·</span>
-                              <span>{i.powerW}W</span>
-                              {i.recommended && (
-                                <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                              )}
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    />
-                  </div>
-                ) : invertersData !== undefined ? (
-                  <p className="text-xs text-muted-foreground py-2">Aucun onduleur configuré</p>
-                ) : null}
-                {includeBatteryEffective && (visibleBatteries.length > 0 ? (
-                  <div>
-                    <BatterySelectCard
-                      value={usedBatteryRef ?? undefined}
-                      onChange={(b) => {
-                        setSelectedBatteryId(b ? b.id : null);
-                        if (b) {
-                          const maxForNew = b.maxBatteriesPerRack ?? 20;
-                          setSelectedBatteryCount((prev) => Math.min(maxForNew, Math.max(1, prev)));
-                        }
-                      }}
-                      count={selectedBatteryCount}
-                      onCountChange={setSelectedBatteryCount}
-                      maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
-                      batteries={visibleBatteries}
-                      isRecommendedForProspect={
-                        !!recommendedBatteryComposition &&
-                        usedBatteryRef?.id === recommendedBatteryComposition.model.id &&
-                        selectedBatteryCount === recommendedBatteryComposition.count
-                      }
-                      recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
-                    />
-                  </div>
-                ) : batteriesData !== undefined ? (
-                  <p className="text-xs text-muted-foreground py-2">Aucune batterie configurée</p>
-                ) : null)}
-              </div>
-            </div>
-          )}
-
-          {/* [3,5] Inclure batterie — ligne en dessous du bloc équipement */}
-          {(prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0) > 0 && usedBatteryRef && (
-            <div className="order-8 mt-2 md:mt-0 md:order-none md:col-start-3 md:row-start-5 flex h-full min-h-0">
-              <div className="flex flex-1 items-center justify-between rounded-xl border border-border bg-white p-3 min-h-0">
-                <div className="flex items-center gap-2">
-                  <Battery className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <Label htmlFor="share-include-battery" className="text-sm font-medium cursor-pointer">Inclure batterie</Label>
-                </div>
-                <Switch
-                  id="share-include-battery"
-                  className="shrink-0 data-[state=checked]:bg-[#0000FF]"
-                  checked={includeBatteryLocal}
-                  onCheckedChange={setIncludeBatteryLocal}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* [3,6-8] Référent — colonne 3, 4 lignes (design aligné sur IllustrationContactCard) */}
-          {commercialReferent && (commercialReferent.name || commercialReferent.email || commercialReferent.phone) && (
-            <div className="order-9 flex min-h-[200px] min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50 md:order-none md:col-start-3 md:row-start-6 md:row-span-3">
-              <div className="flex w-full items-center justify-between">
-                <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                  Votre référent
-                </p>
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400">
-                  <span className="size-1.5 rounded-full bg-emerald-500" />
-                  Disponible
-                </span>
-              </div>
-              <div className="relative mx-auto mt-3 size-24 shrink-0 overflow-hidden rounded-xl bg-zinc-200 dark:bg-zinc-600">
-                {commercialReferent.photoURL ? (
-                  <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center">
-                    <User className="size-8 text-zinc-400" />
-                  </div>
-                )}
-              </div>
-              <div className="mt-3 flex w-full flex-1 flex-col gap-1.5 text-center">
-                {commercialReferent.name && (
-                  <p className="truncate font-mono text-sm font-medium text-zinc-800 dark:text-zinc-200">
-                    {commercialReferent.name}
-                  </p>
-                )}
-                {(commercialReferent.logoUrl || commercialReferent.company) && (
-                  <div className="flex items-center justify-center gap-2">
-                    {commercialReferent.logoUrl && (
-                      <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-600 dark:bg-zinc-800">
-                        <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-0.5" />
-                      </div>
-                    )}
-                    <p className="truncate font-mono text-xs text-zinc-600 dark:text-zinc-400">
-                      {commercialReferent.company || "Entreprise"}
+                <div className="rounded-xl bg-zinc-100 p-4 py-5 min-h-[110px] flex flex-col justify-between">
+                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Autoconsommation</p>
+                  <div className="flex items-baseline gap-2">
+                    <p className="text-2xl font-mono font-semibold tabular-nums text-zinc-900 leading-none">
+                      {selfConsumptionPct.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}
+                      <span className="text-zinc-400 font-light ml-1">%</span>
                     </p>
                   </div>
-                )}
-                <div className="mt-auto flex gap-2 pt-2">
-                  {commercialReferent.phone ? (
-                    <a
-                      href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
-                      className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-200 py-1.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300"
-                    >
-                      <Phone className="size-3 shrink-0" />
-                      <span className="truncate font-mono">{commercialReferent.phone}</span>
-                    </a>
-                  ) : (
-                    <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-200 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
-                      —
-                    </span>
-                  )}
-                  {commercialReferent.email ? (
-                    <a
-                      href={`mailto:${commercialReferent.email}`}
-                      className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-900 py-1.5 text-[11px] font-medium text-white hover:bg-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
-                    >
-                      <Mail className="size-3 shrink-0" />
-                      Email
-                    </a>
-                  ) : (
-                    <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-300 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-600 dark:text-zinc-400">
-                      —
-                    </span>
-                  )}
                 </div>
               </div>
-            </div>
-          )}
+            </section>
+
+            <section id="projet" className="scroll-mt-32">
+              <div className="flex items-end justify-between gap-4 mb-3">
+                <h2 className="text-lg font-semibold text-zinc-900">Projet</h2>
+              </div>
+
+              {/* Graphique + boutons (système) */}
+              {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) && surfaceM2 > 0 && (
+                <div className="flex flex-col gap-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        pendingBatteryResyncAfterModeChangeRef.current = true;
+                        setConfigurationMode("perfect_fit");
+                      }}
+                      className={`cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 ${
+                        configurationMode === "perfect_fit"
+                          ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
+                          : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] uppercase tracking-wide text-zinc-500">Perfect fit</span>
+                      </div>
+                      <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-zinc-700"}`}>
+                        {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
+                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-zinc-400"}`}>kWp</span>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        pendingBatteryResyncAfterModeChangeRef.current = true;
+                        setConfigurationMode("highest_production");
+                      }}
+                      className={`cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 ${
+                        configurationMode === "highest_production"
+                          ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
+                          : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] uppercase tracking-wide text-zinc-500">Highest production</span>
+                      </div>
+                      <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-zinc-700"}`}>
+                        {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
+                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-zinc-400"}`}>kWp</span>
+                      </div>
+                    </button>
+                  </div>
+
+                  <div className="h-[360px] bg-zinc-100 rounded-xl py-3 px-4 pb-2 flex flex-col overflow-hidden">
+                    <div className="flex flex-col gap-1.5 mb-2 shrink-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-wide text-zinc-500">Production</span>
+                        <div
+                          role="tablist"
+                          className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
+                          aria-label="Vue du graphique"
+                        >
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={chartViewMode === "monthly"}
+                            onClick={() => setChartViewMode("monthly")}
+                            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                              chartViewMode === "monthly" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            Mensuel
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={chartViewMode === "daily"}
+                            onClick={() => setChartViewMode("daily")}
+                            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                              chartViewMode === "daily" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            Journalier
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex-1 min-h-0 flex flex-col">
+                      <MonthlyProductionChart
+                        key={configurationMode}
+                        viewMode={chartViewMode}
+                        onViewModeChange={setChartViewMode}
+                        selectedMonthIndex={chartSelectedMonthIndex}
+                        onSelectedMonthIndexChange={setChartSelectedMonthIndex}
+                        data={chartData}
+                        dailyData={chartDailyData}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Sous le graphe : 2 colonnes (finance à gauche, équipement à droite) */}
+              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-zinc-100 rounded-xl py-3 px-4 overflow-hidden">
+                  <div className="flex items-center justify-between gap-2 mb-4">
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-500">Financial yearly</span>
+                  </div>
+                  <div className="mb-4">
+                    {displayEnergyBillEur > 0 ? (
+                      (() => {
+                        const bill = displayEnergyBillEur;
+                        const savingsPctRaw = bill > 0 ? (annualSavings / bill) * 100 : 0;
+                        const savingsPct = Math.min(100, Math.max(0, savingsPctRaw));
+
+                        const directEur = selfConsumptionDirectKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+                        const viaBatteryEur = selfConsumptionViaBatteryKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+                        const injectionEur = injectionReseauKwhTotal * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+                        const totalParts = directEur + viaBatteryEur + injectionEur;
+
+                        const partPct = (part: number) => (totalParts > 0 ? (part / totalParts) * 100 : 0);
+                        const pctBattery = partPct(viaBatteryEur);
+                        const pctDirect = partPct(directEur);
+                        const pctInjection = Math.max(0, 100 - pctBattery - pctDirect);
+
+                        return (
+                          <div className="flex flex-col gap-3">
+                            <div className="flex items-end justify-between gap-3">
+                              <div className="flex items-baseline gap-2 min-w-0">
+                                <div className="text-3xl font-semibold tabular-nums text-zinc-900 leading-none shrink-0">
+                                  -{Math.round(savingsPct)}%
+                                </div>
+                                <div className="text-[11px] text-zinc-500 leading-none truncate">
+                                  réduction de facture
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="w-full h-2.5 rounded-full bg-zinc-200 overflow-hidden flex">
+                              {savingsPct > 0 && totalParts > 0 ? (
+                                <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>
+                                  <div className="h-full bg-[#0000FF] shrink-0" style={{ width: `${pctBattery}%` }} title="Autoconsommation batterie" />
+                                  <div className="h-full bg-[#4B5563] shrink-0" style={{ width: `${pctDirect}%` }} title="Autoconsommation directe" />
+                                  <div className="h-full bg-[#32F490] shrink-0 flex-1" title="Injection réseau" />
+                                </div>
+                              ) : savingsPct > 0 ? (
+                                <div className="h-full bg-zinc-500" style={{ width: `${savingsPct}%` }} />
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div className="text-3xl font-semibold tabular-nums text-zinc-900 leading-none">—</div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-3 text-xs">
+                    <Separator className="bg-zinc-200/70" />
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs sm:text-sm font-normal text-zinc-600 truncate">Est. Energy bill</span>
+                      <button
+                        type="button"
+                        onClick={() => setEnergyBillDialogOpen(true)}
+                        className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 text-left cursor-pointer shrink-0 tabular-nums text-xs sm:text-sm font-normal text-zinc-600 transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-200/60 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100"
+                        aria-label="Modifier la facture annuelle"
+                      >
+                        <Pencil className="h-3 w-3 text-zinc-400 shrink-0" />
+                        {displayEnergyBillEur.toLocaleString("fr-FR")}
+                        <span className="text-zinc-400 ml-0.5 font-light">€</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs sm:text-sm font-normal text-zinc-600 truncate">Savings</span>
+                      <span className="text-xs sm:text-sm font-normal text-zinc-600 shrink-0 tabular-nums">
+                        {annualSavings.toLocaleString("fr-FR")}
+                        <span className="text-zinc-400 ml-0.5 font-light">€</span>
+                      </span>
+                    </div>
+                    {(() => {
+                      const directEur = selfConsumptionDirectKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+                      const viaBatteryEur = selfConsumptionViaBatteryKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+                      const injectionEur = injectionReseauKwhTotal * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+                      const totalParts = directEur + viaBatteryEur + injectionEur;
+                      if (!Number.isFinite(totalParts) || totalParts <= 0) return null;
+                      return (
+                        <div className="mt-2 flex flex-col gap-1.5 text-[11px] text-zinc-600">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="h-2 w-2 rounded-full shrink-0 bg-[#0000FF]" aria-hidden />
+                              <span className="truncate">Autoconsommation batterie</span>
+                            </span>
+                            <span className="shrink-0 tabular-nums text-zinc-700">
+                              {Math.round(viaBatteryEur).toLocaleString("fr-FR")}€
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="h-2 w-2 rounded-full shrink-0 bg-[#4B5563]" aria-hidden />
+                              <span className="truncate">Autoconsommation directe</span>
+                            </span>
+                            <span className="shrink-0 tabular-nums text-zinc-700">
+                              {Math.round(directEur).toLocaleString("fr-FR")}€
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="h-2 w-2 rounded-full shrink-0 bg-[#32F490]" aria-hidden />
+                              <span className="truncate">Injection réseau</span>
+                            </span>
+                            <span className="shrink-0 tabular-nums text-zinc-700">
+                              {Math.round(injectionEur).toLocaleString("fr-FR")}€
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {(panelsData !== undefined || invertersData !== undefined || batteriesData !== undefined) && (
+                  <div className="bg-zinc-100 rounded-xl py-3 px-4 overflow-auto">
+                    <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-3">Équipement</div>
+                    <div className="space-y-2">
+                      {visiblePanels.length > 0 ? (
+                        <div>
+                          <EquipmentSelectCard<PanelReference>
+                            value={usedPanelRef ?? undefined}
+                            options={visiblePanels}
+                            onChange={(p) => setSelectedPanelId(p ? p.id : null)}
+                            getItemId={(p) => p.id}
+                            showRecommendedBadge={!!usedPanelRef?.recommended}
+                            rightBadge={usedPanelRef ? String(effectiveConfig.effectivePanelCount) : undefined}
+                            placeholder={
+                              <span className="flex items-center gap-2">
+                                <Zap className="h-5 w-5" />
+                                Choisir un panneau
+                              </span>
+                            }
+                            renderTriggerContent={(p, { badges }) => (
+                              <>
+                                <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                                <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                                  <div className="flex w-full items-start justify-between gap-2">
+                                    <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{p.name}</div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      {badges}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
+                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{p.costEur}</span>
+                                    <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                      <Zap className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                      {formatPower(p.powerW)}
+                                    </span>
+                                    {p.warrantyYears != null && (
+                                      <>
+                                        <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                          <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                          {p.warrantyYears}y
+                                        </span>
+                                      </>
+                                    )}
+                                    {p.countryCode && (
+                                      <>
+                                        <span className="text-muted-foreground/40 text-xs">|</span>
+                                        <span className="inline-flex shrink-0" title={p.countryOfOrigin}>
+                                          <img
+                                            src={getCountryFlagUrl(p.countryCode)}
+                                            alt=""
+                                            className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                          />
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                            renderOptionContent={(p) => (
+                              <>
+                                <EquipmentThumbnail imageUrl={p.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                                <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                  <div className="font-medium text-xs text-foreground truncate">{p.name}</div>
+                                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                                    <span>€{p.costEur}</span>
+                                    <span>·</span>
+                                    <span>{formatPower(p.powerW)}</span>
+                                    {p.recommended && (
+                                      <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          />
+                        </div>
+                      ) : panelsData !== undefined ? (
+                        <p className="text-xs text-muted-foreground py-2">Aucun panneau configuré</p>
+                      ) : null}
+
+                      {visibleInverters.length > 0 ? (
+                        <div>
+                          <EquipmentSelectCard<InverterReference>
+                            value={usedInverterRef ?? undefined}
+                            options={visibleInverters}
+                            onChange={(i) => setSelectedInverterId(i ? i.id : null)}
+                            getItemId={(i) => i.id}
+                            showRecommendedBadge={!!usedInverterRef?.recommended}
+                            rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
+                            placeholder={
+                              <span className="flex items-center gap-2">
+                                <Zap className="h-5 w-5" />
+                                Choisir un onduleur
+                              </span>
+                            }
+                            renderTriggerContent={(i, { badges }) => (
+                              <>
+                                <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                                <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                                  <div className="flex w-full items-start justify-between gap-2">
+                                    <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{i.name}</div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      {badges}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
+                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{i.costEur}</span>
+                                    <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                      <Zap className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                      {formatPower(i.powerW)}
+                                    </span>
+                                    {i.warrantyYears != null && (
+                                      <>
+                                        <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                          <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                          {i.warrantyYears}y
+                                        </span>
+                                      </>
+                                    )}
+                                    {i.countryCode && (
+                                      <>
+                                        <span className="text-muted-foreground/40 text-xs">|</span>
+                                        <span className="inline-flex shrink-0" title={i.countryOfOrigin}>
+                                          <img
+                                            src={getCountryFlagUrl(i.countryCode)}
+                                            alt=""
+                                            className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                          />
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                            renderOptionContent={(i) => (
+                              <>
+                                <EquipmentThumbnail imageUrl={i.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                                <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                  <div className="font-medium text-xs text-foreground truncate">{i.name}</div>
+                                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                                    <span>€{i.costEur}</span>
+                                    <span>·</span>
+                                    <span>{formatPower(i.powerW)}</span>
+                                    {i.recommended && (
+                                      <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          />
+                        </div>
+                      ) : invertersData !== undefined ? (
+                        <p className="text-xs text-muted-foreground py-2">Aucun onduleur configuré</p>
+                      ) : null}
+
+                      {includeBatteryEffective ? (
+                        visibleBatteries.length > 0 ? (
+                          <div>
+                            <BatterySelectCard
+                              value={usedBatteryRef ?? undefined}
+                              onChange={(b) => {
+                                setSelectedBatteryId(b ? b.id : null);
+                                if (b) {
+                                  const maxForNew = b.maxBatteriesPerRack ?? 20;
+                                  setSelectedBatteryCount((prev) => Math.min(maxForNew, Math.max(1, prev)));
+                                }
+                              }}
+                              count={selectedBatteryCount}
+                              onCountChange={setSelectedBatteryCount}
+                              maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
+                              batteries={visibleBatteries}
+                              isRecommendedForProspect={
+                                !!recommendedBatteryComposition &&
+                                usedBatteryRef?.id === recommendedBatteryComposition.model.id &&
+                                selectedBatteryCount === recommendedBatteryComposition.count
+                              }
+                              recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
+                            />
+                          </div>
+                        ) : batteriesData !== undefined ? (
+                          <p className="text-xs text-muted-foreground py-2">Aucune batterie configurée</p>
+                        ) : null
+                      ) : (
+                        <p className="text-xs text-muted-foreground py-2">Batterie non incluse</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section id="finance" className="scroll-mt-24">
+              <div className="flex items-end justify-between gap-4 mb-3">
+                <h2 className="text-lg font-semibold text-zinc-900">Finance</h2>
+              </div>
+              {(() => {
+                const capexAvgEur =
+                  Number.isFinite(priceRange.totalMinEur) && Number.isFinite(priceRange.totalMaxEur)
+                    ? (priceRange.totalMinEur + priceRange.totalMaxEur) / 2
+                    : 0;
+                const canRender =
+                  Number.isFinite(capexAvgEur) &&
+                  capexAvgEur > 0 &&
+                  Number.isFinite(annualSavings) &&
+                  annualSavings > 0;
+
+                if (!canRender) {
+                  return (
+                    <div className="rounded-xl border border-zinc-200 bg-white p-4">
+                      <p className="text-sm text-zinc-600">
+                        Données ROI indisponibles pour ce projet.
+                      </p>
+                    </div>
+                  );
+                }
+
+                const baseCapexEur = capexAvgEur;
+                const baseAnnualSavingsEur = annualSavings;
+                const years = 25;
+
+                const derived = (() => {
+                  if (financingMode === "capex") {
+                    return {
+                      capexEur: baseCapexEur,
+                      annualNetEur: baseAnnualSavingsEur,
+                      badge: "Investissement initial",
+                    };
+                  }
+
+                  if (financingMode === "lease") {
+                    // Hypothèse UX simple: lease sur 15 ans (sans apport), coût annuel = CAPEX/15.
+                    const leaseAnnualCostEur = baseCapexEur / 15;
+                    return {
+                      capexEur: 0,
+                      annualNetEur: baseAnnualSavingsEur - leaseAnnualCostEur,
+                      badge: "Loyer mensuel",
+                    };
+                  }
+
+                  // PPA: pas d'investissement, économies "nettes" plus faibles (vous payez l'énergie PPA).
+                  return {
+                    capexEur: 0,
+                    annualNetEur: baseAnnualSavingsEur * 0.7,
+                    badge: "€/kWh",
+                  };
+                })();
+
+                return (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {([
+                        { id: "capex", title: "CAPEX" },
+                        { id: "lease", title: "Lease" },
+                        { id: "ppa", title: "PPA" },
+                      ] satisfies Array<{ id: FinancingMode; title: string }>).map((item) => {
+                        const selected = financingMode === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setFinancingMode(item.id)}
+                            className={[
+                              "cursor-pointer",
+                              "cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden",
+                              "transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
+                              "active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50",
+                              selected
+                                ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
+                                : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70",
+                            ].join(" ")}
+                            aria-pressed={selected}
+                          >
+                            <div className="relative flex items-center justify-between gap-3">
+                              <span className="text-[10px] uppercase tracking-wide text-zinc-500">
+                                {item.title}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-4">
+                      <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-zinc-900">ROI (cashflow net)</p>
+                        <div className="mt-1 flex items-center gap-2">
+                          {(() => {
+                            const netPlusValue = -derived.capexEur + derived.annualNetEur * years;
+                            const rounded = Math.round(netPlusValue);
+                            const formatted = `${rounded > 0 ? "+" : ""}${rounded.toLocaleString("fr-FR")} €`;
+                            return (
+                              <span className="tabular-nums text-[#0000FF] text-lg font-semibold">
+                                {formatted}
+                              </span>
+                            );
+                          })()}
+                          <TooltipProvider>
+                            <Tooltip delayDuration={150}>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10"
+                                  aria-label="Informations sur le calcul"
+                                >
+                                  <Info className="h-4 w-4" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" align="start" className="text-xs">
+                                Estimation de la plus-value nette cumulée sur 25 ans (investissement inclus).
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                      </div>
+                      <div className="shrink-0 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700">
+                        0–25 ans
+                      </div>
+                    </div>
+
+                    <div className="mt-4">
+                      <RoiComboChart capexEur={derived.capexEur} annualSavingsEur={derived.annualNetEur} years={years} />
+                    </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </section>
+
+            <section id="contact" className="scroll-mt-24">
+              <div className="flex items-end justify-between gap-4 mb-3">
+                <h2 className="text-lg font-semibold text-zinc-900">Contact</h2>
+              </div>
+              {commercialReferent && (commercialReferent.name || commercialReferent.email || commercialReferent.phone) ? (
+                <div className="flex min-h-[200px] min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
+                  <div className="flex w-full items-center justify-between">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                      Votre référent
+                    </p>
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400">
+                      <span className="size-1.5 rounded-full bg-emerald-500" />
+                      Disponible
+                    </span>
+                  </div>
+                  <div className="relative mx-auto mt-3 size-24 shrink-0 overflow-hidden rounded-xl bg-zinc-200 dark:bg-zinc-600">
+                    {commercialReferent.photoURL ? (
+                      <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center">
+                        <User className="size-8 text-zinc-400" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-3 flex w-full flex-1 flex-col gap-1.5 text-center">
+                    {commercialReferent.name && (
+                      <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                        {commercialReferent.name}
+                      </p>
+                    )}
+                    {(commercialReferent.logoUrl || commercialReferent.company) && (
+                      <div className="flex items-center justify-center gap-2">
+                        {commercialReferent.logoUrl && (
+                          <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-600 dark:bg-zinc-800">
+                            <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-0.5" />
+                          </div>
+                        )}
+                        <p className="truncate text-xs text-zinc-600 dark:text-zinc-400">
+                          {commercialReferent.company || "Entreprise"}
+                        </p>
+                      </div>
+                    )}
+                    <div className="mt-auto flex gap-2 pt-2">
+                      {commercialReferent.phone ? (
+                        <a
+                          href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-200 py-1.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300"
+                        >
+                          <Phone className="size-3 shrink-0" />
+                          <span className="truncate">{commercialReferent.phone}</span>
+                        </a>
+                      ) : (
+                        <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-200 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
+                          —
+                        </span>
+                      )}
+                      {commercialReferent.email ? (
+                        <a
+                          href={`mailto:${commercialReferent.email}`}
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-900 py-1.5 text-[11px] font-medium text-white hover:bg-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                        >
+                          <Mail className="size-3 shrink-0" />
+                          Email
+                        </a>
+                      ) : (
+                        <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-300 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-600 dark:text-zinc-400">
+                          —
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-xs">
+                  <p className="text-sm text-zinc-600">Aucun contact configuré.</p>
+                </div>
+              )}
+            </section>
+          </div>
         </div>
       </div>
 

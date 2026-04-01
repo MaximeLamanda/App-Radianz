@@ -74,6 +74,8 @@ export interface CommercialReferent {
   logoUrl?: string;
   /** Photo de profil du référent (utilisateur qui a généré le lien) */
   photoURL?: string;
+  /** Lien Calendly / prise de RDV */
+  calendlyUrl?: string;
 }
 
 /** Mode de configuration : Perfect fit (prod ≈ conso) ou Highest production (max surface) */

@@ -93,30 +93,35 @@ export function BatterySelectCard({
           Choisir une batterie
         </>
       }
-      renderTriggerContent={(b) => (
+      renderTriggerContent={(b, { badges }) => (
         <>
           <EquipmentThumbnail imageUrl={b.imageUrl} alt={b.name} fallback={<Battery className="h-6 w-6 text-muted-foreground" />} />
           <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-            <div className="font-semibold text-xs text-foreground truncate">{b.name}</div>
-            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">€{b.costEur}</span>
-              <span className="text-muted-foreground/40 text-xs">|</span>
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title="Capacité utilisée dans la simulation">
-                <Battery className="h-3 w-3 text-muted-foreground/80" />
+            <div className="flex w-full items-start justify-between gap-2">
+              <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{b.name}</div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {badges}
+              </div>
+            </div>
+            <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
+              <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{b.costEur}</span>
+              <span className="text-muted-foreground/40 text-[10px]">|</span>
+              <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground" title="Capacité utilisée dans la simulation">
+                <Battery className="h-2.5 w-2.5 text-muted-foreground/80" />
                 {b.capacityKwh} kWh
               </span>
               {b.warrantyYears != null && (
                 <>
-                  <span className="text-muted-foreground/40 text-xs">|</span>
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                    <FileCheck className="h-3 w-3 text-muted-foreground/80" />
+                  <span className="text-muted-foreground/40 text-[10px]">|</span>
+                  <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
                     {b.warrantyYears}y
                   </span>
                 </>
               )}
               {b.countryCode && (
                 <>
-                  <span className="text-muted-foreground/40 text-xs">|</span>
+                  <span className="text-muted-foreground/40 text-[10px]">|</span>
                   <span className="inline-flex shrink-0" title={b.countryOfOrigin}>
                     <img
                       src={getCountryFlagUrl(b.countryCode)}

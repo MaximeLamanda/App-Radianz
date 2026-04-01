@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
+import { useEffect, useMemo, useState } from "react";
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   ChartContainer,
   ChartTooltip,
@@ -93,6 +93,65 @@ const chartConfig = {
   },
 } satisfies ChartConfig;
 
+function buildNiceYAxis(maxValue: number) {
+  const safeMax = Number.isFinite(maxValue) ? maxValue : 0;
+  if (safeMax <= 0) return { domain: [0, 1] as const, ticks: [0, 0.25, 0.5, 0.75, 1] };
+
+  const magnitude = Math.pow(10, Math.floor(Math.log10(safeMax)));
+  const candidates = [
+    0.25,
+    0.5,
+    1,
+    2,
+    2.5,
+    5,
+    10,
+    20,
+    25,
+    50,
+    100,
+    200,
+    250,
+    500,
+    1000,
+  ].map((m) => m * Math.max(1, magnitude / 10));
+
+  let chosenStep = candidates[candidates.length - 1]!;
+  let chosenMax = Math.ceil(safeMax / chosenStep) * chosenStep;
+  let chosenTicks: number[] | undefined;
+
+  for (const step of candidates) {
+    const domainMax = Math.ceil(safeMax / step) * step;
+    const count = Math.round(domainMax / step) + 1;
+    if (count >= 4 && count <= 7) {
+      const ticks: number[] = [];
+      for (let v = 0; v <= domainMax + step / 2; v += step) ticks.push(v);
+      chosenStep = step;
+      chosenMax = domainMax;
+      chosenTicks = ticks;
+      break;
+    }
+    chosenStep = step;
+    chosenMax = domainMax;
+  }
+
+  if (!chosenTicks) {
+    const ticks: number[] = [];
+    for (let v = 0; v <= chosenMax + chosenStep / 2; v += chosenStep) ticks.push(v);
+    chosenTicks = ticks;
+  }
+
+  return { domain: [0, chosenMax] as const, ticks: chosenTicks };
+}
+
+function formatKwhTick(value: number) {
+  if (!Number.isFinite(value)) return "";
+  const abs = Math.abs(value);
+  if (abs >= 100) return String(Math.round(value));
+  if (abs >= 10) return value.toFixed(0);
+  return value.toFixed(1);
+}
+
 export function MonthlyProductionChart({
   data,
   dailyData,
@@ -166,6 +225,42 @@ export function MonthlyProductionChart({
         };
       });
 
+  const stackedMax = useMemo(() => {
+    const getMaxStack = (d: any) => {
+      if (hasConsumption) {
+        if (hasBatterySeries) {
+          return (
+            (Number(d.selfConsumptionDirect) || 0) +
+            (Number(d.selfConsumptionViaBattery) || 0) +
+            (isDaily ? (Number(d.injectionBattery) || 0) : 0) +
+            (Number(d.gridDraw) || 0) +
+            (Number(d.excess) || 0)
+          );
+        }
+        return (Number(d.selfConsumption) || 0) + (Number(d.gridDraw) || 0) + (Number(d.excess) || 0);
+      }
+      return Number(d.production) || 0;
+    };
+
+    let max = 0;
+    for (const d of chartData) max = Math.max(max, getMaxStack(d));
+    return max;
+  }, [chartData, hasBatterySeries, hasConsumption, isDaily]);
+
+  // En vue journalière: on "verrouille" l'échelle une fois qu'elle s'est adaptée
+  // (elle peut s'agrandir si un autre mois dépasse, mais ne rétrécit pas).
+  const [lockedDailyMax, setLockedDailyMax] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isDaily) {
+      setLockedDailyMax(null);
+      return;
+    }
+    setLockedDailyMax((prev) => (prev == null ? stackedMax : Math.max(prev, stackedMax)));
+  }, [isDaily, stackedMax]);
+
+  const yMaxForDomain = isDaily ? (lockedDailyMax ?? stackedMax) : stackedMax;
+  const y = useMemo(() => buildNiceYAxis(yMaxForDomain), [yMaxForDomain]);
+
   return (
     <div className="w-full min-w-0 h-full min-h-0 flex-1 flex flex-col">
       <ChartContainer config={chartConfig} className="aspect-auto h-full min-h-[120px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[9px] [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground/70">
@@ -179,6 +274,12 @@ export function MonthlyProductionChart({
             tickFormatter={(value) => value}
             tick={{ fontSize: 9 }}
             interval={isDaily ? 3 : 0}
+          />
+          <YAxis
+            hide
+            width={0}
+            domain={y.domain as unknown as [number | "auto", number | "auto"]}
+            ticks={y.ticks}
           />
           <ChartTooltip
             allowEscapeViewBox={{ x: true, y: true }}
