@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
-import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -549,6 +548,11 @@ export default function ProspectSharePage() {
         )
       )
     : 0;
+  const carbonReductionPct = selfConsumptionPct;
+  const FR_AVG_CARBON_INTENSITY_G_PER_KWH = 55;
+  const baselineCarbonKgPerYear = (consoAnnuelleKwh * FR_AVG_CARBON_INTENSITY_G_PER_KWH) / 1000;
+  const avoidedCarbonKgPerYear = (baselineCarbonKgPerYear * carbonReductionPct) / 100;
+  const avoidedCarbonTons = avoidedCarbonKgPerYear / 1000;
 
   return (
     <div className="min-h-screen bg-zinc-50 flex flex-col">
@@ -721,17 +725,17 @@ export default function ProspectSharePage() {
               </div>
 
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="rounded-xl bg-zinc-100 p-4 py-5 min-h-[110px] flex flex-col justify-between">
+                <div className="rounded-xl bg-zinc-100 py-3 px-4 min-h-[110px] flex flex-col justify-between">
                   <p className="text-[10px] uppercase tracking-wide text-zinc-500">Économies</p>
                   <div className="flex items-baseline gap-2">
-                    <p className="text-2xl font-mono font-semibold tabular-nums text-zinc-900 leading-none">
+                    <p className="text-2xl font-semibold tabular-nums text-zinc-900 leading-none">
                       {annualSavings.toLocaleString("fr-FR")}
                       <span className="text-zinc-400 font-light ml-1">€</span>
                     </p>
                     <span className="text-[11px] text-zinc-500 leading-none">/ an</span>
                   </div>
                 </div>
-                <div className="rounded-xl bg-zinc-100 p-4 py-5 min-h-[110px] flex flex-col justify-between">
+                <div className="rounded-xl bg-zinc-100 py-3 px-4 min-h-[110px] flex flex-col justify-between">
                   <p className="text-[10px] uppercase tracking-wide text-zinc-500">Rentabilité</p>
                   {(() => {
                     const label = breakEvenLabel;
@@ -740,7 +744,7 @@ export default function ProspectSharePage() {
                     const unitPart = match?.[2] || null;
                     return (
                       <div className="flex items-baseline gap-2">
-                        <p className="text-2xl font-mono font-semibold tabular-nums text-zinc-900 leading-none">
+                        <p className="text-2xl font-semibold tabular-nums text-zinc-900 leading-none">
                           {valuePart}
                         </p>
                         {unitPart ? (
@@ -750,10 +754,10 @@ export default function ProspectSharePage() {
                     );
                   })()}
                 </div>
-                <div className="rounded-xl bg-zinc-100 p-4 py-5 min-h-[110px] flex flex-col justify-between">
+                <div className="rounded-xl bg-zinc-100 py-3 px-4 min-h-[110px] flex flex-col justify-between">
                   <p className="text-[10px] uppercase tracking-wide text-zinc-500">Autoconsommation</p>
                   <div className="flex items-baseline gap-2">
-                    <p className="text-2xl font-mono font-semibold tabular-nums text-zinc-900 leading-none">
+                    <p className="text-2xl font-semibold tabular-nums text-zinc-900 leading-none">
                       {selfConsumptionPct.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}
                       <span className="text-zinc-400 font-light ml-1">%</span>
                     </p>
@@ -863,10 +867,10 @@ export default function ProspectSharePage() {
               )}
 
               {/* Sous le graphe : 2 colonnes (finance à gauche, équipement à droite) */}
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4 min-h-[280px] items-stretch">
                 <div className="bg-zinc-100 rounded-xl py-3 px-4 overflow-hidden">
                   <div className="flex items-center justify-between gap-2 mb-4">
-                    <span className="text-[10px] uppercase tracking-wide text-zinc-500">Financial yearly</span>
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-500">Réduction de facture</span>
                   </div>
                   <div className="mb-4">
                     {displayEnergyBillEur > 0 ? (
@@ -888,13 +892,8 @@ export default function ProspectSharePage() {
                         return (
                           <div className="flex flex-col gap-3">
                             <div className="flex items-end justify-between gap-3">
-                              <div className="flex items-baseline gap-2 min-w-0">
-                                <div className="text-3xl font-semibold tabular-nums text-zinc-900 leading-none shrink-0">
-                                  -{Math.round(savingsPct)}%
-                                </div>
-                                <div className="text-[11px] text-zinc-500 leading-none truncate">
-                                  réduction de facture
-                                </div>
+                              <div className="text-3xl font-semibold tabular-nums text-zinc-900 leading-none shrink-0">
+                                -{Math.round(savingsPct)}%
                               </div>
                             </div>
 
@@ -1175,6 +1174,77 @@ export default function ProspectSharePage() {
                   </div>
                 )}
               </div>
+
+              <div className="relative mt-4 bg-zinc-100 rounded-xl py-3 px-4 overflow-hidden flex flex-col min-h-[134px]">
+                <div
+                  className="absolute top-3 right-4 pointer-events-none text-[#0000FF]"
+                  aria-hidden
+                >
+                  <svg
+                    width="32"
+                    height="32"
+                    viewBox="0 0 125 125"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="shrink-0"
+                  >
+                    <rect
+                      x="-2.21883"
+                      y="2.21883"
+                      width="58.6085"
+                      height="58.6085"
+                      transform="matrix(-0.116186 0.993227 -0.993227 0.116186 96.6408 31.6199)"
+                      stroke="currentColor"
+                      strokeWidth="2.75"
+                    />
+                    <path d="M64.0565 32.4581L66.2075 58.2295" stroke="currentColor" strokeWidth="2.75" />
+                    <path d="M65.6705 58.184L91.4419 60.335" stroke="currentColor" strokeWidth="2.75" />
+                    <path d="M46.8704 35.5688L50.0967 74.2236" stroke="currentColor" strokeWidth="2.75" />
+                    <path d="M49.2914 74.156L87.9463 77.3823" stroke="currentColor" strokeWidth="2.75" />
+                    <path d="M28.7041 95.6704L93.7041 30.6704" stroke="currentColor" strokeWidth="2.75" />
+                  </svg>
+                </div>
+                <div className="flex items-start justify-between gap-3 pr-12">
+                  <div className="min-w-0">
+                    <div className="text-[10px] uppercase tracking-wide text-zinc-500">
+                      Impact carbon
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-full mt-auto pt-3 flex flex-col items-start gap-0">
+                  <div className="text-lg font-semibold tabular-nums leading-none text-[#0000FF] text-left">
+                    {avoidedCarbonTons.toLocaleString("fr-FR", {
+                      maximumFractionDigits: 2,
+                      minimumFractionDigits: 0,
+                    })}{" "}
+                    t CO₂e
+                  </div>
+                  <div className="w-full mt-1 flex items-end gap-[3px] h-5">
+                    <div className="relative w-full h-5 overflow-hidden" aria-hidden>
+                      <div
+                        className="absolute inset-0"
+                        style={{
+                          backgroundImage:
+                            "repeating-linear-gradient(90deg, rgba(161,161,170,0.95) 0 2px, rgba(0,0,0,0) 2px 8px)",
+                        }}
+                      />
+                      <div
+                        className="absolute inset-y-0 left-0 overflow-hidden"
+                        style={{ width: `${carbonReductionPct}%` }}
+                      >
+                        <div
+                          className="h-full w-full"
+                          style={{
+                            backgroundImage:
+                              "repeating-linear-gradient(90deg, rgba(0,0,255,1) 0 2px, rgba(0,0,0,0) 2px 8px)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </section>
 
             <section id="finance" className="scroll-mt-24">
@@ -1247,32 +1317,34 @@ export default function ProspectSharePage() {
                             key={item.id}
                             type="button"
                             onClick={() => setFinancingMode(item.id)}
-                            className={[
-                              "cursor-pointer",
-                              "cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden",
-                              "transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
-                              "active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50",
+                            className={`cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-center overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 ${
                               selected
                                 ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                                : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70",
-                            ].join(" ")}
+                                : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70"
+                            }`}
                             aria-pressed={selected}
                           >
-                            <div className="relative flex items-center justify-between gap-3">
-                              <span className="text-[10px] uppercase tracking-wide text-zinc-500">
-                                {item.title}
-                              </span>
+                            <div
+                              className={`text-base font-normal uppercase ${selected ? "text-[#0000FF]" : "text-zinc-700"}`}
+                            >
+                              {item.title}
                             </div>
                           </button>
                         );
                       })}
                     </div>
 
-                    <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-4">
-                      <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-zinc-900">ROI (cashflow net)</p>
-                        <div className="mt-1 flex items-center gap-2">
+                    <div className="mt-3 h-[360px] bg-zinc-100 rounded-xl py-3 px-4 pb-2 flex flex-col overflow-hidden">
+                      <div className="flex flex-col gap-1.5 mb-2 shrink-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] uppercase tracking-wide text-zinc-500">
+                            ROI (cashflow net)
+                          </span>
+                          <div className="shrink-0 rounded-md border border-border bg-muted/50 px-3 py-1 text-xs font-medium text-zinc-700">
+                            0–25 ans
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
                           {(() => {
                             const netPlusValue = -derived.capexEur + derived.annualNetEur * years;
                             const rounded = Math.round(netPlusValue);
@@ -1301,14 +1373,10 @@ export default function ProspectSharePage() {
                           </TooltipProvider>
                         </div>
                       </div>
-                      <div className="shrink-0 rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700">
-                        0–25 ans
-                      </div>
-                    </div>
 
-                    <div className="mt-4">
-                      <RoiComboChart capexEur={derived.capexEur} annualSavingsEur={derived.annualNetEur} years={years} />
-                    </div>
+                      <div className="flex-1 min-h-0 flex flex-col">
+                        <RoiComboChart capexEur={derived.capexEur} annualSavingsEur={derived.annualNetEur} years={years} />
+                      </div>
                     </div>
                   </>
                 );

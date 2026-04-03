@@ -141,7 +141,7 @@ export function RoiComboChart({
   return (
     <ChartContainer
       config={chartConfig}
-      className="aspect-auto h-[360px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[8px] [&_.recharts-cartesian-axis-tick-value]:text-[8px] [&_.recharts-default-legend]:text-[10px] [&_.recharts-default-legend]:font-sans [&_.recharts-legend-item-text]:text-[10px] [&_.recharts-legend-item-text]:font-sans [&_.recharts-legend-item-text]:tabular-nums [&_.recharts-legend-item-text]:text-zinc-700"
+      className="aspect-auto h-full min-h-0 w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[8px] [&_.recharts-cartesian-axis-tick-value]:text-[8px] [&_.recharts-default-legend]:text-[10px] [&_.recharts-default-legend]:font-sans [&_.recharts-legend-item-text]:text-[10px] [&_.recharts-legend-item-text]:font-sans [&_.recharts-legend-item-text]:tabular-nums [&_.recharts-legend-item-text]:text-zinc-700"
     >
       <ComposedChart data={data} margin={{ top: 8, right: 10, left: 10, bottom: 0 }}>
         <CartesianGrid vertical={false} />
