@@ -94,6 +94,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
         ...fromStorage,
         company: profile?.companyName?.trim() || fromStorage.company || "",
         logoUrl: profile?.companyLogoUrl?.trim() || fromStorage.logoUrl || "",
+        calendlyUrl: profile?.calendlyUrl?.trim() || fromStorage.calendlyUrl || "",
       };
       setAccountInfo(merged);
     });
@@ -103,10 +104,11 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
     const next = { ...accountInfo, [field]: value ?? "" };
     setAccountInfo(next);
     saveCommercialReferent(next);
-    if (user?.uid && (field === "company" || field === "logoUrl")) {
+    if (user?.uid && (field === "company" || field === "logoUrl" || field === "calendlyUrl")) {
       setUserProfile(user.uid, {
         companyName: field === "company" ? (value?.trim() || undefined) : undefined,
         companyLogoUrl: field === "logoUrl" ? (value?.trim() || undefined) : undefined,
+        calendlyUrl: field === "calendlyUrl" ? (value?.trim() || undefined) : undefined,
       }).catch((e) => console.warn("Synchro UserProfile:", e));
     }
   };

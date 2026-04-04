@@ -101,7 +101,7 @@ function buildNiceTicks(min: number, max: number) {
     chosenTicks = ticks;
   }
 
-  return { domain: chosenDomain as const, ticks: chosenTicks };
+  return { domain: chosenDomain, ticks: chosenTicks };
 }
 
 export function RoiComboChart({

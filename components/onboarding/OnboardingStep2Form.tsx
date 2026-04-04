@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -10,8 +11,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { storage } from "@/lib/firebase";
 import { REGIONS } from "@/lib/regions-france";
 import type { UserProfile } from "@/lib/firestore-user-profile";
+import { ImagePlus, Loader2 } from "lucide-react";
 
 const COMPANY_SIZES = [
   { value: "solo", label: "Solo" },
@@ -22,6 +26,7 @@ const COMPANY_SIZES = [
 
 interface OnboardingStep2FormProps {
   formId: string;
+  userId: string;
   initialValues?: Partial<UserProfile> | null;
   onSubmit: (data: Partial<UserProfile>) => void;
   isSubmitting?: boolean;
@@ -31,11 +36,17 @@ interface OnboardingStep2FormProps {
 
 export function OnboardingStep2Form({
   formId,
+  userId,
   initialValues,
   onSubmit,
   isSubmitting = false,
   onGeoZonesChange,
 }: OnboardingStep2FormProps) {
+  const [companyName, setCompanyName] = useState(initialValues?.companyName ?? "");
+  const [companyLogoUrl, setCompanyLogoUrl] = useState(initialValues?.companyLogoUrl ?? "");
+  const [logoUploading, setLogoUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [companySize, setCompanySize] = useState(initialValues?.companySize ?? "");
   const [geoZones, setGeoZones] = useState<string[]>(initialValues?.geoZones ?? []);
 
@@ -49,7 +60,22 @@ export function OnboardingStep2Form({
 
   useEffect(() => {
     onGeoZonesChange?.(geoZones);
-  }, []); // au montage, synchroniser l'illustration avec les valeurs initiales
+  }, []);
+
+  const uploadLogo = async (file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    setLogoUploading(true);
+    try {
+      const ext = file.name.split(".").pop() || "png";
+      const path = `users/${userId}/company-logo.${ext}`;
+      const storageRef = ref(storage, path);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setCompanyLogoUrl(url);
+    } finally {
+      setLogoUploading(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,6 +84,8 @@ export function OnboardingStep2Form({
         ? (companySize as "solo" | "2-10" | "11-50" | "50+")
         : undefined;
     onSubmit({
+      companyName: companyName.trim() || undefined,
+      companyLogoUrl: companyLogoUrl || undefined,
       companySize: validCompanySize,
       geoZones: geoZones.length > 0 ? geoZones : undefined,
     });
@@ -65,6 +93,72 @@ export function OnboardingStep2Form({
 
   return (
     <form id={formId} onSubmit={handleSubmit} className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] sm:items-end">
+        <div className="space-y-2">
+          <Label>Logo entreprise</Label>
+          <div className="flex items-center gap-4">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) uploadLogo(file);
+                e.target.value = "";
+              }}
+            />
+            {companyLogoUrl ? (
+              <div className="relative">
+                <img
+                  src={companyLogoUrl}
+                  alt="Logo"
+                  className="h-16 w-16 rounded-lg border object-cover"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon"
+                  className="absolute -right-2 -top-2 h-6 w-6"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={logoUploading}
+                  aria-label="Modifier le logo"
+                >
+                  {logoUploading ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <ImagePlus className="size-3" />
+                  )}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={logoUploading}
+              >
+                {logoUploading ? (
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                ) : (
+                  <ImagePlus className="mr-2 size-4" />
+                )}
+                Ajouter un logo
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="companyName">Entreprise</Label>
+          <Input
+            id="companyName"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="Mon entreprise solaire"
+          />
+        </div>
+      </div>
+
       <div className="space-y-2">
         <Label>Taille de l&apos;entreprise</Label>
         <Select value={companySize} onValueChange={setCompanySize}>
@@ -102,6 +196,7 @@ export function OnboardingStep2Form({
           </div>
         </div>
       </div>
+
     </form>
   );
 }

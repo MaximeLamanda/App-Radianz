@@ -2,36 +2,26 @@
 
 ## 1) Map — Analyse bâtiments (table + filtres surface)
 
-- **Header**
-  - Titre de vue + sous-titre (zone / commune / dataset)
-  - Actions globales: `Importer/Sync` (optionnel), `Exporter`, `Aide`, `Paramètres`
 
 - **Layout principal**
-  - **Split view**: `Map` (gauche/plein) + `Panneau latéral` (droite)
+  - **Split view**: `Map` (gauche/plein) + `Panneau latéral` (gauche)
   - Panneau latéral = **Filtres + Résultats (table)**
 
 - **Zone Map**
-  - Fond de carte + couches (bâtiments/polygones, contraintes, heatmap optionnelle)
-  - Contrôles: zoom, reset view, plein écran, bascule couches
+  - Fond de carte + couches (bâtiments/polygones,)
+  - Contrôles: zoom
   - Interactions: hover highlight, click select (ouvre le détail)
 
 - **Filtres (panneau latéral)**
-  - **Filtre surface**: slider min/max + chips “rapides” (ex: < 200, 200–500, > 500 m²)
-  - Recherche texte (adresse / ref / commune)
-  - Tri (surface, potentiel, ROI, statut)
-  - Toggle “uniquement intéressants / shortlist”
-  - Bouton “Réinitialiser”
+  - **Filtre surface**: slider min/max 
+  - Bouton "analyser"
 
-- **Table résultats**
-  - Colonnes: Adresse/ID, Surface, Score/Potentiel, Statut, Actions
+- **Table résultats qui apparati dans le panneau latéral**
+  - Colonnes: Adresse/ID, Surface, Score/Potentiel
   - Ligne cliquable → sélection sur map + ouverture détail
   - Pagination / infinite scroll
   - Sélection multiple (optionnel) + actions batch (ajouter au pipeline, exporter)
 
-- **États**
-  - Loading (skeleton table + shimmer map layer)
-  - Empty (aucun résultat → suggestions de filtres)
-  - Error (retry)
 
 
 ## 2) Map — Détail polygone (focus bâtiment)
@@ -44,8 +34,7 @@
 
 - **Contenu du drawer**
   - **En-tête**: adresse + badges (statut, priorité) + actions rapides
-  - **Résumé KPI**: surface, production estimée, économies, ROI / payback (selon dispo)
-  - **Média**: mini-map centrée / image satellite / aperçu toiture (optionnel)
+  - **Résumé KPI**: surface, Graphique production estimée, économies, ROI / payback (selon dispo)
   - **Sections**
     - “Données bâtiment” (surface, typologie, contraintes)
     - “Potentiel & hypothèses” (résumé, pas de détails techniques)
@@ -55,9 +44,6 @@
     - `Générer vue client / partager`
     - `Marquer non pertinent`
 
-- **États**
-  - Loading (drawer skeleton)
-  - Incomplet (données manquantes → placeholders cohérents)
 
 
 ## 3) Écran Pipeline — Bâtiments intéressants (backlog commercial)

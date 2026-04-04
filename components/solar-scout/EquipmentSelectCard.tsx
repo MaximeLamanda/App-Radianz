@@ -72,7 +72,7 @@ export function EquipmentSelectCard<T>({
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
-          className="w-full h-auto rounded-xl border border-border bg-white px-2.5 py-2 flex items-stretch gap-2 justify-start text-left hover:bg-muted/50 focus:outline-none font-normal text-[11px]"
+          className="w-full h-auto rounded-xl border border-border bg-white p-3 flex items-stretch gap-3 justify-start text-left hover:bg-muted/50 focus:outline-none font-normal text-xs"
         >
           {value ? (
             renderTriggerContent(value, { badges })

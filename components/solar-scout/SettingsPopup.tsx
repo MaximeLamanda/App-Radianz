@@ -111,6 +111,7 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
           ...fromStorage,
           company: p?.companyName?.trim() || fromStorage.company || "",
           logoUrl: p?.companyLogoUrl?.trim() || fromStorage.logoUrl || "",
+          calendlyUrl: p?.calendlyUrl?.trim() || fromStorage.calendlyUrl || "",
         };
         setAccountInfo(merged);
       })
@@ -142,10 +143,11 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
     const next = { ...accountInfo, [field]: value ?? "" };
     setAccountInfo(next);
     saveCommercialReferent(next);
-    if (user?.uid && (field === "company" || field === "logoUrl")) {
+    if (user?.uid && (field === "company" || field === "logoUrl" || field === "calendlyUrl")) {
       setUserProfile(user.uid, {
         ...(field === "company" && { companyName: value?.trim() || undefined }),
         ...(field === "logoUrl" && { companyLogoUrl: value?.trim() || undefined }),
+        ...(field === "calendlyUrl" && { calendlyUrl: value?.trim() || undefined }),
       }).catch((e) => console.warn("Synchro UserProfile:", e));
     }
   };

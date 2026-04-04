@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useUserProfile } from "@/lib/swr-hooks";
 import { setUserProfile } from "@/lib/firestore-user-profile";
 import { OnboardingScreen } from "@/components/onboarding/OnboardingScreen";
+import { OnboardingWelcomeStep } from "@/components/onboarding/OnboardingWelcomeStep";
 import { OnboardingStep1Form } from "@/components/onboarding/OnboardingStep1Form";
 import { OnboardingStep2Form } from "@/components/onboarding/OnboardingStep2Form";
 import { OnboardingStep3Form } from "@/components/onboarding/OnboardingStep3Form";
@@ -14,12 +15,16 @@ import type { UserProfile } from "@/lib/firestore-user-profile";
 
 const STEPS = [
   {
+    title: "Bienvenue sur Radianz",
+    text: "Quelques étapes pour aligner les simulations avec votre activité — puis vous accédez à la carte et aux analyses.",
+  },
+  {
     title: "En quelques mots",
-    text: "Complétez votre profil pour personnaliser votre expérience.",
+    text: "",
   },
   {
     title: "Taille et zone d'activité",
-    text: "Indiquez la taille de votre entreprise et votre zone d'intervention.",
+    text: "",
   },
   {
     title: "Matériel pour la simulation",
@@ -31,20 +36,14 @@ const STEPS = [
   },
 ];
 
+const TOTAL_STEPS = 5;
+
 export default function OnboardingPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const { data: profile, isLoading: profileLoading } = useUserProfile(user?.uid ?? null);
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<Partial<UserProfile>>({});
-  const [liveStep1Data, setLiveStep1Data] = useState({
-    firstName: "",
-    lastName: "",
-    phone: "",
-    profilePhotoUrl: "",
-    companyLogoUrl: "",
-    companyName: "",
-  });
   const [liveStep2GeoZones, setLiveStep2GeoZones] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -75,7 +74,7 @@ export default function OnboardingPage() {
   };
 
   const handleNext = () => {
-    if (step < 4) setStep(step + 1);
+    if (step < TOTAL_STEPS) setStep(step + 1);
     else handleSaveAndFinish();
   };
 
@@ -117,11 +116,25 @@ export default function OnboardingPage() {
       <main className="mx-auto max-w-6xl">
         {step === 1 ? (
           <OnboardingScreen
+            key={1}
             step={1}
-            total={4}
-            title=""
-            text=""
+            total={TOTAL_STEPS}
+            title={STEPS[0].title}
+            text={STEPS[0].text}
             onNext={() => setStep(2)}
+            contentMinHeightClassName="min-h-[600px]"
+          >
+            <OnboardingWelcomeStep />
+          </OnboardingScreen>
+        ) : step === 2 ? (
+          <OnboardingScreen
+            key={2}
+            step={2}
+            total={TOTAL_STEPS}
+            title={STEPS[1].title}
+            text={STEPS[1].text}
+            onNext={() => setStep(3)}
+            onBack={() => setStep(1)}
             formId="onboarding-step-1"
             isSubmitting={isSubmitting}
           >
@@ -130,38 +143,6 @@ export default function OnboardingPage() {
               userId={user.uid}
               user={user}
               initialValues={step1InitialValues}
-              onSubmit={async (data) => {
-                const next = { ...formData, ...data };
-                setFormData(next);
-                setIsSubmitting(true);
-                try {
-                  await setUserProfile(user.uid, next);
-                  setStep(2);
-                } catch (err) {
-                  console.error("Erreur lors de la sauvegarde:", err);
-                } finally {
-                  setIsSubmitting(false);
-                }
-              }}
-              onChange={setLiveStep1Data}
-              isSubmitting={isSubmitting}
-            />
-          </OnboardingScreen>
-        ) : step === 2 ? (
-          <OnboardingScreen
-            step={2}
-            total={4}
-            title={STEPS[1].title}
-            text={STEPS[1].text}
-            onNext={() => setStep(3)}
-            onBack={() => setStep(1)}
-            formId="onboarding-step-2"
-            isSubmitting={isSubmitting}
-          >
-            <OnboardingStep2Form
-              formId="onboarding-step-2"
-              initialValues={{ ...profile, ...formData }}
-              onGeoZonesChange={setLiveStep2GeoZones}
               onSubmit={async (data) => {
                 const next = { ...formData, ...data };
                 setFormData(next);
@@ -180,19 +161,22 @@ export default function OnboardingPage() {
           </OnboardingScreen>
         ) : step === 3 ? (
           <OnboardingScreen
+            key={3}
             step={3}
-            total={4}
+            total={TOTAL_STEPS}
             title={STEPS[2].title}
             text={STEPS[2].text}
             onNext={() => setStep(4)}
             onBack={() => setStep(2)}
-            formId="onboarding-step-3"
+            formId="onboarding-step-2"
             isSubmitting={isSubmitting}
+            contentMinHeightClassName="min-h-[min(90vh,960px)]"
           >
-            <OnboardingStep3Form
-              formId="onboarding-step-3"
+            <OnboardingStep2Form
+              formId="onboarding-step-2"
               userId={user.uid}
               initialValues={{ ...profile, ...formData }}
+              onGeoZonesChange={setLiveStep2GeoZones}
               onSubmit={async (data) => {
                 const next = { ...formData, ...data };
                 setFormData(next);
@@ -209,14 +193,48 @@ export default function OnboardingPage() {
               isSubmitting={isSubmitting}
             />
           </OnboardingScreen>
-        ) : (
+        ) : step === 4 ? (
           <OnboardingScreen
+            key={4}
             step={4}
-            total={4}
+            total={TOTAL_STEPS}
             title={STEPS[3].title}
             text={STEPS[3].text}
-            onNext={handleNext}
+            onNext={() => setStep(5)}
             onBack={() => setStep(3)}
+            formId="onboarding-step-3"
+            isSubmitting={isSubmitting}
+            contentMinHeightClassName="min-h-[640px]"
+          >
+            <OnboardingStep3Form
+              formId="onboarding-step-3"
+              userId={user.uid}
+              initialValues={{ ...profile, ...formData }}
+              onSubmit={async (data) => {
+                const next = { ...formData, ...data };
+                setFormData(next);
+                setIsSubmitting(true);
+                try {
+                  await setUserProfile(user.uid, next);
+                  setStep(5);
+                } catch (err) {
+                  console.error("Erreur lors de la sauvegarde:", err);
+                } finally {
+                  setIsSubmitting(false);
+                }
+              }}
+              isSubmitting={isSubmitting}
+            />
+          </OnboardingScreen>
+        ) : (
+          <OnboardingScreen
+            key={5}
+            step={5}
+            total={TOTAL_STEPS}
+            title={STEPS[4].title}
+            text={STEPS[4].text}
+            onNext={handleNext}
+            onBack={() => setStep(4)}
             nextLabel="Accéder à Radianz"
           />
         )}

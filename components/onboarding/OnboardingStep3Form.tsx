@@ -12,7 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import Image from "next/image";
-import { Plus, Zap, FileCheck, Battery } from "lucide-react";
+import { Plus, Zap, FileCheck, Battery, ChevronDown, ChevronUp } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { PanelReferenceForm, InverterReferenceForm, BatteryReferenceForm } from "@/components/solar-scout/Sidebar";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import { savePanelReferenceToFirebase } from "@/lib/firestore-panel-references";
@@ -47,6 +48,12 @@ export function OnboardingStep3Form({
   const [addPanelOpen, setAddPanelOpen] = useState(false);
   const [addInverterOpen, setAddInverterOpen] = useState(false);
   const [addBatteryOpen, setAddBatteryOpen] = useState(false);
+  /** Listes matériel : aperçu 2 lignes + déplier (taille de zone maîtrisée) */
+  const [showAllPanels, setShowAllPanels] = useState(false);
+  const [showAllInverters, setShowAllInverters] = useState(false);
+  const [showAllBatteries, setShowAllBatteries] = useState(false);
+
+  const PREVIEW_COUNT = 2;
 
   const { data: panelRefs = [], mutate: mutatePanels } = usePanelReferences(userId);
   const { data: inverterRefs = [], mutate: mutateInverters } = useInverterReferences(userId);
@@ -165,6 +172,17 @@ export function OnboardingStep3Form({
     });
   };
 
+  const visiblePanels =
+    panelRefs.length <= PREVIEW_COUNT || showAllPanels ? panelRefs : panelRefs.slice(0, PREVIEW_COUNT);
+  const visibleInverters =
+    inverterRefs.length <= PREVIEW_COUNT || showAllInverters
+      ? inverterRefs
+      : inverterRefs.slice(0, PREVIEW_COUNT);
+  const visibleBatteries =
+    batteryRefs.length <= PREVIEW_COUNT || showAllBatteries
+      ? batteryRefs
+      : batteryRefs.slice(0, PREVIEW_COUNT);
+
   return (
     <form id={formId} onSubmit={handleSubmit} className="space-y-6">
       <div className="space-y-3">
@@ -178,7 +196,7 @@ export function OnboardingStep3Form({
             <TabsTrigger value="inverters">Onduleurs</TabsTrigger>
             <TabsTrigger value="batteries">Batteries</TabsTrigger>
           </TabsList>
-          <TabsContent value="panels" className="space-y-3 mt-4">
+          <TabsContent value="panels" className="mt-4 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium">Références de panneau</label>
               <Button type="button" variant="outline" size="sm" onClick={() => setAddPanelOpen(true)} className="h-8">
@@ -186,8 +204,13 @@ export function OnboardingStep3Form({
                 Ajouter
               </Button>
             </div>
-            <ul className="space-y-3">
-              {panelRefs.map((ref) => (
+            <ul
+              className={cn(
+                "space-y-3",
+                showAllPanels && panelRefs.length > PREVIEW_COUNT && "max-h-[min(50vh,360px)] overflow-y-auto overscroll-contain pr-1"
+              )}
+            >
+              {visiblePanels.map((ref) => (
                 <li
                   key={ref.id}
                   className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
@@ -251,8 +274,29 @@ export function OnboardingStep3Form({
                 </li>
               ))}
             </ul>
+            {panelRefs.length > PREVIEW_COUNT && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 w-full gap-1 text-muted-foreground"
+                onClick={() => setShowAllPanels((v) => !v)}
+              >
+                {showAllPanels ? (
+                  <>
+                    Voir moins
+                    <ChevronUp className="size-4" />
+                  </>
+                ) : (
+                  <>
+                    Voir plus ({panelRefs.length - PREVIEW_COUNT})
+                    <ChevronDown className="size-4" />
+                  </>
+                )}
+              </Button>
+            )}
           </TabsContent>
-          <TabsContent value="inverters" className="space-y-3 mt-4">
+          <TabsContent value="inverters" className="mt-4 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium">Références d&apos;onduleur</label>
               <Button type="button" variant="outline" size="sm" onClick={() => setAddInverterOpen(true)} className="h-8">
@@ -260,8 +304,13 @@ export function OnboardingStep3Form({
                 Ajouter
               </Button>
             </div>
-            <ul className="space-y-3">
-              {inverterRefs.map((ref) => (
+            <ul
+              className={cn(
+                "space-y-3",
+                showAllInverters && inverterRefs.length > PREVIEW_COUNT && "max-h-[min(50vh,360px)] overflow-y-auto overscroll-contain pr-1"
+              )}
+            >
+              {visibleInverters.map((ref) => (
                 <li
                   key={ref.id}
                   className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
@@ -325,8 +374,29 @@ export function OnboardingStep3Form({
                 </li>
               ))}
             </ul>
+            {inverterRefs.length > PREVIEW_COUNT && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 w-full gap-1 text-muted-foreground"
+                onClick={() => setShowAllInverters((v) => !v)}
+              >
+                {showAllInverters ? (
+                  <>
+                    Voir moins
+                    <ChevronUp className="size-4" />
+                  </>
+                ) : (
+                  <>
+                    Voir plus ({inverterRefs.length - PREVIEW_COUNT})
+                    <ChevronDown className="size-4" />
+                  </>
+                )}
+              </Button>
+            )}
           </TabsContent>
-          <TabsContent value="batteries" className="space-y-3 mt-4">
+          <TabsContent value="batteries" className="mt-4 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium">Références de batterie</label>
               <Button type="button" variant="outline" size="sm" onClick={() => setAddBatteryOpen(true)} className="h-8">
@@ -334,8 +404,13 @@ export function OnboardingStep3Form({
                 Ajouter
               </Button>
             </div>
-            <ul className="space-y-3">
-              {batteryRefs.map((ref) => (
+            <ul
+              className={cn(
+                "space-y-3",
+                showAllBatteries && batteryRefs.length > PREVIEW_COUNT && "max-h-[min(50vh,360px)] overflow-y-auto overscroll-contain pr-1"
+              )}
+            >
+              {visibleBatteries.map((ref) => (
                 <li
                   key={ref.id}
                   className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-center gap-3 cursor-pointer hover:bg-accent/50 transition-colors"
@@ -387,6 +462,27 @@ export function OnboardingStep3Form({
                 </li>
               ))}
             </ul>
+            {batteryRefs.length > PREVIEW_COUNT && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 w-full gap-1 text-muted-foreground"
+                onClick={() => setShowAllBatteries((v) => !v)}
+              >
+                {showAllBatteries ? (
+                  <>
+                    Voir moins
+                    <ChevronUp className="size-4" />
+                  </>
+                ) : (
+                  <>
+                    Voir plus ({batteryRefs.length - PREVIEW_COUNT})
+                    <ChevronDown className="size-4" />
+                  </>
+                )}
+              </Button>
+            )}
           </TabsContent>
         </Tabs>
       </div>

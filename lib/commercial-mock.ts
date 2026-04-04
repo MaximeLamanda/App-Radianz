@@ -60,6 +60,7 @@ export function buildCommercialReferentFromUser(
   const photoURL = user.photoURL?.trim() || undefined;
   const company = userProfile?.companyName?.trim() || undefined;
   const logoUrl = userProfile?.companyLogoUrl?.trim() || undefined;
+  const calendlyUrl = userProfile?.calendlyUrl?.trim() || undefined;
   return {
     name,
     email,
@@ -67,6 +68,7 @@ export function buildCommercialReferentFromUser(
     ...(photoURL && { photoURL }),
     ...(company && { company }),
     ...(logoUrl && { logoUrl }),
+    ...(calendlyUrl && { calendlyUrl }),
   };
 }
 

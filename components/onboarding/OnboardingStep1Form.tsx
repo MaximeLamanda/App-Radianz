@@ -10,14 +10,13 @@ import { storage } from "@/lib/firebase";
 import type { UserProfile } from "@/lib/firestore-user-profile";
 import { ImagePlus, Loader2 } from "lucide-react";
 import type { User } from "firebase/auth";
+import { CalendlyEmbed } from "@/components/onboarding/CalendlyEmbed";
 
 export interface OnboardingStep1LiveData {
   firstName: string;
   lastName: string;
   phone: string;
   profilePhotoUrl: string;
-  companyLogoUrl: string;
-  companyName: string;
 }
 
 interface OnboardingStep1FormProps {
@@ -42,12 +41,9 @@ export function OnboardingStep1Form({
   const [firstName, setFirstName] = useState(initialValues?.firstName ?? "");
   const [lastName, setLastName] = useState(initialValues?.lastName ?? "");
   const [phone, setPhone] = useState(initialValues?.phone ?? "");
-  const [companyName, setCompanyName] = useState(initialValues?.companyName ?? "");
-  const [companyLogoUrl, setCompanyLogoUrl] = useState(initialValues?.companyLogoUrl ?? "");
+  const [calendlyUrl, setCalendlyUrl] = useState(initialValues?.calendlyUrl ?? "");
   const [profilePhotoUrl, setProfilePhotoUrl] = useState(user?.photoURL ?? "");
-  const [logoUploading, setLogoUploading] = useState(false);
   const [profilePhotoUploading, setProfilePhotoUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const profilePhotoInputRef = useRef<HTMLInputElement>(null);
 
   const uploadProfilePhoto = async (file: File) => {
@@ -72,25 +68,8 @@ export function OnboardingStep1Form({
       lastName,
       phone,
       profilePhotoUrl,
-      companyLogoUrl,
-      companyName,
     });
-  }, [firstName, lastName, phone, profilePhotoUrl, companyLogoUrl, companyName, onChange]);
-
-  const uploadLogo = async (file: File) => {
-    if (!file.type.startsWith("image/")) return;
-    setLogoUploading(true);
-    try {
-      const ext = file.name.split(".").pop() || "png";
-      const path = `users/${userId}/company-logo.${ext}`;
-      const storageRef = ref(storage, path);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      setCompanyLogoUrl(url);
-    } finally {
-      setLogoUploading(false);
-    }
-  };
+  }, [firstName, lastName, phone, profilePhotoUrl, onChange]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,8 +77,7 @@ export function OnboardingStep1Form({
       firstName: firstName.trim() || undefined,
       lastName: lastName.trim() || undefined,
       phone: phone.trim() || undefined,
-      companyName: companyName.trim() || undefined,
-      companyLogoUrl: companyLogoUrl || undefined,
+      calendlyUrl: calendlyUrl.trim() || undefined,
     });
   };
 
@@ -192,71 +170,20 @@ export function OnboardingStep1Form({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 sm:items-end">
-        <div className="space-y-2">
-          <Label htmlFor="companyName">Entreprise</Label>
-          <Input
-            id="companyName"
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
-            placeholder="Mon entreprise solaire"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label>Logo entreprise</Label>
-          <div className="flex items-center gap-4">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) uploadLogo(file);
-              e.target.value = "";
-            }}
-          />
-          {companyLogoUrl ? (
-            <div className="relative">
-              <img
-                src={companyLogoUrl}
-                alt="Logo"
-                className="h-16 w-16 rounded-lg border object-cover"
-              />
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                className="absolute -right-2 -top-2 h-6 w-6"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={logoUploading}
-                aria-label="Modifier le logo"
-              >
-                {logoUploading ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <ImagePlus className="size-3" />
-                )}
-              </Button>
-            </div>
-          ) : (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={logoUploading}
-            >
-              {logoUploading ? (
-                <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : (
-                <ImagePlus className="mr-2 size-4" />
-              )}
-              Ajouter un logo
-            </Button>
-          )}
-        </div>
-        </div>
+      <div className="space-y-2">
+        <Label htmlFor="calendlyUrl">Lien Calendly (prise de RDV)</Label>
+        <Input
+          id="calendlyUrl"
+          type="url"
+          inputMode="url"
+          autoComplete="url"
+          value={calendlyUrl}
+          onChange={(e) => setCalendlyUrl(e.target.value)}
+          placeholder="https://calendly.com/votre-compte/creneau"
+          className="font-mono text-sm"
+        />
       </div>
+      <CalendlyEmbed url={calendlyUrl} />
     </form>
   );
 }

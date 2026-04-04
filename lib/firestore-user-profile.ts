@@ -29,6 +29,8 @@ export interface UserProfile {
   // Onboarding
   companyName?: string;
   companyLogoUrl?: string;
+  /** Lien Calendly personnel (prise de RDV), saisi en onboarding ou dans les paramètres */
+  calendlyUrl?: string;
   defaultPanelRefId?: string;
   defaultInverterRefId?: string;
   defaultBatteryRefId?: string;
