@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
@@ -61,6 +61,9 @@ import {
   estimateAnnualSavingsEurWithBreakdown,
   estimateEnergyBillEur,
   getBreakEvenYears,
+  DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION,
+  effectiveRetailPriceEurPerKwhFromBill,
+  projectedAnnualGridBillEur,
 } from "@/lib/solar-settings";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
 import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProductionChart";
@@ -68,9 +71,23 @@ import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scou
 import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
 import type { Prospect, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { toast } from "sonner";
-import { RoiComboChart } from "@/components/solar-scout/RoiChart";
+import { RoiComboChart, getRoiCumulativeNetEurAfterHorizon } from "@/components/solar-scout/RoiChart";
+import { ElectricityTariffEscalationChart } from "@/components/solar-scout/ElectricityTariffEscalationChart";
 
 type FinancingMode = "capex" | "lease" | "ppa";
+
+/** Largeur mini visée d’un trait (px) — sert à choisir combien de colonnes tiennent dans la largeur. */
+const CARBON_BAR_STICK_MIN_PX = 1;
+/** Écart fixe entre deux traits (px) — identique pour toutes les paires. */
+const CARBON_BAR_GAP_PX = 1;
+
+/** Nombre de traits : même écart et largeurs égales, la grille répartit le reste sur toute la largeur. */
+function carbonBarStickCountForWidth(widthPx: number): number {
+  const sMin = CARBON_BAR_STICK_MIN_PX;
+  const g = CARBON_BAR_GAP_PX;
+  if (!Number.isFinite(widthPx) || widthPx <= 0) return 1;
+  return Math.max(1, Math.floor((widthPx + g) / (sMin + g)));
+}
 
 export default function ProspectSharePage() {
   const params = useParams();
@@ -95,8 +112,26 @@ export default function ProspectSharePage() {
   const [selectedBatteryCount, setSelectedBatteryCount] = useState(1);
   const [energyBillEurOverride, setEnergyBillEurOverride] = useState<number | undefined>(undefined);
   const [energyBillDialogOpen, setEnergyBillDialogOpen] = useState(false);
+  const [financeChartView, setFinanceChartView] = useState<"roi" | "tariff">("roi");
 
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
+  const carbonBarTrackRef = useRef<HTMLDivElement>(null);
+  const [carbonBarSegments, setCarbonBarSegments] = useState(80);
+
+  useLayoutEffect(() => {
+    const el = carbonBarTrackRef.current;
+    if (!el) return;
+    const apply = (width: number) => {
+      setCarbonBarSegments(carbonBarStickCountForWidth(width));
+    };
+    apply(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      apply(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const visiblePanels = useMemo(() => {
     const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
@@ -348,6 +383,7 @@ export default function ProspectSharePage() {
     let selfConsumptionDirectKwhTotal = 0;
     let selfConsumptionViaBatteryKwhTotal = 0;
     let injectionReseauKwhTotal = 0;
+    let annualGridDrawKwh = 0;
     let batteryByMonth: { selfConsumptionDirectKwh: number; selfConsumptionViaBatteryKwh: number; injectionBatteryKwh: number; injectionReseauKwh: number; excessKwh: number; gridDrawKwh: number }[] | undefined;
     let breakdownFromHourlySim = false;
     const canUseProfiles = effectiveConfig.productionPerKwp?.productionPerKwpMonthly?.length === 12;
@@ -382,6 +418,7 @@ export default function ProspectSharePage() {
       selfConsumptionDirectKwhTotal = simulationResult.selfConsumptionDirectKwh;
       selfConsumptionViaBatteryKwhTotal = simulationResult.selfConsumptionViaBatteryKwh;
       injectionReseauKwhTotal = simulationResult.excessKwh;
+      annualGridDrawKwh = simulationResult.gridDrawKwh;
     } else {
       const breakdown = estimateAnnualSavingsEurWithBreakdown(
         annualProductionKwh,
@@ -391,6 +428,10 @@ export default function ProspectSharePage() {
       selfConsumptionDirectKwhTotal = breakdown.selfConsumptionKwh;
       selfConsumptionViaBatteryKwhTotal = 0;
       injectionReseauKwhTotal = breakdown.excessKwh;
+      annualGridDrawKwh = Math.max(
+        0,
+        consoAnnuelleKwh - Math.min(annualProductionKwh, consoAnnuelleKwh)
+      );
       equipmentEur = estimateInstallationPriceEur(
         panelCount,
         inverterCount,
@@ -411,6 +452,7 @@ export default function ProspectSharePage() {
       selfConsumptionDirectKwhTotal,
       selfConsumptionViaBatteryKwhTotal,
       injectionReseauKwhTotal,
+      annualGridDrawKwh,
       breakdownFromHourlySim,
     };
   }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, configurationMode, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, selectedBatteryCount, includeBatteryEffective]);
@@ -481,6 +523,7 @@ export default function ProspectSharePage() {
   const selfConsumptionDirectKwhTotal = financialSummary?.selfConsumptionDirectKwhTotal ?? 0;
   const selfConsumptionViaBatteryKwhTotal = financialSummary?.selfConsumptionViaBatteryKwhTotal ?? 0;
   const injectionReseauKwhTotal = financialSummary?.injectionReseauKwhTotal ?? 0;
+  const annualGridDrawKwh = financialSummary?.annualGridDrawKwh ?? 0;
   const breakdownFromHourlySim = financialSummary?.breakdownFromHourlySim ?? false;
   const priceRange = financialSummary?.priceRange ?? { equipmentEur: 0, totalMinEur: 0, totalMaxEur: 0 };
   const breakEvenMin = financialSummary?.breakEvenMin ?? null;
@@ -491,6 +534,11 @@ export default function ProspectSharePage() {
         ? `${breakEvenMin} an${breakEvenMin > 1 ? "s" : ""}`
         : `${breakEvenMin} – ${breakEvenMax} ans`
       : "—";
+
+  const effectiveRetailPricePerKwh = useMemo(
+    () => effectiveRetailPriceEurPerKwhFromBill(consoAnnuelleKwh, displayEnergyBillEur),
+    [consoAnnuelleKwh, displayEnergyBillEur]
+  );
 
   const formatPower = (powerW: number) => {
     if (!Number.isFinite(powerW)) return "—";
@@ -1220,27 +1268,31 @@ export default function ProspectSharePage() {
                     })}{" "}
                     t CO₂e
                   </div>
-                  <div className="w-full mt-1 flex items-end gap-[3px] h-5">
-                    <div className="relative w-full h-5 overflow-hidden" aria-hidden>
-                      <div
-                        className="absolute inset-0"
-                        style={{
-                          backgroundImage:
-                            "repeating-linear-gradient(90deg, rgba(161,161,170,0.95) 0 2px, rgba(0,0,0,0) 2px 8px)",
-                        }}
-                      />
-                      <div
-                        className="absolute inset-y-0 left-0 overflow-hidden"
-                        style={{ width: `${carbonReductionPct}%` }}
-                      >
-                        <div
-                          className="h-full w-full"
-                          style={{
-                            backgroundImage:
-                              "repeating-linear-gradient(90deg, rgba(0,0,255,1) 0 2px, rgba(0,0,0,0) 2px 8px)",
-                          }}
-                        />
-                      </div>
+                  <div className="mt-1 flex h-9 w-full items-end gap-[3px]">
+                    <div
+                      ref={carbonBarTrackRef}
+                      className="relative grid h-9 w-full min-w-0 shrink-0 items-stretch"
+                      style={{
+                        gap: CARBON_BAR_GAP_PX,
+                        gridTemplateColumns: `repeat(${carbonBarSegments}, minmax(0, 1fr))`,
+                      }}
+                      aria-hidden
+                    >
+                      {Array.from({ length: carbonBarSegments }, (_, i) => {
+                        const pct = Math.min(100, Math.max(0, carbonReductionPct));
+                        const fillEnd = (pct / 100) * carbonBarSegments;
+                        const isFilled = i < fillEnd;
+                        return (
+                          <div
+                            key={i}
+                            className={
+                              isFilled
+                                ? "h-full min-w-0 w-full rounded-full bg-[#0000FF]"
+                                : "h-full min-w-0 w-full rounded-full bg-zinc-400/95"
+                            }
+                          />
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -1303,6 +1355,38 @@ export default function ProspectSharePage() {
                   };
                 })();
 
+                const selfKwhTotal =
+                  selfConsumptionDirectKwhTotal + selfConsumptionViaBatteryKwhTotal;
+                const escalationG = DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION;
+                const roiCumulative25 = getRoiCumulativeNetEurAfterHorizon({
+                  capexEur: derived.capexEur,
+                  years,
+                  escalationAnnual: escalationG,
+                  retailPriceYear0: effectiveRetailPricePerKwh,
+                  feedInPriceYear0: DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
+                  selfConsumptionKwh: selfKwhTotal,
+                  excessInjectionKwh: injectionReseauKwhTotal,
+                  financingMode,
+                  referenceCapexForLeaseEur: baseCapexEur,
+                });
+                const gridKwhForTariff =
+                  consoAnnuelleKwh > 0
+                    ? Math.min(annualGridDrawKwh, consoAnnuelleKwh)
+                    : annualGridDrawKwh;
+                const tariffBillGapYear25 =
+                  projectedAnnualGridBillEur(
+                    consoAnnuelleKwh,
+                    effectiveRetailPricePerKwh,
+                    escalationG,
+                    25
+                  ) -
+                  projectedAnnualGridBillEur(
+                    gridKwhForTariff,
+                    effectiveRetailPricePerKwh,
+                    escalationG,
+                    25
+                  );
+
                 return (
                   <>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -1338,44 +1422,114 @@ export default function ProspectSharePage() {
                       <div className="flex flex-col gap-1.5 mb-2 shrink-0">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[10px] uppercase tracking-wide text-zinc-500">
-                            ROI (cashflow net)
+                            {financeChartView === "roi"
+                              ? "ROI (cashflow net)"
+                              : "Facture réseau (hausse prix)"}
                           </span>
-                          <div className="shrink-0 rounded-md border border-border bg-muted/50 px-3 py-1 text-xs font-medium text-zinc-700">
-                            0–25 ans
+                          <div
+                            role="tablist"
+                            className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
+                            aria-label="Vue du graphique finance"
+                          >
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={financeChartView === "roi"}
+                              onClick={() => setFinanceChartView("roi")}
+                              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                                financeChartView === "roi"
+                                  ? "bg-background text-foreground shadow-xs"
+                                  : "text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              ROI
+                            </button>
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={financeChartView === "tariff"}
+                              onClick={() => setFinanceChartView("tariff")}
+                              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                                financeChartView === "tariff"
+                                  ? "bg-background text-foreground shadow-xs"
+                                  : "text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              Hausse prix
+                            </button>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          {(() => {
-                            const netPlusValue = -derived.capexEur + derived.annualNetEur * years;
-                            const rounded = Math.round(netPlusValue);
-                            const formatted = `${rounded > 0 ? "+" : ""}${rounded.toLocaleString("fr-FR")} €`;
-                            return (
+                          {financeChartView === "roi" ? (
+                            <>
                               <span className="tabular-nums text-[#0000FF] text-lg font-semibold">
-                                {formatted}
+                                {`${Math.round(roiCumulative25) > 0 ? "+" : ""}${Math.round(roiCumulative25).toLocaleString("fr-FR")} €`}
                               </span>
-                            );
-                          })()}
-                          <TooltipProvider>
-                            <Tooltip delayDuration={150}>
-                              <TooltipTrigger asChild>
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10"
-                                  aria-label="Informations sur le calcul"
-                                >
-                                  <Info className="h-4 w-4" />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent side="top" align="start" className="text-xs">
-                                Estimation de la plus-value nette cumulée sur 25 ans (investissement inclus).
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                              <TooltipProvider>
+                                <Tooltip delayDuration={150}>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10"
+                                      aria-label="Informations sur le calcul"
+                                    >
+                                      <Info className="h-4 w-4" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" align="start" className="text-xs max-w-xs">
+                                    Plus-value nette cumulée sur 25 ans (investissement inclus), avec hausse annuelle du prix de l&apos;électricité intégrée aux économies.
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </>
+                          ) : (
+                            <>
+                              <span className="tabular-nums text-[#0000FF] text-lg font-semibold">
+                                {`Écart année 25 : ${tariffBillGapYear25 >= 0 ? "+" : ""}${Math.round(tariffBillGapYear25).toLocaleString("fr-FR")} €`}
+                              </span>
+                              <TooltipProvider>
+                                <Tooltip delayDuration={150}>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10"
+                                      aria-label="Informations sur le calcul"
+                                    >
+                                      <Info className="h-4 w-4" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" align="start" className="text-xs max-w-xs">
+                                    Différence entre facture si toute la consommation était achetée au réseau et facture sur le seul tirage réseau, à l&apos;année 25 (même scénario de hausse des prix).
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </>
+                          )}
                         </div>
                       </div>
 
                       <div className="flex-1 min-h-0 flex flex-col">
-                        <RoiComboChart capexEur={derived.capexEur} annualSavingsEur={derived.annualNetEur} years={years} />
+                        {financeChartView === "roi" ? (
+                          <RoiComboChart
+                            capexEur={derived.capexEur}
+                            years={years}
+                            escalationAnnual={escalationG}
+                            retailPriceYear0={effectiveRetailPricePerKwh}
+                            feedInPriceYear0={DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH}
+                            selfConsumptionKwh={selfKwhTotal}
+                            excessInjectionKwh={injectionReseauKwhTotal}
+                            financingMode={financingMode}
+                            referenceCapexForLeaseEur={baseCapexEur}
+                          />
+                        ) : (
+                          <ElectricityTariffEscalationChart
+                            annualConsumptionKwh={consoAnnuelleKwh}
+                            annualGridDrawKwh={gridKwhForTariff}
+                            retailPriceYear0={effectiveRetailPricePerKwh}
+                            escalationAnnual={escalationG}
+                            years={years}
+                          />
+                        )}
                       </div>
                     </div>
                   </>

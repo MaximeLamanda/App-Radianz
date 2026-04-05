@@ -10,12 +10,19 @@ import {
   Cell,
 } from "recharts";
 import { ChartContainer, ChartTooltip, type ChartConfig } from "@/components/ui/chart";
+import {
+  annualEnergySavingsEurAtYear,
+  DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION,
+  DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
+} from "@/lib/solar-settings";
+
+export type RoiFinancingMode = "capex" | "lease" | "ppa";
 
 type RoiComboDatum = {
   year: number;
-  netEur: number; // cumul (prend l'année précédente en compte)
-  capexEur: number; // affichage tooltip (année 0)
-  annualSavingsEur: number; // affichage tooltip (année >= 1)
+  netEur: number;
+  capexEur: number;
+  annualSavingsEur: number;
 };
 
 const chartConfig = {
@@ -28,17 +35,10 @@ const chartConfig = {
     color: "#6b7280",
   },
   savings: {
-    label: "Savings / an",
+    label: "Économies / an",
     color: "#0000FF",
   },
 } satisfies ChartConfig;
-
-function formatCompactEur(value: number) {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} M€`;
-  if (abs >= 1_000) return `${(value / 1_000).toFixed(0)} k€`;
-  return `${Math.round(value)} €`;
-}
 
 function formatScaledTicks(value: number, unit: "k" | "M") {
   if (!Number.isFinite(value)) return "";
@@ -50,7 +50,6 @@ function formatScaledTicks(value: number, unit: "k" | "M") {
     return `${v.toLocaleString("fr-FR", { maximumFractionDigits })}M`;
   }
 
-  // "k" par défaut
   return `${Math.round(value / 1_000)}k`;
 }
 
@@ -89,7 +88,6 @@ function buildNiceTicks(min: number, max: number) {
       break;
     }
 
-    // fallback "moins pire" si on n'a rien trouvé: on garde le dernier calculé
     chosenStep = step;
     chosenDomain = [domainMin, domainMax];
   }
@@ -104,26 +102,98 @@ function buildNiceTicks(min: number, max: number) {
   return { domain: chosenDomain, ticks: chosenTicks };
 }
 
-export function RoiComboChart({
-  capexEur,
-  annualSavingsEur,
-  years = 25,
-}: {
+function annualOperationalNetEur(
+  grossEnergySavings: number,
+  financingMode: RoiFinancingMode,
+  referenceCapexForLeaseEur: number
+): number {
+  if (financingMode === "lease") {
+    const leaseAnnual = referenceCapexForLeaseEur / 15;
+    return grossEnergySavings - leaseAnnual;
+  }
+  if (financingMode === "ppa") {
+    return grossEnergySavings * 0.7;
+  }
+  return grossEnergySavings;
+}
+
+export type RoiComboChartParams = {
   capexEur: number;
-  annualSavingsEur: number;
   years?: number;
-}) {
+  escalationAnnual?: number;
+  retailPriceYear0: number;
+  feedInPriceYear0?: number;
+  selfConsumptionKwh: number;
+  excessInjectionKwh: number;
+  financingMode: RoiFinancingMode;
+  referenceCapexForLeaseEur: number;
+};
+
+/** Cumul net après `years` (aligné sur le graphique ROI indexé). */
+export function getRoiCumulativeNetEurAfterHorizon(params: RoiComboChartParams): number {
+  const { data } = buildRoiComboData(params);
+  const last = data[data.length - 1];
+  return last ? last.netEur : 0;
+}
+
+function buildRoiComboData(params: RoiComboChartParams): { data: RoiComboDatum[] } {
+  const {
+    capexEur,
+    years = 25,
+    escalationAnnual = DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION,
+    retailPriceYear0,
+    feedInPriceYear0 = DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
+    selfConsumptionKwh,
+    excessInjectionKwh,
+    financingMode,
+    referenceCapexForLeaseEur,
+  } = params;
+
   const safeYears = Math.max(1, Math.min(60, Math.floor(years)));
   const capex = Number.isFinite(capexEur) ? capexEur : 0;
-  const savings = Number.isFinite(annualSavingsEur) ? annualSavingsEur : 0;
+  const g = Number.isFinite(escalationAnnual) ? escalationAnnual : 0;
+  const p0 = Number.isFinite(retailPriceYear0) ? retailPriceYear0 : 0;
+  const f0 = Number.isFinite(feedInPriceYear0) ? feedInPriceYear0 : DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+  const selfKwh = Number.isFinite(selfConsumptionKwh) ? Math.max(0, selfConsumptionKwh) : 0;
+  const excessKwh = Number.isFinite(excessInjectionKwh) ? Math.max(0, excessInjectionKwh) : 0;
+  const leaseRef = Number.isFinite(referenceCapexForLeaseEur) ? referenceCapexForLeaseEur : 0;
 
   const data: RoiComboDatum[] = [];
-  let net = -capex; // point de départ: investissement (négatif)
+  let net = -capex;
   data.push({ year: 0, netEur: net, capexEur: -capex, annualSavingsEur: 0 });
+
   for (let year = 1; year <= safeYears; year++) {
-    net += savings;
-    data.push({ year, netEur: net, capexEur: 0, annualSavingsEur: savings });
+    const gross = annualEnergySavingsEurAtYear(selfKwh, excessKwh, p0, f0, g, year);
+    const annualNet = annualOperationalNetEur(gross, financingMode, leaseRef);
+    net += annualNet;
+    data.push({ year, netEur: net, capexEur: 0, annualSavingsEur: annualNet });
   }
+
+  return { data };
+}
+
+export function RoiComboChart({
+  capexEur,
+  years = 25,
+  escalationAnnual = DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION,
+  retailPriceYear0,
+  feedInPriceYear0 = DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
+  selfConsumptionKwh,
+  excessInjectionKwh,
+  financingMode,
+  referenceCapexForLeaseEur,
+}: RoiComboChartParams) {
+  const { data } = buildRoiComboData({
+    capexEur,
+    years,
+    escalationAnnual,
+    retailPriceYear0,
+    feedInPriceYear0,
+    selfConsumptionKwh,
+    excessInjectionKwh,
+    financingMode,
+    referenceCapexForLeaseEur,
+  });
 
   const { minNet, maxNet, maxAbsNet } = data.reduce(
     (acc, d) => {
@@ -180,7 +250,7 @@ export function RoiComboChart({
                   </div>
                   {p.year >= 1 ? (
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">Savings (an)</span>
+                      <span className="text-muted-foreground">Économies nettes (an)</span>
                       <span className="font-mono tabular-nums text-foreground">
                         {Math.round(p.annualSavingsEur).toLocaleString("fr-FR")} €
                       </span>
@@ -198,20 +268,12 @@ export function RoiComboChart({
             );
           }}
         />
-        <Bar
-          dataKey="netEur"
-          name="net"
-          radius={0}
-        >
+        <Bar dataKey="netEur" name="net" radius={0}>
           {data.map((d) => (
             <Cell
               key={d.year}
               fill={
-                d.year === 0
-                  ? "var(--color-capex)"
-                  : d.netEur < 0
-                    ? "hsl(240 6% 90%)"
-                    : "var(--color-savings)"
+                d.netEur < 0 ? "hsl(240 6% 90%)" : "var(--color-savings)"
               }
             />
           ))}
@@ -220,4 +282,3 @@ export function RoiComboChart({
     </ChartContainer>
   );
 }
-

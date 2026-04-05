@@ -526,6 +526,62 @@ export const DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH = 0.20;
 /** Prix de rachat EDF OA (obligation d'achat) par défaut en €/kWh pour l'injection sur le réseau */
 export const DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH = 0.053;
 
+/**
+ * Hausse annuelle relative du prix de l'électricité (scénario prospectif, ex. 3 % / an).
+ * Peut être surchargée plus tard par les réglages produit.
+ */
+export const DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION = 0.03;
+
+/** P0 €/kWh aligné sur la facture affichée (conso annuelle / facture) ou défaut. */
+export function effectiveRetailPriceEurPerKwhFromBill(
+  annualConsumptionKwh: number,
+  annualBillEur: number
+): number {
+  if (annualConsumptionKwh > 0 && Number.isFinite(annualBillEur) && annualBillEur > 0) {
+    return annualBillEur / annualConsumptionKwh;
+  }
+  return DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+}
+
+/** Facteur (1+g)^year pour l'année d'index `year` (0 = année de référence). */
+export function electricityPriceFactorAtYear(escalationAnnual: number, year: number): number {
+  const g = Number.isFinite(escalationAnnual) ? escalationAnnual : 0;
+  const y = Math.max(0, Math.floor(year));
+  return (1 + g) ** y;
+}
+
+/**
+ * Facture annuelle estimée : kWh × P0 × (1+g)^year (année 0 = prix de référence).
+ */
+export function projectedAnnualGridBillEur(
+  kwh: number,
+  retailPriceYear0: number,
+  escalationAnnual: number,
+  year: number
+): number {
+  const k = Number.isFinite(kwh) ? Math.max(0, kwh) : 0;
+  const p0 = Number.isFinite(retailPriceYear0) ? retailPriceYear0 : DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+  return Math.round(k * p0 * electricityPriceFactorAtYear(escalationAnnual, year));
+}
+
+/**
+ * Économies liées à l'énergie pour l'année d'index `year` (1 = première année après investissement) :
+ * autoconsommation × P(year) + injection × tarif(year), avec P et tarif indexés par (1+g)^year.
+ */
+export function annualEnergySavingsEurAtYear(
+  selfConsumptionKwh: number,
+  excessInjectionKwh: number,
+  retailPriceYear0: number,
+  feedInPriceYear0: number,
+  escalationAnnual: number,
+  year: number
+): number {
+  const factor = electricityPriceFactorAtYear(escalationAnnual, year);
+  const self = Math.max(0, selfConsumptionKwh) * retailPriceYear0 * factor;
+  const inj = Math.max(0, excessInjectionKwh) * feedInPriceYear0 * factor;
+  return Math.round(self + inj);
+}
+
 /** Résultat du calcul d'économies avec distinction autoconsommation / injection */
 export interface SavingsBreakdown {
   /** kWh autoconsommés (min(production, consommation)) */

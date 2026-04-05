@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "clean": "rm -rf .next",
     "dev": "ulimit -n 10240 2>/dev/null || true; next dev -p 3000",
+    "dev:clean": "npm run clean && npm run dev",
     "dev:3001": "ulimit -n 10240 2>/dev/null || true; next dev -p 3001",
     "dev:restart": "bash scripts/dev.sh",
     "build": "next build",
