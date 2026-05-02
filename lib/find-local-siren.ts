@@ -50,8 +50,15 @@ export interface ScoredCandidate {
   siren: string;
   siret: string;
   nom_complet: string;
+  company_manager_name?: string;
   code_postal: string;
   adresse: string;
+  /** Code NAF (ex. 20.14Z) */
+  activite_principale?: string;
+  /** Tranche d'effectif (code INSEE, ex. 03) */
+  tranche_effectif_salarie?: string;
+  /** true si le SIREN est présent dans parcelles_personnes_morales pour cette commune */
+  cadastre_match?: boolean;
 }
 
 const PER_PAGE = 20;
@@ -63,6 +70,76 @@ const WEIGHT_NOM = 250;
 const WEIGHT_RUE = 380;
 const WEIGHT_CP = 270;
 const WEIGHT_DIST = 100;
+
+/** Partie nom minimale si un token POI discriminant matche la raison sociale + ancrage adresse. */
+const TOKEN_MATCH_NOM_FLOOR = 0.92;
+
+/**
+ * Mots retirés du nom POI avant bonus token — réduit les faux positifs (ex. « service » → tout « … SERVICES »).
+ */
+const POI_TOKEN_STOPWORDS = new Set([
+  "le",
+  "la",
+  "les",
+  "de",
+  "du",
+  "des",
+  "et",
+  "au",
+  "aux",
+  "the",
+  "and",
+  "chez",
+  "societe",
+  "service",
+  "services",
+  "business",
+  "solutions",
+  "consulting",
+  "ingenierie",
+  "technologies",
+  "technology",
+  "international",
+  "france",
+  "europe",
+  "groupe",
+  "holding",
+  "global",
+  "digital",
+]);
+
+/** Tokens encore trop génériques si présents après filtre (sécurité). */
+const TOKEN_BLACKLIST = new Set([
+  "service",
+  "services",
+  "international",
+  "france",
+  "europe",
+  "holding",
+  "groupe",
+  "business",
+  "solutions",
+  "consulting",
+  "technologies",
+  "technology",
+  "global",
+  "digital",
+]);
+
+/** Suffixes de forme juridique FR en fin de libellé POI (ordre : plus long d’abord). */
+const FRENCH_LEGAL_FORM_SUFFIXES = [
+  "selarl",
+  "selas",
+  "sasu",
+  "sarl",
+  "sas",
+  "eurl",
+  "scop",
+  "snc",
+  "sci",
+  "gie",
+  "sa",
+] as const;
 
 /**
  * Parse l'adresse pour extraire ville, CP et rue (segment avant "ville CP").
@@ -100,7 +177,7 @@ export function haversineKm(
   return EARTH_RADIUS_KM * c;
 }
 
-function normalizeForMatch(s: string): string {
+export function normalizeForMatch(s: string): string {
   return (s ?? "")
     .toLowerCase()
     .normalize("NFD")
@@ -110,8 +187,97 @@ function normalizeForMatch(s: string): string {
 }
 
 /**
+ * Unifie les abréviations de voie FR courantes (chaîne déjà accent-insensible).
+ */
+export function expandStreetAbbreviations(normalizedLower: string): string {
+  let s = normalizedLower;
+  const rules: [RegExp, string][] = [
+    [/\bimp\.\s*/g, "impasse "],
+    [/\bpl\.\s*/g, "place "],
+    [/\bch\.\s*/g, "chemin "],
+    [/\bav\.\s*/g, "avenue "],
+    [/\bave\b/g, "avenue"],
+    [/\bbd\b/g, "boulevard"],
+    [/\bboul\b/g, "boulevard"],
+    [/\brte\b/g, "route"],
+  ];
+  for (const [re, rep] of rules) {
+    s = s.replace(re, rep);
+  }
+  return s.replace(/\s+/g, " ").trim();
+}
+
+function normalizeStreetLineForMatch(line: string): string {
+  return expandStreetAbbreviations(normalizeForMatch(line));
+}
+
+function escapeRegexToken(token: string): string {
+  return token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Retire les formes juridiques courantes en fin de chaîne (entrée déjà normalisée, sans accents).
+ */
+export function stripFrenchLegalFormsForPoi(normalizedLower: string): string {
+  let s = normalizedLower.trim();
+  let prev = "";
+  while (s !== prev) {
+    prev = s;
+    for (const suf of FRENCH_LEGAL_FORM_SUFFIXES) {
+      const re = new RegExp(`(?:\\s*[-–,]\\s*|\\s+)${suf}\\.?\\s*$`, "i");
+      s = s.replace(re, "").trim();
+    }
+    s = s.replace(/\s+s\.?\s*a\.?\s*$/i, "").trim();
+  }
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Vrai si `token` apparaît comme mot entier dans `nomNormalized` (déjà lower + sans accents). */
+export function nomContainsTokenAsWholeWord(
+  nomNormalized: string,
+  token: string
+): boolean {
+  if (!token || !/^[a-z0-9]+$/.test(token)) return false;
+  const re = new RegExp(`\\b${escapeRegexToken(token)}\\b`, "i");
+  return re.test(nomNormalized);
+}
+
+export function extractPoiTokensForMatch(
+  poiName: string,
+  communeNormalized: string | null
+): string[] {
+  const n = stripFrenchLegalFormsForPoi(normalizeForMatch(poiName));
+  const commune = communeNormalized ? normalizeForMatch(communeNormalized) : "";
+  const raw = n.split(/[^a-z0-9]+/).filter(Boolean);
+  return raw.filter(
+    (t) =>
+      t.length >= 4 &&
+      !POI_TOKEN_STOPWORDS.has(t) &&
+      (!commune || t !== commune)
+  );
+}
+
+export function hasDiscriminatingTokenInNom(
+  poiName: string,
+  nomComplet: string,
+  communeNormalized: string | null
+): boolean {
+  const nomNorm = normalizeForMatch(nomComplet);
+  const tokens = extractPoiTokensForMatch(poiName, communeNormalized);
+  const matching = tokens.filter((t) => nomContainsTokenAsWholeWord(nomNorm, t));
+  const nonBlacklisted = matching.filter((t) => !TOKEN_BLACKLIST.has(t));
+  return nonBlacklisted.length > 0;
+}
+
+export interface ScoreCandidateOptions {
+  /** Commune (segment adresse) : exclue des tokens POI pour éviter « Pessac » comme signal. */
+  commune?: string | null;
+}
+
+/**
  * Score composite 0–1000 :
- * ~25% fuzzy_nom (Fuse), ~38% rue, ~27% CP, ~10% distance &lt; 1 km.
+ * ~25% fuzzy_nom (Fuse, chaînes normalisées) + bonus token sous ancrage adresse,
+ * ~38% rue (abréviations voie), ~27% CP, ~10% distance &lt; 1 km.
  */
 export function scoreCandidate(
   poiName: string,
@@ -119,23 +285,15 @@ export function scoreCandidate(
   poiCP: string | null,
   poiLat: number,
   poiLon: number,
-  candidate: LocalSirenCandidate
+  candidate: LocalSirenCandidate,
+  options?: ScoreCandidateOptions
 ): number {
-  let partNom = 0;
-  const fuseOne = new Fuse([{ nom: candidate.nom_complet }], {
-    keys: ["nom"],
-    threshold: 0.6,
-    includeScore: true,
-  });
-  const nomSearch = fuseOne.search(poiName.trim());
-  if (nomSearch.length > 0 && nomSearch[0].score != null) {
-    partNom = Math.max(0, 1 - nomSearch[0].score);
-  }
+  const communeNorm = options?.commune ?? null;
 
   let partRue = 0;
   if (poiRue && candidate.adresse) {
-    const a = normalizeForMatch(poiRue);
-    const b = normalizeForMatch(candidate.adresse);
+    const a = normalizeStreetLineForMatch(poiRue);
+    const b = normalizeStreetLineForMatch(candidate.adresse);
     partRue = b.includes(a) || a.includes(b) ? 1 : 0;
   }
 
@@ -159,6 +317,26 @@ export function scoreCandidate(
     );
     partDist = km <= DISTANCE_KM_THRESHOLD ? 1 : 0;
   }
+
+  const addressAnchored = partRue === 1 || (partCP === 1 && partDist === 1);
+
+  const nomNorm = normalizeForMatch(candidate.nom_complet);
+  const poiNorm = normalizeForMatch(poiName.trim());
+  let partFuse = 0;
+  const fuseOne = new Fuse([{ nom: nomNorm }], {
+    keys: ["nom"],
+    threshold: 0.6,
+    includeScore: true,
+  });
+  const nomSearch = fuseOne.search(poiNorm);
+  if (nomSearch.length > 0 && nomSearch[0].score != null) {
+    partFuse = Math.max(0, 1 - nomSearch[0].score);
+  }
+
+  const tokenBoost =
+    addressAnchored &&
+    hasDiscriminatingTokenInNom(poiName, candidate.nom_complet, communeNorm);
+  const partNom = tokenBoost ? Math.max(partFuse, TOKEN_MATCH_NOM_FLOOR) : partFuse;
 
   return (
     Math.round(WEIGHT_NOM * partNom) +
@@ -190,6 +368,9 @@ export function flattenApiResultsToCandidates(
   const seen = new Set<string>();
 
   for (const company of results) {
+    // Exclure les sociétés inactives (etat_administratif = "C" = Cessé, ou autre valeur non-"A")
+    if (company.etat_administratif && company.etat_administratif !== "A") continue;
+
     const nom = company.nom_complet ?? "";
     const siren = company.siren ?? "";
 
@@ -242,7 +423,8 @@ export function buildEnrichmentFromLocalMatch(
   company: ResultatApiRechercheEntreprises,
   local: LocalSirenCandidate
 ): EnrichmentResult {
-  const base = mapResultatApiToEnrichment(company);
+  const st = (local.siret || "").trim();
+  const base = mapResultatApiToEnrichment(company, /^\d{14}$/.test(st) ? { preferSiret: st } : undefined);
   return {
     ...base,
     siret: local.siret || base.siret,
@@ -302,22 +484,33 @@ export async function findLocalSiren(
       parsed.codePostal,
       lat,
       lon,
-      c
+      c,
+      { commune: parsed.ville }
     );
     return { candidate: c, score: s };
   });
 
   scored.sort((a, b) => b.score - a.score);
 
-  const phase2Scoring: ScoredCandidate[] = scored.map(({ candidate, score }, i) => ({
-    rank: i + 1,
-    score,
-    siren: candidate.siren,
-    siret: candidate.siret,
-    nom_complet: candidate.nom_complet,
-    code_postal: candidate.code_postal,
-    adresse: candidate.adresse,
-  }));
+  const phase2Scoring: ScoredCandidate[] = scored.map(({ candidate, score }, i) => {
+    const st = (candidate.siret || "").trim();
+    const mapped = mapResultatApiToEnrichment(
+      candidate.sourceCompany,
+      /^\d{14}$/.test(st) ? { preferSiret: st } : undefined
+    );
+    return {
+      rank: i + 1,
+      score,
+      siren: candidate.siren,
+      siret: candidate.siret,
+      nom_complet: candidate.nom_complet,
+      company_manager_name: mapped.companyManagerName,
+      code_postal: candidate.code_postal,
+      adresse: candidate.adresse,
+      activite_principale: candidate.sourceCompany.activite_principale ?? undefined,
+      tranche_effectif_salarie: candidate.sourceCompany.tranche_effectif_salarie ?? undefined,
+    };
+  });
 
   if (typeof process !== "undefined" && process.env?.NODE_ENV !== "test") {
     console.log("[find-local-siren] Phase 2 – nombre de candidats:", scored.length);

@@ -55,6 +55,7 @@ export interface ProspectDocument {
   companyManagerName?: string;
   companyAddress?: string;
   companyNaf?: string;
+  companyTrancheEffectif?: string;
   companyEnrichmentApiUrl?: string;
   shareToken?: string;
   commercialReferent?: CommercialReferent;
@@ -207,6 +208,7 @@ export function prepareProspectForFirestore(
   if (prospect.companyManagerName) doc.companyManagerName = prospect.companyManagerName;
   if (prospect.companyAddress) doc.companyAddress = prospect.companyAddress;
   if (prospect.companyNaf) doc.companyNaf = prospect.companyNaf;
+  if (prospect.companyTrancheEffectif) doc.companyTrancheEffectif = prospect.companyTrancheEffectif;
   if (prospect.companyEnrichmentApiUrl) doc.companyEnrichmentApiUrl = prospect.companyEnrichmentApiUrl;
   if (prospect.shareToken) doc.shareToken = prospect.shareToken;
   if (prospect.commercialReferent) {
@@ -296,6 +298,7 @@ export function prospectFromFirestore(
   if (data.companyManagerName) result.companyManagerName = data.companyManagerName;
   if (data.companyAddress) result.companyAddress = data.companyAddress;
   if (data.companyNaf) result.companyNaf = data.companyNaf;
+  if (data.companyTrancheEffectif) result.companyTrancheEffectif = data.companyTrancheEffectif;
   if (data.companyEnrichmentApiUrl) result.companyEnrichmentApiUrl = data.companyEnrichmentApiUrl;
   if (data.shareToken) result.shareToken = data.shareToken;
   if (data.commercialReferent) result.commercialReferent = data.commercialReferent;

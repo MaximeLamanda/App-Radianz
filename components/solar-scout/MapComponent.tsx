@@ -1,165 +1,66 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MarkerClusterer } from "@googlemaps/markerclusterer";
-import { useOsmBuildings, type MapBounds, type OsmBuildingDisplay } from "@/lib/swr-hooks";
-import { fetchWithAuth } from "@/lib/api-client";
+import { type MapBounds } from "@/lib/swr-hooks";
 import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 import { loadProspectSurfaces } from "@/lib/prospect-storage";
 import { getProspectByPlaceId } from "@/lib/firestore";
 import { loadMapPosition, saveMapPosition, getDefaultMapPosition } from "@/lib/map-position-storage";
-import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exposure, PlaceSearchResult } from "@/types";
-
-/** Overlay Google Maps : bouton "Valider" ancré à une position lat/lng sur la carte */
-function createValidationButtonOverlay() {
-  if (typeof window === "undefined" || !window.google?.maps) {
-    return null;
-  }
-
-  class ValidationButtonOverlay extends window.google.maps.OverlayView {
-    private position: google.maps.LatLng;
-    private onClick: () => void;
-    private div: HTMLDivElement | null = null;
-
-    constructor(position: google.maps.LatLng, onClick: () => void) {
-      super();
-      this.position = position;
-      this.onClick = onClick;
-    }
-
-    onAdd() {
-      this.div = document.createElement("div");
-      this.div.style.cssText =
-        "position:absolute;z-index:100;transform:translate(-50%,-50%);pointer-events:auto;";
-      const btn = document.createElement("button");
-      btn.textContent = "Valider";
-      btn.type = "button";
-      btn.style.cssText =
-        "padding:8px 14px;font-size:13px;font-weight:600;color:#fff;background:#4285F4;border:none;border-radius:8px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.2);white-space:nowrap;";
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        this.onClick();
-      };
-      this.div.appendChild(btn);
-      const panes = this.getPanes();
-      if (panes) panes.overlayMouseTarget.appendChild(this.div);
-    }
-
-    draw() {
-      if (!this.div || !this.position) return;
-      const proj = this.getProjection();
-      if (!proj) return;
-      const point = proj.fromLatLngToDivPixel(this.position);
-      if (point) {
-        this.div.style.left = String(point.x) + "px";
-        this.div.style.top = String(point.y) + "px";
-      }
-    }
-
-    onRemove() {
-      if (this.div && this.div.parentNode) this.div.parentNode.removeChild(this.div);
-      this.div = null;
-    }
-  }
-
-  return ValidationButtonOverlay;
-}
+import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exposure } from "@/types";
 import { convertPlaceType, extractContact } from "@/lib/places";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
-import { listPoisNearPolygon, findNearestOsmBuildingToPoint } from "@/lib/poi-near-polygon";
+import { geojsonPolygonToGooglePathParts } from "@/lib/geojson-google-polygon";
+import type { ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
 import { toast } from "sonner";
 
 interface MapComponentProps {
   onProspectUpdate: (prospect: Prospect | null) => void;
-  isDrawing: boolean;
-  onDrawingChange: (isDrawing: boolean) => void;
   centerCoordinates?: AddressCoordinates | null;
-  onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }>; orientation?: number }) => void;
   currentProspect?: Prospect | null;
-  shouldValidateDrawing?: boolean;
-  onValidationComplete?: () => void;
-  onValidateDrawing?: () => void;
-  searchResults?: PlaceSearchResult[];
-  onSearchResultClick?: (result: PlaceSearchResult) => void;
   onGetMapCenter?: (getCenterFunc: () => AddressCoordinates | null) => void;
   onGetMapBounds?: (getBoundsFunc: () => MapBounds | null) => void;
   onBdnbSurface?: (surfaces: RoofSurface[] | null) => void;
   /** Appelé quand les infos BDNB (année, surface) sont disponibles ou réinitialisées */
   onBdnbInfo?: (info: { anneeConstruction: number | null; surfaceM2: number | null }) => void;
-  /** Bounds pour charger les bâtiments OSM (uniquement au clic sur le bouton) */
-  osmBoundsToFetch?: MapBounds | null;
-  /** Appelé quand le chargement OSM des bâtiments démarre ou se termine */
-  onOsmBuildingsLoadingChange?: (loading: boolean) => void;
-  /** Appelé au clic sur un polygone OSM pour quitter la vue recherche (vider les résultats) */
-  onOsmPolygonClick?: () => void;
-  /** Appelé au début/fin de l'enrichissement OSM (geocode + BDNB + POI) pour afficher le loading */
+  /** Appelé au début/fin de l'enrichissement (geocode + BDNB + POI) pour afficher le loading */
   onOsmEnrichmentChange?: (enriching: boolean) => void;
-  /** Plage de surface (m²) pour filtrer l'affichage des bâtiments OSM (atténuation hors plage) */
-  surfaceRange?: { min: number; max: number } | null;
   onViewBoundsChange?: (bounds: MapBounds | null) => void;
-  /** Incrémenté pour recentrer la carte sur la position enregistrée (fermeture de la recherche bâtiments) */
-  mapViewResetKey?: number;
-  permisOpportunities?: Array<{
-    id: number;
-    lat: number;
-    lng: number;
-    num_permis: string | null;
-    comm: string | null;
-    surf_loc: number | null;
-    dest_loc: string | null;
-    nature_projet: string | null;
-    date_reelle_auth: string | null;
-    date_doc: string | null;
-    date_ouverture_chantier: string | null;
-    date_achevement_travaux: string | null;
-    annee_source: number | null;
-    ape_dem?: string | null;
-    cj_dem?: string | null;
-    denom_dem?: string | null;
-    siren_dem?: string | null;
-    siret_dem?: string | null;
-  }>;
-  showPermisLayer?: boolean;
+  /** Couche découverte (export GeoJSON matching v5) */
+  matchingV5Rows?: ScoutMatchingV5Row[];
+  showMatchingV5Layer?: boolean;
+  selectedMatchingV5Id?: string | null;
+  /** Toutes les parcelles du même groupe (cross-cadastre / partage) — surbrillance carte */
+  selectedMatchingV5GroupIds?: string[];
+  onMatchingV5Select?: (row: ScoutMatchingV5Row) => void;
+  matchingV5BuildingFeatures?: GeoJSON.Feature[];
+  matchingV5SharedParcelFeatures?: GeoJSON.Feature[];
 }
 
 export function MapComponent({
   onProspectUpdate,
-  isDrawing,
-  onDrawingChange,
   centerCoordinates,
-  onSurfaceUpdate,
   currentProspect,
-  shouldValidateDrawing = false,
-  onValidationComplete,
-  onValidateDrawing,
-  searchResults = [],
-  onSearchResultClick,
   onGetMapCenter,
   onGetMapBounds,
   onBdnbSurface,
   onBdnbInfo,
-  osmBoundsToFetch = null,
-  onOsmBuildingsLoadingChange,
-  onOsmPolygonClick,
   onOsmEnrichmentChange,
-  surfaceRange = null,
   onViewBoundsChange,
-  mapViewResetKey = 0,
-  permisOpportunities = [],
-  showPermisLayer = false,
+  matchingV5Rows = [],
+  showMatchingV5Layer = false,
+  selectedMatchingV5Id = null,
+  selectedMatchingV5GroupIds = [],
+  onMatchingV5Select,
+  matchingV5BuildingFeatures = [],
+  matchingV5SharedParcelFeatures = [],
 }: MapComponentProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
-  const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
-  const polygonRef = useRef<google.maps.Polygon | null>(null);
-  const searchMarkersRef = useRef<google.maps.Marker[]>([]);
-  const permisMarkersRef = useRef<google.maps.Marker[]>([]);
-  const permisClusterRef = useRef<MarkerClusterer | null>(null);
-  const permisInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
-  const clusterIconCacheRef = useRef<Map<number, string>>(new Map());
+  const matchingV5PolygonsRef = useRef<google.maps.Polygon[]>([]);
+  const matchingV5InfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const matchingV5BuildingPolygonsRef = useRef<google.maps.Polygon[]>([]);
+  const matchingV5SharedParcelPolygonsRef = useRef<google.maps.Polygon[]>([]);
   const isFocusingOnResultRef = useRef<boolean>(false);
-  const [validationButtonPosition, setValidationButtonPosition] = useState<{ lat: number; lng: number } | null>(null);
-  const validationOverlayRef = useRef<google.maps.OverlayView | null>(null);
 
   // Ref vers onBdnbSurface pour éviter les stale closures
   const onBdnbSurfaceRef = useRef<((surfaces: RoofSurface[] | null) => void) | undefined>(undefined);
@@ -168,25 +69,17 @@ export function MapComponent({
   onBdnbInfoRef.current = onBdnbInfo;
   const currentProspectRef = useRef<Prospect | null | undefined>(undefined);
   currentProspectRef.current = currentProspect;
+  const onProspectUpdateRef = useRef(onProspectUpdate);
+  onProspectUpdateRef.current = onProspectUpdate;
 
   // Fonction pour obtenir le centre de la carte - toujours disponible via ref
   const getMapCenterFunc = useRef<(() => AddressCoordinates | null) | null>(null);
   const getMapBoundsFunc = useRef<(() => MapBounds | null) | null>(null);
 
-  // Bounds viewport pour bâtiments OSM (zoom >= 16)
-  const [viewBounds, setViewBounds] = useState<MapBounds | null>(null);
+  const [, setViewBounds] = useState<MapBounds | null>(null);
   const boundsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Dernière clé quantifiée (3 décimales) pour éviter setViewBounds si identique → moins de refetch OSM */
+  /** Dernière clé quantifiée (3 décimales) pour éviter setViewBounds si identique */
   const lastQuantizedKeyRef = useRef<string | null>(null);
-
-  // Hook SWR pour les bâtiments OSM : chargement UNIQUEMENT au clic sur le bouton (bounds figés)
-  const { data: osmBuildings = [], isLoading: osmBuildingsLoading } = useOsmBuildings(osmBoundsToFetch ?? null);
-  const osmBuildingsRef = useRef<typeof osmBuildings>([]);
-  osmBuildingsRef.current = osmBuildings;
-
-  useEffect(() => {
-    onOsmBuildingsLoadingChange?.(osmBoundsToFetch != null && osmBuildingsLoading);
-  }, [osmBoundsToFetch, osmBuildingsLoading, onOsmBuildingsLoadingChange]);
 
   // Stocker le dernier centre connu comme fallback
   const lastKnownCenterRef = useRef<AddressCoordinates | null>(null);
@@ -218,6 +111,9 @@ export function MapComponent({
         zoom: initialZoom,
         mapTypeId: maps.MapTypeId.HYBRID, // Satellite + POI et libellés (EEA : JS API uniquement)
         disableDefaultUI: true, // Désactive tous les contrôles par défaut (zoom, type de carte, etc.)
+        zoomControl: true, // Réactive +/- malgré disableDefaultUI
+        gestureHandling: "greedy", // Capte la molette pour zoomer directement dans la carte
+        scrollwheel: true,
         // Activer l'affichage des établissements (POI) nativement
         clickableIcons: true, // Permet de cliquer sur les établissements natifs
         styles: [], // Styles par défaut pour voir les POI natifs
@@ -350,7 +246,7 @@ export function MapComponent({
         updateLastKnownCenter();
         savePosition();
 
-        // Mise à jour des bounds pour bâtiments OSM (debounce 600ms)
+        // Mise à jour des bounds viewport (debounce 600ms)
         if (boundsDebounceRef.current) clearTimeout(boundsDebounceRef.current);
         boundsDebounceRef.current = setTimeout(() => {
           const bounds = map.getBounds();
@@ -563,8 +459,7 @@ export function MapComponent({
           lng: event.latLng.lng(),
         };
 
-        // Clic carte vide : ne rien faire (prospect créé uniquement via clic sur polygone OSM)
-        // Clic sur POI Google : mise à jour du prospect si drawer ouvert, sinon nouveau prospect
+        // Clic sur POI Google : mise à jour du prospect si drawer ouvert, sinon création via Places
         const placeId = (event as any).placeId;
         if (placeId) {
           if (event.stop) event.stop();
@@ -583,14 +478,7 @@ export function MapComponent({
               });
             });
           } else {
-            // POI cliqué : chercher le polygone OSM le plus proche (si analysé)
-            const buildings = osmBuildingsRef.current;
-            const nearest = buildings.length > 0 ? findNearestOsmBuildingToPoint(clickCoords, buildings) : null;
-            if (nearest) {
-              handleOsmPolygonClick(nearest);
-            } else {
-              processPlaceDetails(placeId, clickCoords);
-            }
+            processPlaceDetails(placeId, clickCoords);
           }
         }
       });
@@ -626,440 +514,6 @@ export function MapComponent({
     }
   }, [onGetMapCenter, onGetMapBounds]);
 
-  // Gérer le mode dessin
-  useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    if (!window.google?.maps) return;
-
-    const maps = window.google.maps;
-
-    if (isDrawing) {
-      // Masquer le bouton Valider quand on réactive le mode dessin
-      setValidationButtonPosition(null);
-      // Activer le mode dessin
-      if (!drawingManagerRef.current && maps.drawing && maps.drawing.DrawingManager) {
-        const drawingManager = new maps.drawing.DrawingManager({
-          drawingMode: maps.drawing.OverlayType.POLYGON,
-          drawingControl: false,
-          polygonOptions: {
-            fillColor: "#E4FE55",
-            fillOpacity: 0.35,
-            strokeWeight: 2,
-            strokeColor: "#E4FE55",
-            clickable: false,
-            editable: true,
-            zIndex: 1,
-          },
-        });
-
-        drawingManager.setMap(mapInstanceRef.current);
-        drawingManagerRef.current = drawingManager;
-
-        // Écouter la fin du dessin d'un polygone
-        maps.event.addListener(drawingManager, "polygoncomplete", (polygon: google.maps.Polygon) => {
-          // Supprimer l'ancien polygone s'il existe
-          if (polygonRef.current) {
-            polygonRef.current.setMap(null);
-          }
-
-          polygonRef.current = polygon;
-          polygon.setEditable(true);
-          polygon.setDraggable(false);
-
-          // Extraire les coordonnées pour log détaillé
-          const path = polygon.getPath();
-          const pointCount = path.getLength();
-          const coordinates: Array<{ lat: number; lng: number }> = [];
-          
-          path.forEach((latLng, index) => {
-            const coord = {
-              lat: latLng.lat(),
-              lng: latLng.lng(),
-            };
-            coordinates.push(coord);
-          });
-          
-          // Calculer l'aire pour prévisualisation
-          const previewArea = calculatePolygonArea(coordinates);
-          
-          // Écouter les modifications du polygone pendant l'édition
-          maps.event.addListener(path, "insert_at", () => {
-            // Point ajouté - pas besoin de log
-          });
-          
-          maps.event.addListener(path, "remove_at", () => {
-            // Point supprimé - pas besoin de log
-          });
-          
-          maps.event.addListener(path, "set_at", () => {
-            // Point modifié - pas besoin de log
-          });
-
-          // Désactiver le mode dessin après création
-          drawingManager.setDrawingMode(null);
-
-          // Afficher le bouton Valider à côté du premier point (dernier point posé quand on ferme le polygone)
-          if (path.getLength() > 0) {
-            const firstPoint = path.getAt(0);
-            setValidationButtonPosition({ lat: firstPoint.lat(), lng: firstPoint.lng() });
-          }
-        });
-        
-        // Écouter le début du dessin
-        maps.event.addListener(drawingManager, "overlaycomplete", (event: any) => {
-          console.log("[Surface] 🎨 Début du dessin d'un overlay:", event.type);
-        });
-        
-        // Écouter les modifications du polygone pendant le dessin
-        if (drawingManagerRef.current) {
-          maps.event.addListener(drawingManager, "drawingmode_changed", () => {
-            const currentMode = drawingManager.getDrawingMode();
-            console.log("[Surface] 🖊️ Mode de dessin changé:", currentMode);
-          });
-        }
-      } else if (drawingManagerRef.current) {
-        // Réactiver le mode dessin si le manager existe déjà
-        drawingManagerRef.current.setDrawingMode(maps.drawing.OverlayType.POLYGON);
-      }
-    } else {
-      // Désactiver le mode dessin
-      if (drawingManagerRef.current) {
-        drawingManagerRef.current.setDrawingMode(null);
-      }
-    }
-  }, [isDrawing]);
-
-  // Valider le dessin quand isDrawing passe à false et qu'un polygone existe
-  useEffect(() => {
-    if (!isDrawing && polygonRef.current) {
-      if (shouldValidateDrawing && onSurfaceUpdate) {
-        const polygon = polygonRef.current;
-        const path = polygon.getPath();
-        const coordinates: Array<{ lat: number; lng: number }> = [];
-        
-        path.forEach((latLng) => {
-          coordinates.push({
-            lat: latLng.lat(),
-            lng: latLng.lng(),
-          });
-        });
-
-        console.log(`[Surface] 📍 Coordonnées extraites: ${coordinates.length} points`);
-        console.log(`[Surface] 📐 Détail des coordonnées du polygone:`, coordinates.map((c, i) => 
-          `Point ${i + 1}: [${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}]`
-        ).join(', '));
-        
-        const area = calculatePolygonArea(coordinates);
-        const orientation = calculatePolygonOrientation(coordinates);
-        console.log(`[Surface] 📏 Surface calculée: ${area.toFixed(2)} m²`);
-        if (orientation != null) {
-          console.log(`[Surface] 🧭 Orientation calculée: ${orientation.toFixed(1)}° (0=Sud, 90=Ouest, -90=Est)`);
-        }
-
-        if (area > 0) {
-          console.log("[Surface] ✅ Mise à jour du prospect avec la nouvelle surface");
-          console.log(`[Surface] 📊 Données de la surface:`, {
-            area: area.toFixed(2) + " m²",
-            orientation: orientation != null ? `${orientation.toFixed(1)}°` : "non calculée",
-            pointCount: coordinates.length,
-            firstPoint: coordinates[0],
-            lastPoint: coordinates[coordinates.length - 1]
-          });
-          
-          onSurfaceUpdate({
-            area,
-            polygon: coordinates,
-            orientation,
-          });
-
-          // Garder le polygone affiché mais le rendre non éditable
-          polygon.setEditable(false);
-          
-          // Réinitialiser le flag de validation et masquer le bouton Valider sur la carte
-          setValidationButtonPosition(null);
-          if (onValidationComplete) {
-            onValidationComplete();
-          }
-        } else {
-          console.warn("[Surface] Surface calculée = 0, validation annulée");
-          setValidationButtonPosition(null);
-          if (onValidationComplete) {
-            onValidationComplete();
-          }
-        }
-      } else if (!shouldValidateDrawing) {
-        // Annulation : supprimer le polygone en cours de dessin et le bouton Valider
-        setValidationButtonPosition(null);
-        polygonRef.current.setMap(null);
-        polygonRef.current = null;
-      }
-    }
-  }, [isDrawing, shouldValidateDrawing, onSurfaceUpdate]);
-
-  // Afficher le bouton "Valider" sur la carte à côté du dernier point du polygone
-  useEffect(() => {
-    const map = mapInstanceRef.current;
-    if (!map || !window.google?.maps) return;
-
-    const ValidationButtonOverlayClass = createValidationButtonOverlay();
-    if (!ValidationButtonOverlayClass) return;
-
-    if (validationButtonPosition && onValidateDrawing && onDrawingChange) {
-      const latLng = new window.google.maps.LatLng(
-        validationButtonPosition.lat,
-        validationButtonPosition.lng
-      );
-      const overlay = new ValidationButtonOverlayClass(latLng, () => {
-        onValidateDrawing!();
-        onDrawingChange(false);
-      });
-      overlay.setMap(map);
-      validationOverlayRef.current = overlay;
-    } else {
-      if (validationOverlayRef.current) {
-        validationOverlayRef.current.setMap(null);
-        validationOverlayRef.current = null;
-      }
-    }
-
-    return () => {
-      if (validationOverlayRef.current) {
-        validationOverlayRef.current.setMap(null);
-        validationOverlayRef.current = null;
-      }
-    };
-  }, [validationButtonPosition, onValidateDrawing, onDrawingChange]);
-
-  // Polygones OSM (affichage bleu + clic)
-  const osmPolygonsRef = useRef<google.maps.Polygon[]>([]);
-  const onProspectUpdateRef = useRef(onProspectUpdate);
-  onProspectUpdateRef.current = onProspectUpdate;
-  const osmClickIdRef = useRef(0);
-
-  const handleOsmPolygonClick = (osmBuilding: OsmBuildingDisplay) => {
-    onOsmPolygonClick?.();
-    const firstSurf = osmBuilding.polygonSurfaces[0];
-    if (!firstSurf?.polygon?.length || !window.google?.maps) return;
-
-    const myClickId = ++osmClickIdRef.current;
-    onOsmEnrichmentChange?.(true);
-
-    const maps = window.google.maps;
-    const centroid = calculatePolygonCenter(firstSurf.polygon);
-
-    // Prospect minimal immédiat : ouvrir le drawer et passer le polygone en jaune sans attendre BDNB/geocode/POI
-    const roofSurfacesMinimal: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
-      id: `${osmBuilding.id}-${i}`,
-      area: s.areaM2,
-      polygon: s.polygon,
-      orientation: s.orientation ?? undefined,
-    }));
-    const totalAreaMinimal = roofSurfacesMinimal.reduce((sum, s) => sum + s.area, 0);
-    const minimalProspect: Prospect = {
-      address: "Chargement…",
-      coordinates: centroid,
-      roofSurface: roofSurfacesMinimal[0] ?? { area: 0, polygon: [] },
-      roofSurfaces: roofSurfacesMinimal,
-      placeType: "other",
-      qualityScore: totalAreaMinimal > 0 ? Math.min(100, 10 + Math.floor(totalAreaMinimal / 50)) : 10,
-      name: undefined,
-      placeId: undefined,
-      poiCandidates: undefined,
-      poiCandidateIndex: undefined,
-      poiCoordinates: undefined,
-      contact: undefined,
-      anneeConstruction: undefined,
-      // Réinitialiser les champs data gouv pour que l'enrichissement se relance sur le nouveau bâtiment
-      // (sinon le merge garde le siren du bâtiment précédent et le drawer ne refetch pas)
-      siren: undefined,
-      siret: undefined,
-      companyLegalName: undefined,
-      companyManagerName: undefined,
-      companyAddress: undefined,
-      companyNaf: undefined,
-      companyEnrichmentApiUrl: undefined,
-      // Réinitialiser la batterie pour que le drawer reparte sur la recommandation du nouveau prospect
-      // (sinon le merge garde batteryReferenceId/batteryCount du polygone précédent)
-      batteryReferenceId: undefined,
-      batteryCount: undefined,
-    };
-    onProspectUpdateRef.current(minimalProspect);
-    logPolygonDrawer("osm-click:minimalProspect", {
-      clickId: myClickId,
-      osmId: osmBuilding.id,
-      surfacesCount: roofSurfacesMinimal.length,
-      totalArea: totalAreaMinimal,
-    });
-
-    const geocodePromise = new Promise<string>((resolve) => {
-      const geocoder = new maps.Geocoder();
-      geocoder.geocode({ location: centroid }, (results, status) => {
-        resolve(
-          status === "OK" && results?.[0]?.formatted_address
-            ? results[0].formatted_address
-            : `${centroid.lat.toFixed(6)}, ${centroid.lng.toFixed(6)}`
-        );
-      });
-    });
-
-    const bdnbPromise = fetchWithAuth(`/api/bdnb?lat=${centroid.lat}&lng=${centroid.lng}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => (data?.batiment?.anneeConstruction != null ? data.batiment.anneeConstruction : undefined))
-      .catch(() => undefined);
-
-    const poiPromise = listPoisNearPolygon(centroid, firstSurf.polygon).catch(() => []);
-
-    const roofSurfacesForMerge: RoofSurface[] = osmBuilding.polygonSurfaces.map((s, i) => ({
-      id: `${osmBuilding.id}-${i}`,
-      area: s.areaM2,
-      polygon: s.polygon,
-      orientation: s.orientation ?? undefined,
-    }));
-    const totalAreaForMerge = roofSurfacesForMerge.reduce((sum, s) => sum + s.area, 0);
-
-    // Geocode : mise à jour de l'adresse dès que disponible (en parallèle avec BDNB et POI)
-    geocodePromise
-      .then((address) => {
-        if (myClickId !== osmClickIdRef.current) return;
-        logPolygonDrawer("osm-click:geocode", { clickId: myClickId, addressPreview: address?.slice(0, 48) });
-        onProspectUpdateRef.current({ address } as Prospect);
-      })
-      .catch((err) => {
-        console.warn("[MapComponent] Geocode OSM:", err);
-      });
-
-    // BDNB : seule l'année de construction est mise à jour à la complétion ; on arrête le loading "année" au finally
-    bdnbPromise
-      .then((anneeConstruction) => {
-        if (myClickId !== osmClickIdRef.current) return;
-        logPolygonDrawer("osm-click:bdnb-year", { clickId: myClickId, anneeConstruction });
-        onProspectUpdateRef.current({ anneeConstruction: anneeConstruction ?? undefined } as Prospect);
-      })
-      .catch((err) => {
-        console.warn("[MapComponent] BDNB OSM:", err);
-      })
-      .finally(() => {
-        if (myClickId === osmClickIdRef.current) {
-          onOsmEnrichmentChange?.(false);
-        }
-      });
-
-    // POI : nom, adresse, type, contact, etc. dès que disponible (en parallèle avec BDNB et geocode)
-    poiPromise
-      .then((pois) => {
-        if (myClickId !== osmClickIdRef.current) return null;
-        const poi = pois[0];
-        const poiCandidates = pois.length > 0 ? pois : undefined;
-        const poiCandidateIndex = poiCandidates && poiCandidates.length > 0 ? 0 : undefined;
-        const poiCoordinates =
-          poi?.coordinates != null
-            ? { lat: poi.coordinates.lat, lng: poi.coordinates.lng }
-            : undefined;
-        if (!poi?.placeId) {
-          if (poi?.name) {
-            onProspectUpdateRef.current({
-              name: poi.name,
-              poiCandidates,
-              poiCandidateIndex,
-              poiCoordinates,
-            } as Prospect);
-          }
-          return null;
-        }
-        return getPlaceDetailsNew(poi.placeId).then((placeDetails) => {
-          if (myClickId !== osmClickIdRef.current) return null;
-          const fullAddress = placeDetails?.formattedAddress;
-          const displayName = placeDetails?.displayName ?? poi.name;
-          const placeType = (placeDetails?.primaryTypeDisplayName ?? "other") as Prospect["placeType"];
-          const contact =
-            placeDetails?.nationalPhoneNumber || placeDetails?.internationalPhoneNumber
-              ? {
-                  nationalPhoneNumber: placeDetails.nationalPhoneNumber ?? undefined,
-                  internationalPhoneNumber: placeDetails.internationalPhoneNumber ?? undefined,
-                  websiteUri: placeDetails.websiteURI ?? undefined,
-                }
-              : undefined;
-          const qualityScore = totalAreaForMerge > 0 ? Math.min(100, 10 + Math.floor(totalAreaForMerge / 50)) : 10;
-          const update: Partial<Prospect> = {
-            name: displayName,
-            placeId: poi.placeId,
-            placeType,
-            qualityScore,
-            contact,
-            poiCandidates,
-            poiCandidateIndex,
-            poiCoordinates,
-          };
-          if (fullAddress != null) update.address = fullAddress;
-          return update;
-        });
-      })
-      .then((poiUpdate) => {
-        if (poiUpdate && myClickId === osmClickIdRef.current) {
-          logPolygonDrawer("osm-click:poi-merge", {
-            clickId: myClickId,
-            placeId: (poiUpdate as Prospect).placeId,
-            name: (poiUpdate as Prospect).name,
-          });
-          onProspectUpdateRef.current(poiUpdate as Prospect);
-        }
-      })
-      .catch((err) => {
-        console.warn("[MapComponent] POI OSM:", err);
-      });
-  };
-
-  // Rendre les polygones OSM (bleu) + clic, avec filtre surface (atténuation hors plage)
-  useEffect(() => {
-    const map = mapInstanceRef.current;
-    if (!map || !window.google?.maps) return;
-
-    const maps = window.google.maps;
-    const rangeMin = surfaceRange?.min ?? 0;
-    const rangeMax = surfaceRange?.max ?? 2000;
-
-    osmPolygonsRef.current.forEach((p) => p.setMap(null));
-    osmPolygonsRef.current = [];
-
-    osmBuildings.forEach((osmBuilding) => {
-      const totalAreaM2 = osmBuilding.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0);
-      const inRange = totalAreaM2 >= rangeMin && totalAreaM2 <= rangeMax;
-      const fillOpacity = inRange ? 0.25 : 0.08;
-      const strokeOpacity = inRange ? 1 : 0.3;
-
-      osmBuilding.polygonSurfaces.forEach((surf) => {
-        if (!surf.polygon || surf.polygon.length === 0) return;
-        const polygon = new maps.Polygon({
-          paths: surf.polygon,
-          fillColor: "#60A5FA",
-          fillOpacity,
-          strokeColor: "#2563EB",
-          strokeOpacity,
-          strokeWeight: 1,
-          clickable: true,
-          zIndex: 0,
-        });
-        (polygon as google.maps.Polygon & { _osmBuilding?: OsmBuildingDisplay })._osmBuilding = osmBuilding;
-        maps.event.addListener(polygon, "click", () => {
-          const b = (polygon as google.maps.Polygon & { _osmBuilding?: OsmBuildingDisplay })._osmBuilding;
-          if (b) handleOsmPolygonClick(b);
-        });
-        polygon.setMap(map);
-        osmPolygonsRef.current.push(polygon);
-      });
-    });
-
-    return () => {
-      osmPolygonsRef.current.forEach((p) => {
-        if (window.google?.maps?.event) {
-          window.google.maps.event.clearInstanceListeners(p);
-        }
-        p.setMap(null);
-      });
-      osmPolygonsRef.current = [];
-    };
-  }, [osmBuildings, surfaceRange]);
-
   // Référence pour stocker tous les polygones affichés
   const polygonsRef = useRef<google.maps.Polygon[]>([]);
   // Lignes de direction : Sud et orientation du toit
@@ -1082,11 +536,6 @@ export function MapComponent({
     // Nettoyer les lignes de direction
     directionLinesRef.current.forEach(line => line.setMap(null));
     directionLinesRef.current = [];
-
-    // Si on a un polygone en cours de dessin, le garder
-    if (polygonRef.current) {
-      // Ne pas supprimer le polygone en cours de dessin
-    }
 
     // Récupérer toutes les surfaces
     const surfaces = currentProspect?.roofSurfaces || 
@@ -1263,259 +712,166 @@ export function MapComponent({
     }
   }, [centerCoordinates]);
 
-  // Recentrage carte (position sauvegardée ou défaut) après fermeture de la recherche
   useEffect(() => {
-    if (!mapViewResetKey) return;
-    const apply = () => {
-      if (!mapInstanceRef.current || !window.google?.maps) return false;
-      const saved = loadMapPosition();
-      const def = saved || getDefaultMapPosition();
-      mapInstanceRef.current.panTo(def.center);
-      mapInstanceRef.current.setZoom(def.zoom ?? 16);
-      return true;
-    };
-    if (!apply()) {
-      const t = window.setTimeout(() => {
-        apply();
-      }, 150);
-      return () => window.clearTimeout(t);
-    }
-  }, [mapViewResetKey]);
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return;
 
-  // Afficher les marqueurs des résultats de recherche
-  useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    if (!window.google?.maps) return;
+    matchingV5PolygonsRef.current.forEach((poly) => poly.setMap(null));
+    matchingV5PolygonsRef.current = [];
+    if (matchingV5InfoWindowRef.current) {
+      matchingV5InfoWindowRef.current.close();
+      matchingV5InfoWindowRef.current = null;
+    }
+
+    if (!showMatchingV5Layer || matchingV5Rows.length === 0) return;
 
     const maps = window.google.maps;
+    const infoWindow = new maps.InfoWindow();
+    matchingV5InfoWindowRef.current = infoWindow;
 
-    // Nettoyer les marqueurs précédents
-    searchMarkersRef.current.forEach((marker) => {
-      marker.setMap(null);
-    });
-    searchMarkersRef.current = [];
+    const groupSet =
+      selectedMatchingV5GroupIds.length > 0 ? new Set(selectedMatchingV5GroupIds) : null;
 
-    // Créer un marqueur pour chaque résultat de recherche
-    searchResults.forEach((result) => {
-      const marker = new maps.Marker({
-        position: {
-          lat: result.coordinates.lat,
-          lng: result.coordinates.lng,
-        },
-        map: mapInstanceRef.current!,
-        title: result.name,
-        icon: {
-          path: maps.SymbolPath.CIRCLE,
-          scale: 8,
-          fillColor: "#E4FE55",
-          fillOpacity: 1,
-          strokeColor: "#FFFFFF",
-          strokeWeight: 2,
-        },
-      });
+    for (const row of matchingV5Rows) {
+      const selected = groupSet ? groupSet.has(row.id) : row.id === selectedMatchingV5Id;
+      const pathParts = geojsonPolygonToGooglePathParts(row.geometry);
+      const isBuilding = row.grain === "building";
+      const strokeColor = selected ? (isBuilding ? "#b45309" : "#047857") : isBuilding ? "#d97706" : "#059669";
+      const fillColor = selected ? (isBuilding ? "#f59e0b" : "#10b981") : isBuilding ? "#fbbf24" : "#34d399";
 
-      // Ajouter un listener pour le clic sur le marqueur
-      marker.addListener("click", () => {
-        if (onSearchResultClick) {
-          onSearchResultClick(result);
-        }
-      });
-
-      searchMarkersRef.current.push(marker);
-    });
-
-    // Ajuster la vue pour afficher tous les marqueurs si on a des résultats
-    // MAIS seulement si on n'est pas en train de zoomer sur un résultat spécifique
-    // (c'est-à-dire si centerCoordinates n'est pas défini)
-    if (searchResults.length > 0 && mapInstanceRef.current && !centerCoordinates && !isFocusingOnResultRef.current) {
-      const bounds = new maps.LatLngBounds();
-      searchResults.forEach((result) => {
-        bounds.extend({
-          lat: result.coordinates.lat,
-          lng: result.coordinates.lng,
+      for (const rings of pathParts) {
+        const poly = new maps.Polygon({
+          map,
+          paths: rings,
+          strokeColor,
+          strokeOpacity: 0.95,
+          strokeWeight: selected ? 3 : 2,
+          fillColor,
+          fillOpacity: 0.24,
+          clickable: true,
+          zIndex: isBuilding ? 4 : 3,
         });
-      });
-      
-      // Étendre les bounds pour ajouter un padding (en degrés approximatifs)
-      // Cela crée un effet de marge autour des marqueurs
-      const ne = bounds.getNorthEast();
-      const sw = bounds.getSouthWest();
-      
-      // Calculer la différence de latitude et longitude
-      const latDiff = ne.lat() - sw.lat();
-      const lngDiff = ne.lng() - sw.lng();
-      
-      // Ajouter 10% de padding de chaque côté
-      const paddingFactor = 0.1;
-      const paddedNe = new maps.LatLng(
-        ne.lat() + latDiff * paddingFactor,
-        ne.lng() + lngDiff * paddingFactor
-      );
-      const paddedSw = new maps.LatLng(
-        sw.lat() - latDiff * paddingFactor,
-        sw.lng() - lngDiff * paddingFactor
-      );
-      
-      // Créer de nouveaux bounds avec padding
-      const paddedBounds = new maps.LatLngBounds(paddedSw, paddedNe);
-      
-      // Ajuster la vue avec les bounds étendus
-      mapInstanceRef.current.fitBounds(paddedBounds);
+        poly.addListener("click", () => {
+          onMatchingV5Select?.(row);
+          const centerBounds = new maps.LatLngBounds();
+          for (const ring of rings) {
+            for (const pt of ring) centerBounds.extend(pt);
+          }
+          const c = centerBounds.getCenter();
+          const esc = (s: string) =>
+            s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+          const title =
+            row.grain === "building"
+              ? `Multi-parcelles · ${esc(row.batimentConstructionId || row.batimentGroupeId || "—")}`
+              : `Parcelle ${esc(row.section)} ${esc(row.numeroNorm)}`;
+          const sub =
+            row.grain === "parcelle"
+              ? `${esc(row.statusMetier || "none")} · ${row.siretCount} SIRET · ${row.nbBatiments} bât. · ${Math.round(
+                  row.footprintSumM2
+                )} m²${
+                  row.passerelleAddress ? ` · ${esc(row.passerelleAddress)}` : ""
+                }`
+              : "Voir panneau pour détail par parcelle";
+          infoWindow.setContent(
+            `<div style="font-size:12px;max-width:260px;padding:4px;line-height:1.35">
+              <div style="font-weight:600;margin-bottom:4px">${title}</div>
+              <div style="font-size:11px;color:#444">${sub}</div>
+            </div>`
+          );
+          infoWindow.setPosition(c);
+          infoWindow.open({ map, anchor: poly });
+        });
+        matchingV5PolygonsRef.current.push(poly);
+      }
     }
 
     return () => {
-      if (permisInfoWindowRef.current) {
-        permisInfoWindowRef.current.close();
-        permisInfoWindowRef.current = null;
+      matchingV5PolygonsRef.current.forEach((poly) => poly.setMap(null));
+      matchingV5PolygonsRef.current = [];
+      if (matchingV5InfoWindowRef.current) {
+        matchingV5InfoWindowRef.current.close();
+        matchingV5InfoWindowRef.current = null;
       }
-      // Nettoyage : supprimer les marqueurs
-      searchMarkersRef.current.forEach((marker) => {
-        marker.setMap(null);
-      });
-      searchMarkersRef.current = [];
     };
-  }, [searchResults, onSearchResultClick, centerCoordinates]);
+  }, [
+    matchingV5Rows,
+    showMatchingV5Layer,
+    selectedMatchingV5Id,
+    selectedMatchingV5GroupIds,
+    onMatchingV5Select,
+  ]);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || !window.google?.maps) return;
 
-    if (permisClusterRef.current) {
-      permisClusterRef.current.clearMarkers();
-      permisClusterRef.current = null;
-    }
-    if (permisInfoWindowRef.current) {
-      permisInfoWindowRef.current.close();
-      permisInfoWindowRef.current = null;
-    }
-    permisMarkersRef.current.forEach((marker) => marker.setMap(null));
-    permisMarkersRef.current = [];
+    matchingV5BuildingPolygonsRef.current.forEach((poly) => poly.setMap(null));
+    matchingV5BuildingPolygonsRef.current = [];
 
-    if (!showPermisLayer || permisOpportunities.length === 0) return;
+    if (!showMatchingV5Layer || matchingV5BuildingFeatures.length === 0) return;
 
-    const infoWindow = new window.google.maps.InfoWindow();
-    permisInfoWindowRef.current = infoWindow;
-
-    const markers = permisOpportunities.map((opportunity) => {
-      const marker = new window.google.maps.Marker({
-        position: { lat: opportunity.lat, lng: opportunity.lng },
-        title: opportunity.num_permis ?? `Permis ${opportunity.id}`,
-        icon: {
-          path: window.google.maps.SymbolPath.CIRCLE,
-          scale: 8,
-          fillColor: "#E4FE55",
-          fillOpacity: 1,
-          strokeColor: "#FFFFFF",
+    const maps = window.google.maps;
+    for (const feat of matchingV5BuildingFeatures) {
+      const g = feat.geometry;
+      if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) continue;
+      const pathParts = geojsonPolygonToGooglePathParts(g as GeoJSON.Polygon | GeoJSON.MultiPolygon);
+      for (const rings of pathParts) {
+        const poly = new maps.Polygon({
+          map,
+          paths: rings,
+          strokeColor: "#0ea5e9",
+          strokeOpacity: 0.95,
           strokeWeight: 2,
-        },
-      });
-      marker.addListener("click", () => {
-        const esc = (v: string | null | undefined) =>
-          (v == null || v === "" ? "n/a" : String(v))
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;");
-        const surf = opportunity.surf_loc != null ? `${Math.round(opportunity.surf_loc)} m²` : "n/a";
-        const source = opportunity.annee_source != null ? `SITADEL ${opportunity.annee_source}` : "SITADEL";
-        const typeProjet =
-          opportunity.nature_projet === "NC"
-            ? "Construction neuve"
-            : opportunity.nature_projet === "EX"
-              ? "Rénovation / existant"
-              : "n/a";
-        const dateAuth = esc(opportunity.date_reelle_auth);
-        const dateDoc = esc(opportunity.date_doc);
-        const dateOuverture = esc(opportunity.date_ouverture_chantier);
-        const dateAchevement = esc(opportunity.date_achevement_travaux);
-        const denom = esc(opportunity.denom_dem);
-        const siren = esc(opportunity.siren_dem);
-        const siret = esc(opportunity.siret_dem);
-        const cj = esc(opportunity.cj_dem);
-        const ape = esc(opportunity.ape_dem);
-        const numPermisTitle =
-          opportunity.num_permis != null && String(opportunity.num_permis).trim() !== ""
-            ? esc(opportunity.num_permis)
-            : "Permis";
-        infoWindow.setContent(
-          `<div style="font-size:12px;line-height:1.35">
-            <div><strong>${numPermisTitle}</strong></div>
-            <div>Commune: ${esc(opportunity.comm)}</div>
-            <div>Surface: ${surf}</div>
-            <div>Dest: ${esc(opportunity.dest_loc)}</div>
-            <div>Type projet: ${typeProjet}</div>
-            <div>Date autorisation: ${dateAuth}</div>
-            <div>Date DOC: ${dateDoc}</div>
-            <div>Début chantier: ${dateOuverture}</div>
-            <div>Fin travaux: ${dateAchevement}</div>
-            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb"><strong>Demandeur</strong></div>
-            <div>Dénomination: ${denom}</div>
-            <div>SIREN: ${siren}</div>
-            <div>SIRET: ${siret}</div>
-            <div>Cat. juridique (CJ): ${cj}</div>
-            <div>APE: ${ape}</div>
-            <div>Source: ${esc(source)}</div>
-          </div>`
-        );
-        infoWindow.open({ map, anchor: marker });
-      });
-      marker.addListener("dblclick", (e: google.maps.MapMouseEvent) => {
-        e.stop();
-        map.panTo({ lat: opportunity.lat, lng: opportunity.lng });
-        map.setZoom(18);
-      });
-      return marker;
-    });
-
-    permisMarkersRef.current = markers;
-    permisClusterRef.current = new MarkerClusterer({
-      map,
-      markers,
-      renderer: {
-        render: ({ count, position }) => {
-          const size = count < 10 ? 40 : count < 100 ? 46 : 52;
-          const cached = clusterIconCacheRef.current.get(size);
-          const svgB64 =
-            cached ??
-            window.btoa(
-              `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-  <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.48}" fill="#E4FE55" fill-opacity="0.28"/>
-  <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.38}" fill="#E4FE55" fill-opacity="0.55"/>
-  <circle cx="${size / 2}" cy="${size / 2}" r="${size * 0.28}" fill="#E4FE55" stroke="#111827" stroke-width="2"/>
-</svg>`
-            );
-          if (!cached) clusterIconCacheRef.current.set(size, svgB64);
-          return new window.google.maps.Marker({
-            position,
-            icon: {
-              url: `data:image/svg+xml;base64,${svgB64}`,
-              scaledSize: new window.google.maps.Size(size, size),
-            },
-            label: {
-              text: String(count),
-              color: "#111827",
-              fontSize: "12px",
-              fontWeight: "700",
-            },
-            zIndex: window.google.maps.Marker.MAX_ZINDEX + count,
-          });
-        },
-      },
-    });
+          fillColor: "#38bdf8",
+          fillOpacity: 0.14,
+          clickable: false,
+          zIndex: 6,
+        });
+        matchingV5BuildingPolygonsRef.current.push(poly);
+      }
+    }
 
     return () => {
-      if (permisClusterRef.current) {
-        permisClusterRef.current.clearMarkers();
-        permisClusterRef.current = null;
-      }
-      if (permisInfoWindowRef.current) {
-        permisInfoWindowRef.current.close();
-        permisInfoWindowRef.current = null;
-      }
-      permisMarkersRef.current.forEach((marker) => marker.setMap(null));
-      permisMarkersRef.current = [];
+      matchingV5BuildingPolygonsRef.current.forEach((poly) => poly.setMap(null));
+      matchingV5BuildingPolygonsRef.current = [];
     };
-  }, [permisOpportunities, showPermisLayer]);
+  }, [matchingV5BuildingFeatures, showMatchingV5Layer]);
+
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return;
+
+    matchingV5SharedParcelPolygonsRef.current.forEach((poly) => poly.setMap(null));
+    matchingV5SharedParcelPolygonsRef.current = [];
+
+    if (!showMatchingV5Layer || matchingV5SharedParcelFeatures.length === 0) return;
+
+    const maps = window.google.maps;
+    for (const feat of matchingV5SharedParcelFeatures) {
+      const g = feat.geometry;
+      if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) continue;
+      const pathParts = geojsonPolygonToGooglePathParts(g as GeoJSON.Polygon | GeoJSON.MultiPolygon);
+      for (const rings of pathParts) {
+        const poly = new maps.Polygon({
+          map,
+          paths: rings,
+          strokeColor: "#7c3aed",
+          strokeOpacity: 0.95,
+          strokeWeight: 3,
+          fillColor: "#8b5cf6",
+          fillOpacity: 0.06,
+          clickable: false,
+          zIndex: 7,
+        });
+        matchingV5SharedParcelPolygonsRef.current.push(poly);
+      }
+    }
+
+    return () => {
+      matchingV5SharedParcelPolygonsRef.current.forEach((poly) => poly.setMap(null));
+      matchingV5SharedParcelPolygonsRef.current = [];
+    };
+  }, [matchingV5SharedParcelFeatures, showMatchingV5Layer]);
 
   const hasSurfaces =
     (currentProspect?.roofSurfaces?.length ?? 0) > 0 ||
@@ -1539,171 +895,6 @@ export function MapComponent({
       )}
     </div>
   );
-}
-
-// Fonction pour calculer l'aire d'un polygone en m²
-// Utilise la formule de Shoelace sur des coordonnées projetées localement
-function calculatePolygonArea(
-  coordinates: Array<{ lat: number; lng: number }>
-): number {
-  if (coordinates.length < 3) {
-    console.warn(`[Surface] Calcul impossible: polygone avec moins de 3 points (${coordinates.length} points)`);
-    return 0;
-  }
-
-  console.log(`[Surface] Calcul de la surface pour ${coordinates.length} points`);
-  console.log(`[Surface] Coordonnées d'entrée (premiers points):`, coordinates.slice(0, 3));
-  
-  // Pour des surfaces relativement petites (toits), on peut utiliser une projection plane locale
-  // On convertit les coordonnées lat/lng en mètres en utilisant une projection centrée sur le premier point
-  
-  const R = 6371000; // Rayon de la Terre en mètres
-  const centerLat = coordinates[0].lat;
-  const centerLng = coordinates[0].lng;
-  
-  // Convertir les coordonnées en mètres (projection locale)
-  const projectedCoords = coordinates.map(coord => {
-    const dLat = (coord.lat - centerLat) * Math.PI / 180;
-    const dLng = (coord.lng - centerLng) * Math.PI / 180;
-    const latRad = (centerLat * Math.PI) / 180;
-    
-    // Projection Mercator locale
-    const x = dLng * R * Math.cos(latRad);
-    const y = dLat * R;
-    
-    return { x, y };
-  });
-  
-  // Formule de Shoelace pour calculer l'aire d'un polygone
-  let area = 0;
-  for (let i = 0; i < projectedCoords.length; i++) {
-    const j = (i + 1) % projectedCoords.length;
-    area += projectedCoords[i].x * projectedCoords[j].y;
-    area -= projectedCoords[j].x * projectedCoords[i].y;
-  }
-  
-  const finalArea = Math.abs(area) / 2; // Diviser par 2 pour obtenir l'aire
-  
-  return finalArea;
-}
-
-/**
- * Calcule l'orientation (azimut) du toit depuis le polygone
- * Retourne l'azimut en degrés selon la convention PVGIS : -90° = Est, 0° = Sud, 90° = Ouest
- * Méthode : prendre le(s) plus long(s) côté(s), direction = vecteur du côté ; perpendiculaire = orientation du toit (celle qui pointe vers le Sud).
- */
-function calculatePolygonOrientation(
-  coordinates: Array<{ lat: number; lng: number }>
-): number | undefined {
-  if (coordinates.length < 3) return undefined;
-
-  const R = 6371000; // Rayon de la Terre en mètres
-  const centerLat = coordinates.reduce((sum, c) => sum + c.lat, 0) / coordinates.length;
-  const centerLng = coordinates.reduce((sum, c) => sum + c.lng, 0) / coordinates.length;
-  const latRad = (centerLat * Math.PI) / 180;
-
-  // Convertir les coordonnées en mètres (projection locale)
-  const projectedCoords = coordinates.map(coord => {
-    const dLat = (coord.lat - centerLat) * Math.PI / 180;
-    const dLng = (coord.lng - centerLng) * Math.PI / 180;
-    const x = dLng * R * Math.cos(latRad);
-    const y = dLat * R;
-    return { x, y };
-  });
-
-  // Calculer longueur et vecteur (dx, dy) de chaque côté
-  interface Side {
-    index: number;
-    length: number;
-    dx: number;
-    dy: number;
-  }
-
-  const sides: Side[] = [];
-  for (let i = 0; i < projectedCoords.length; i++) {
-    const j = (i + 1) % projectedCoords.length;
-    const p1 = projectedCoords[i];
-    const p2 = projectedCoords[j];
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const length = Math.sqrt(dx * dx + dy * dy);
-    if (length < 1e-6) continue;
-    sides.push({ index: i, length, dx, dy });
-  }
-
-  const sortedSides = [...sides].sort((a, b) => b.length - a.length);
-  const longest = sortedSides[0];
-  const second = sortedSides[1];
-  if (!longest) return undefined;
-
-  // Direction du plus long côté (vecteur unitaire)
-  let dirX = longest.dx / longest.length;
-  let dirY = longest.dy / longest.length;
-
-  // Si le 2e plus long est quasi parallèle, moyenner les directions (en tenant compte du sens opposé)
-  if (second && second.length > 0) {
-    const dot = longest.dx * second.dx + longest.dy * second.dy;
-    const cross = longest.dx * second.dy - longest.dy * second.dx;
-    if (Math.abs(cross) < 0.01 * longest.length * second.length) {
-      const sx = second.dx / second.length;
-      const sy = second.dy / second.length;
-      if (dot >= 0) {
-        dirX = dirX + sx;
-        dirY = dirY + sy;
-      } else {
-        dirX = dirX - sx;
-        dirY = dirY - sy;
-      }
-      const n = Math.sqrt(dirX * dirX + dirY * dirY);
-      if (n > 1e-6) {
-        dirX /= n;
-        dirY /= n;
-      }
-    }
-  }
-
-  // Les deux perpendiculaires possibles au plus long côté
-  const perp1 = { x: -dirY, y: dirX };
-  const perp2 = { x: dirY, y: -dirX };
-
-  function bearingToAzimuth(px: number, py: number): number {
-    const perpBearing = Math.atan2(py, px);
-    const perpDeg = (perpBearing * 180) / Math.PI;
-    let bearingDeg = 90 - perpDeg;
-    while (bearingDeg >= 360) bearingDeg -= 360;
-    while (bearingDeg < 0) bearingDeg += 360;
-    let az = bearingDeg - 180;
-    if (az > 180) az -= 360;
-    if (az < -180) az += 360;
-    return az;
-  }
-
-  const azimuth1 = bearingToAzimuth(perp1.x, perp1.y);
-  const azimuth2 = bearingToAzimuth(perp2.x, perp2.y);
-
-  // Les deux directions possibles du côté le plus long (perp. des perp.)
-  let azimuthCote1 = azimuth1 + 90;
-  if (azimuthCote1 > 180) azimuthCote1 -= 360;
-  if (azimuthCote1 < -180) azimuthCote1 += 360;
-  
-  let azimuthCote2 = azimuth1 - 90;
-  if (azimuthCote2 > 180) azimuthCote2 -= 360;
-  if (azimuthCote2 < -180) azimuthCote2 += 360;
-
-  // Comparer les 4 options : 2 perp. et 2 côtés, et choisir celle avec l'angle le plus faible avec le Sud (|azimuth| min)
-  const candidates = [
-    { azimuth: azimuth1, type: 'perp' },
-    { azimuth: azimuth2, type: 'perp' },
-    { azimuth: azimuthCote1, type: 'cote' },
-    { azimuth: azimuthCote2, type: 'cote' },
-  ];
-
-  // Trouver celle avec la valeur absolue la plus faible (plus proche du Sud = 0°)
-  const best = candidates.reduce((min, candidate) => 
-    Math.abs(candidate.azimuth) < Math.abs(min.azimuth) ? candidate : min
-  );
-
-  return Math.round(best.azimuth * 10) / 10;
 }
 
 // Fonction pour calculer le centre d'un polygone

@@ -1,0 +1,21 @@
+# 20 communes les plus proches de Bordeaux (centre) encore absentes de Neon — généré automatiquement
+33535 # Tresses ~8.9 km
+33554 # Yvrac ~9.3 km
+33397 # Sainte-Eulalie ~9.4 km
+33099 # Carignan-de-Bordeaux ~10.6 km
+33234 # Latresne ~10.6 km
+33330 # Pompignac ~11.9 km
+33165 # Fargues-Saint-Hilaire ~12.4 km
+33293 # Montussan ~12.5 km
+33322 # Le Pian-Médoc ~12.5 km
+33090 # Canéjan ~13.1 km
+33256 # Ludon-Médoc ~13.2 km
+33118 # Cénac ~13.2 km
+33080 # Cadaujac ~13.5 km
+33085 # Camblanes-et-Meynac ~14.0 km
+33433 # Saint-Loubès ~14.2 km
+33245 # Lignan-de-Bordeaux ~14.5 km
+33349 # Quinsac ~14.6 km
+33061 # Bonnetan ~14.6 km
+33496 # Sallebœuf ~15.4 km
+33238 # Léognan ~15.6 km

@@ -6,7 +6,7 @@
 import type { UserProfile } from "./firestore-user-profile";
 import type { ProfileStatus } from "@/types";
 
-export type ApiType = "bdnb" | "bdnb_neon" | "osm" | "sitadel_map";
+export type ApiType = "bdnb" | "osm" | "sitadel_map";
 
 export interface QuotaConfig {
   /** Limite mensuelle (Starter, Premium) ou quotidienne (Demo). null = illimité */
@@ -15,22 +15,20 @@ export interface QuotaConfig {
   period: "month" | "day";
 }
 
+/** Un seul pool BDNB : API BDNB.io + bbox Postgres (ex-Pessac brut). */
 const QUOTAS: Record<Exclude<ProfileStatus, "admin">, Record<ApiType, QuotaConfig>> = {
   premium: {
-    bdnb: { limit: 5000, period: "month" },
-    bdnb_neon: { limit: 20000, period: "month" },
+    bdnb: { limit: 20000, period: "month" },
     osm: { limit: 2000, period: "month" },
     sitadel_map: { limit: 8000, period: "month" },
   },
   starter: {
-    bdnb: { limit: 500, period: "month" },
-    bdnb_neon: { limit: 2000, period: "month" },
+    bdnb: { limit: 2000, period: "month" },
     osm: { limit: 200, period: "month" },
     sitadel_map: { limit: 1200, period: "month" },
   },
   demo: {
-    bdnb: { limit: 10, period: "day" },
-    bdnb_neon: { limit: 50, period: "day" },
+    bdnb: { limit: 50, period: "day" },
     osm: { limit: 5, period: "day" },
     sitadel_map: { limit: 80, period: "day" },
   },
@@ -98,11 +96,9 @@ export function checkQuota(
   const countField =
     api === "bdnb"
       ? "bdnbRequestCount"
-      : api === "bdnb_neon"
-        ? "bdnbNeonRequestCount"
-        : api === "osm"
-          ? "osmRequestCount"
-          : "sitadelMapRequestCount";
+      : api === "osm"
+        ? "osmRequestCount"
+        : "sitadelMapRequestCount";
   const current = profile?.[countField] ?? 0;
 
   const needReset = !resetAtDate || toParisDate(resetAtDate) < periodStart;
@@ -131,12 +127,10 @@ export function checkQuota(
 export function getQuotaDisplay(profile: UserProfile | null): {
   status: ProfileStatus;
   bdnb: { current: number; limit: number | null; resetAt?: string };
-  bdnbNeon: { current: number; limit: number | null; resetAt?: string };
   osm: { current: number; limit: number | null; resetAt?: string };
 } {
   const status: ProfileStatus = (profile?.status as ProfileStatus) ?? "starter";
   const bdnbResult = checkQuota("bdnb", profile);
-  const bdnbNeonResult = checkQuota("bdnb_neon", profile);
   const osmResult = checkQuota("osm", profile);
   return {
     status,
@@ -144,11 +138,6 @@ export function getQuotaDisplay(profile: UserProfile | null): {
       current: bdnbResult.current,
       limit: bdnbResult.limit,
       resetAt: bdnbResult.resetAt,
-    },
-    bdnbNeon: {
-      current: bdnbNeonResult.current,
-      limit: bdnbNeonResult.limit,
-      resetAt: bdnbNeonResult.resetAt,
     },
     osm: {
       current: osmResult.current,
@@ -181,7 +170,6 @@ export function getResetValuesIfNeeded(
   return {
     creditsResetAt: { seconds: Math.floor(periodStart.getTime() / 1000), nanoseconds: 0 },
     bdnbRequestCount: 0,
-    bdnbNeonRequestCount: 0,
     osmRequestCount: 0,
     sitadelMapRequestCount: 0,
   };

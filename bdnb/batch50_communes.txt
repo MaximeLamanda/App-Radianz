@@ -1,0 +1,51 @@
+# 50 communes les plus proches de Bordeaux (centre) encore absentes de Neon
+33143 # Cubzac-les-Ponts ~16.2 km
+33252 # Loupes ~16.2 km
+33274 # Martillac ~16.2 km
+33084 # Cambes ~16.5 km
+33262 # Macau ~16.7 km
+33049 # Beychac-et-Caillau ~16.7 km
+33483 # Saint-Sulpice-et-Cameyrac ~16.8 km
+33470 # Saint-Romain-la-Virvée ~17.1 km
+33206 # Isle-Saint-Georges ~17.3 km
+33363 # Sadirac ~17.3 km
+33381 # Saint-Caprais-de-Bordeaux ~17.3 km
+33211 # Labarde ~17.4 km
+33083 # Camarsac ~17.4 km
+33448 # Saint-Médard-d'Eyrans ~17.5 km
+33366 # Saint-André-de-Cubzac ~18.7 km
+33263 # Madirac ~19.0 km
+33207 # Izon ~19.1 km
+33335 # Le Pout ~19.1 km
+33122 # Cestas ~19.1 km
+33141 # Croignon ~19.4 km
+33415 # Saint-Gervais ~19.5 km
+33033 # Baurech ~19.5 km
+33422 # Saint-Jean-d'Illac ~19.6 km
+33339 # Prignac-et-Marcamps ~19.6 km
+33413 # Saint-Germain-du-Puch ~19.8 km
+33067 # Bourg ~19.9 km
+33082 # Cadillac-en-Fronsadais ~20.0 km
+33408 # Saint-Genès-de-Lombaud ~20.0 km
+33035 # Bayon-sur-Gironde ~20.1 km
+33037 # Beautiran ~20.2 km
+33259 # Lugon-et-l'Île-du-Carnay ~20.6 km
+33518 # Tabanac ~20.6 km
+33539 # Vayres ~20.6 km
+33268 # Margaux-Cantenac ~20.7 km
+33213 # La Brède ~20.8 km
+33475 # Saint-Seurin-de-Bourg ~21.0 km
+33145 # Cursan ~21.1 km
+33219 # La Lande-de-Fronsac ~21.1 km
+33028 # Baron ~21.5 km
+33553 # Virsac ~21.6 km
+33140 # Créon ~21.6 km
+33534 # Le Tourne ~21.8 km
+33201 # Haux ~22.0 km
+33109 # Castres-Gironde ~22.0 km
+33525 # Tauriac ~22.0 km
+33524 # Tarnès ~22.1 km
+33414 # Saint-Germain-de-la-Rivière ~22.1 km
+33494 # Salaunes ~22.1 km
+33425 # Saint-Laurent-d'Arce ~22.1 km
+33182 # Gauriac ~22.4 km

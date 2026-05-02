@@ -50,6 +50,12 @@ Radianz est une application Next.js qui permet aux professionnels du solaire de 
    - Interface d'administration
    - Initialisation des données de consommation énergétique
 
+### Données et documentation technique
+
+- **`datasource/`** : fichiers lourds (OSM `.pbf`, BDNB zip/CSV, cadastre gzip, parquet PPM) — inventaire dans [`datasource/README.md`](./datasource/README.md)
+- **`data-pipeline/`** : ETL Python, schémas SQL, exports matching — [`data-pipeline/README.md`](./data-pipeline/README.md)
+- **`docs/`** : matching V5, pipeline BDNB, dépannage Google Maps, notes satellite
+
 ### Composants principaux
 
 - `AppSidebar` : Barre latérale de navigation (Home, Solar Scout, Paramètres)
@@ -105,6 +111,11 @@ Créez un fichier `.env.local` à la racine du projet :
 # Google Maps API Key (obligatoire)
 NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=votre_cle_api_google_maps
 
+# Google Solar API (optionnel, recommandé pour /api/google-solar-insights)
+# Clé serveur uniquement : pas de préfixe NEXT_PUBLIC. Activez l’API Solar et la facturation.
+# En local : redémarrez `npm run dev` après modification.
+GOOGLE_SOLAR_API_KEY=votre_cle_dediee_solar
+
 # Firebase (si nécessaire)
 NEXT_PUBLIC_FIREBASE_API_KEY=votre_cle_firebase
 NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=votre_domaine.firebaseapp.com
@@ -124,6 +135,7 @@ Pour utiliser Google Maps, vous devez activer les APIs suivantes dans [Google Cl
 2. **Places API** - Pour la recherche d'adresses et de lieux
 3. **Maps Static API** - Pour les images satellites
 4. **Geocoding API** - Pour la conversion d'adresses en coordonnées
+5. **Solar API** - Pour le test « Google Solar » (`GET /api/google-solar-insights`) ; utilisez une clé dédiée `GOOGLE_SOLAR_API_KEY` sans restriction « sites web » (appels depuis le serveur Next.js)
 
 ### Configuration Firebase
 
@@ -157,6 +169,7 @@ Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
 
 ### Routes API
 
+- `GET /api/google-solar-insights` : Test Building Insights (Google Solar), auth requise ; query `lat`, `lng`, optionnel `requiredQuality` (défaut côté app : MEDIUM). Préférez `GOOGLE_SOLAR_API_KEY` dans `.env.local`.
 - `POST /api/pvgis` : Données de production solaire PVGIS (annuelles/mensuelles)
 - `POST /api/pvgis-hourly` : Profil journalier typique (24h) pour 1 kWp
 - `GET /api/find-local-siren` : Matching SIREN/SIRET local (paramètres : `poiName`, `address`, `lat`, `lon`)
@@ -214,7 +227,7 @@ Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
 
 - **Affichage d'images satellites** : Utilise uniquement **Google Maps Static API**
 - **Configuration** : Nécessite `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` dans `.env.local`
-- **Note** : Certaines zones géographiques peuvent être soumises à des restrictions EEA (voir `TROUBLESHOOTING.md`)
+- **Note** : Certaines zones géographiques peuvent être soumises à des restrictions EEA (voir [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md))
 - **Détection automatique de toits** : (En développement) Détection via YOLO ou API cloud
 - **Thumbnails** : Génération de miniatures pour les leads
 
@@ -249,13 +262,14 @@ Ouvrez [http://localhost:3000](http://localhost:3000) dans votre navigateur.
 
 ## 📚 Documentation additionnelle
 
-Le projet inclut plusieurs fichiers de documentation :
-
-- **[ROOFTOP_DETECTION.md](./ROOFTOP_DETECTION.md)** : Guide complet pour la détection automatique de toits
-- **[docs/ENERGY_CONSUMPTION_DATA.md](./docs/ENERGY_CONSUMPTION_DATA.md)** : Documentation sur les données de consommation énergétique
-- **[docs/INIT_ENERGY_DATA.md](./docs/INIT_ENERGY_DATA.md)** : Guide d'initialisation des données énergétiques
-- **[docs/PVGIS_OUTPUT_UNITS.md](./docs/PVGIS_OUTPUT_UNITS.md)** : Unités et sorties de l'API PVGIS
-- **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** : Guide de dépannage
+- **[datasource/README.md](./datasource/README.md)** : inventaire des fichiers sources (cadastre, BDNB, OSM, PPM) et imports
+- **[docs/MATCHING-V5.md](./docs/MATCHING-V5.md)** : matching discovery V5 (pipeline + carte)
+- **[docs/ROOFTOP_DETECTION.md](./docs/ROOFTOP_DETECTION.md)** : détection automatique de toits (YOLO / API)
+- **[docs/satellite/README.md](./docs/satellite/README.md)** : notes historiques satellite / Static API
+- **[docs/ENERGY_CONSUMPTION_DATA.md](./docs/ENERGY_CONSUMPTION_DATA.md)** : données de consommation énergétique
+- **[docs/INIT_ENERGY_DATA.md](./docs/INIT_ENERGY_DATA.md)** : initialisation des données énergétiques
+- **[docs/PVGIS_OUTPUT_UNITS.md](./docs/PVGIS_OUTPUT_UNITS.md)** : unités et sorties PVGIS
+- **[docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)** : dépannage Google Maps / clés API
 
 ## 🎨 Types de bâtiments supportés
 

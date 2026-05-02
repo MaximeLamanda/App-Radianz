@@ -61,6 +61,10 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
+  /* Marque RADIANZ — pastilles score / accents (variables :root ci-dessous) */
+  --color-accent-lime: var(--accent-lime);
+  --color-accent-lime-foreground: var(--accent-lime-foreground);
+
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -90,6 +94,18 @@
     100% { transform: translateX(400%); }
   }
   --animate-progress-slide: progress-slide 1.5s ease-in-out infinite;
+
+  @keyframes discovery-content-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  --animate-discovery-content-in: discovery-content-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 /*
@@ -146,6 +162,10 @@
 
   .dark {
     /* SolarView/RADIANZ - Mode sombre */
+    --accent-lime: #E4FE55;
+    --accent-lime-hover: #d7f24f;
+    --accent-lime-foreground: #171717;
+
     --background: #09090b;
     --foreground: #f4f4f5;
     --card: oklch(0.145 0.005 260 / 0.5);
@@ -198,5 +218,218 @@
     font-size: 10px !important;
     fill: oklch(0.45 0.02 260) !important;
     color: oklch(0.45 0.02 260) !important;
+  }
+}
+
+/*
+  ProspectDrawer — mode découverte (matching V5).
+  Styles centralisés sur les tokens :root / @theme (foreground, muted, card, accent-lime, etc.).
+*/
+@layer components {
+  .drawer-discovery {
+    @apply flex w-full flex-col gap-0 pb-3;
+  }
+
+  .drawer-discovery-hero {
+    @apply relative isolate mb-3 space-y-2 overflow-hidden rounded-xl border border-border/70 bg-card px-4 py-4 shadow-xs;
+    background-image:
+      radial-gradient(ellipse 130% 90% at 100% -20%, oklch(0.94 0.09 95 / 0.45) 0%, transparent 52%),
+      radial-gradient(ellipse 100% 70% at -10% 110%, oklch(0.94 0.04 155 / 0.22) 0%, transparent 48%);
+  }
+
+  .dark .drawer-discovery-hero {
+    background-image:
+      radial-gradient(ellipse 130% 90% at 100% -20%, oklch(0.35 0.08 95 / 0.35) 0%, transparent 55%),
+      radial-gradient(ellipse 100% 70% at -10% 110%, oklch(0.32 0.06 155 / 0.2) 0%, transparent 50%);
+  }
+
+  .drawer-discovery-hero::before {
+    content: "";
+    @apply pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-lime)]/55 to-transparent;
+  }
+
+  .drawer-discovery-title {
+    @apply text-balance font-sans text-2xl font-semibold leading-tight tracking-tight text-foreground sm:text-[1.65rem];
+  }
+
+  .drawer-discovery-subtitle {
+    @apply max-w-[52ch] text-pretty text-sm leading-snug text-muted-foreground;
+  }
+
+  .drawer-discovery-hero-address {
+    @apply min-w-0 max-w-full truncate whitespace-nowrap text-sm leading-snug text-muted-foreground;
+  }
+
+  .drawer-discovery-pills {
+    @apply flex flex-wrap gap-2 pt-1;
+  }
+
+  .drawer-discovery-pill {
+    @apply inline-flex items-center rounded-md px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase leading-none tracking-wide transition-[transform,box-shadow] duration-200;
+  }
+
+  @media (hover: hover) {
+    .drawer-discovery-pill-muted:hover,
+    .drawer-discovery-pill-secondary:hover {
+      @apply -translate-y-px shadow-xs;
+    }
+  }
+
+  .drawer-discovery-pill-score {
+    @apply bg-accent-lime text-accent-lime-foreground ring-1 ring-ring/35 shadow-[0_1px_0_oklch(0_0_0/0.06)];
+  }
+
+  .drawer-discovery-pill-inverse {
+    @apply bg-foreground text-background shadow-[0_1px_0_oklch(0_0_0/0.12)];
+  }
+
+  .drawer-discovery-pill-muted {
+    @apply border border-border bg-muted/80 text-foreground backdrop-blur-[2px];
+  }
+
+  .drawer-discovery-pill-secondary {
+    @apply border border-primary/40 bg-secondary text-secondary-foreground;
+  }
+
+  .drawer-discovery-panel {
+    @apply mt-0 space-y-3 border-b border-border pb-4 pt-4 focus-visible:outline-none;
+  }
+
+  .drawer-discovery-panel-last {
+    @apply mt-0 space-y-4 pb-2 pt-4 focus-visible:outline-none;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .drawer-discovery-panel > *,
+    .drawer-discovery-panel-last > * {
+      animation: var(--animate-discovery-content-in);
+    }
+    .drawer-discovery-panel > *:nth-child(1),
+    .drawer-discovery-panel-last > *:nth-child(1) {
+      animation-delay: 0ms;
+    }
+    .drawer-discovery-panel > *:nth-child(2),
+    .drawer-discovery-panel-last > *:nth-child(2) {
+      animation-delay: 45ms;
+    }
+    .drawer-discovery-panel > *:nth-child(3),
+    .drawer-discovery-panel-last > *:nth-child(3) {
+      animation-delay: 90ms;
+    }
+    .drawer-discovery-panel > *:nth-child(4),
+    .drawer-discovery-panel-last > *:nth-child(4) {
+      animation-delay: 135ms;
+    }
+    .drawer-discovery-panel > *:nth-child(5),
+    .drawer-discovery-panel-last > *:nth-child(5) {
+      animation-delay: 180ms;
+    }
+  }
+
+  .drawer-discovery-apercu-stack {
+    @apply flex flex-col gap-4;
+  }
+
+  .drawer-discovery-section-title {
+    @apply mb-1.5 pl-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground;
+  }
+
+  .drawer-discovery-summary {
+    @apply divide-y divide-border rounded-xl border border-border/90 bg-card text-card-foreground text-xs shadow-[inset_0_1px_0_oklch(1_0_0/0.06)];
+  }
+
+  .dark .drawer-discovery-summary {
+    @apply shadow-[inset_0_1px_0_oklch(1_0_0/0.04)];
+  }
+
+  .drawer-discovery-summary-row {
+    @apply flex min-w-0 items-start gap-4 px-3 py-2.5 transition-colors duration-150 first:rounded-t-[calc(var(--radius-xl)-1px)] last:rounded-b-[calc(var(--radius-xl)-1px)] hover:bg-muted/40;
+  }
+
+  .drawer-discovery-summary-label {
+    @apply w-[118px] shrink-0 pt-0.5 text-[0.6875rem] font-medium leading-snug text-muted-foreground;
+  }
+
+  .drawer-discovery-summary-value {
+    @apply min-w-0 flex-1 pl-1 text-left font-mono text-[0.6875rem] tabular-nums tracking-tight text-foreground;
+  }
+
+  .drawer-discovery-summary-value-multiline {
+    @apply min-w-0 flex-1 whitespace-pre-wrap break-words pl-1 text-left font-mono text-[0.6875rem] leading-snug tracking-tight text-foreground;
+  }
+
+  .drawer-discovery-callout {
+    @apply relative overflow-hidden rounded-xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-amber-50/60 px-3.5 py-3 text-xs leading-relaxed text-amber-950 shadow-xs dark:border-amber-800/50 dark:from-amber-950/40 dark:to-amber-950/15 dark:text-amber-50/95;
+  }
+
+  .drawer-discovery-callout::before {
+    content: "";
+    @apply absolute inset-y-2 left-0 w-0.5 rounded-full bg-amber-400/90 dark:bg-amber-400/70;
+  }
+
+  .drawer-discovery-callout > * {
+    @apply relative pl-2.5;
+  }
+
+  .drawer-discovery-chart-shell {
+    @apply flex flex-col rounded-xl border border-border/90 bg-gradient-to-b from-muted/50 to-muted/25 py-3.5 px-3.5 shadow-xs dark:from-muted/30 dark:to-muted/10;
+  }
+
+  .drawer-discovery-chart-shell::before {
+    content: "";
+    @apply pointer-events-none mb-3 h-0.5 w-full max-w-[8rem] rounded-full bg-gradient-to-r from-[var(--accent-lime)]/80 to-transparent;
+  }
+
+  .drawer-discovery-segmented {
+    @apply inline-flex shrink-0 rounded-lg border border-border bg-background/90 p-0.5 shadow-xs;
+  }
+
+  .drawer-discovery-segmented button {
+    @apply rounded-md px-2.5 py-1 text-xs font-medium transition-[color,background-color,box-shadow] duration-200;
+  }
+
+  .drawer-discovery-table-wrap {
+    @apply overflow-x-auto rounded-xl border border-border/90 bg-card p-1 shadow-xs;
+  }
+
+  .drawer-discovery-table-wrap table {
+    @apply w-max min-w-full border-collapse text-xs leading-relaxed;
+  }
+
+  .drawer-discovery-table-wrap thead tr {
+    @apply border-b border-border bg-muted/50;
+  }
+
+  .drawer-discovery-table-wrap tbody tr {
+    @apply border-b border-border/80 transition-colors last:border-b-0 hover:bg-muted/35;
+  }
+
+  .drawer-discovery-table-wrap th {
+    @apply whitespace-nowrap text-left text-[0.7rem] font-semibold uppercase tracking-wide text-muted-foreground;
+  }
+
+  .drawer-discovery-table-wrap td {
+    @apply align-top;
+  }
+
+  /* Priorité sur `p-4` des cellules shadcn pour aérer le contenu */
+  .drawer-discovery-table-wrap th,
+  .drawer-discovery-table-wrap td {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+    padding-top: 0.9375rem;
+    padding-bottom: 0.9375rem;
+  }
+
+  .drawer-discovery-subpanel-title {
+    @apply text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground;
+  }
+
+  .drawer-discovery-json-block {
+    @apply rounded-xl border border-border/90 bg-muted/40 p-3.5 text-xs text-foreground shadow-[inset_0_1px_0_oklch(1_0_0/0.05)] dark:bg-muted/25;
+  }
+
+  .drawer-discovery-json-pre {
+    @apply mt-2 max-h-44 overflow-auto rounded-lg border border-border bg-background/80 p-3 font-mono text-[0.65rem] leading-snug text-foreground shadow-inner backdrop-blur-[1px];
   }
 }

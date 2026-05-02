@@ -1,17 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, type RefObject } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -20,12 +14,48 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import Image from "next/image";
-import { Search, Plus, Loader2, MapPin, X, Trash2, Zap, FileCheck, MoreVertical, Pencil, ImagePlus, ArrowLeft, Building2, ListChecks, Eye, Send } from "lucide-react";
+import {
+  Plus,
+  Loader2,
+  Trash2,
+  Zap,
+  FileCheck,
+  Pencil,
+  ImagePlus,
+  ArrowLeft,
+  Building2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
-import { searchPlacesByType } from "@/lib/places-search";
-import { SatelliteImage } from "./SatelliteImage";
-import type { AddressCoordinates, PlaceSearchResult, PlaceSearchType, Prospect, SolarPanelType, InverterType, SolarEquipmentSettings, PanelReference, InverterReference, BatteryReference } from "@/types";
+import {
+  collectSirensFromMatchingV5Row,
+  parsePasserelleAddressesJson,
+  parseSiretsMatchJson,
+  type ScoutMatchingV5Row,
+} from "@/lib/scout-matching-v5-map";
+import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
+import type {
+  AddressCoordinates,
+  Prospect,
+  SolarPanelType,
+  InverterType,
+  SolarEquipmentSettings,
+  PanelReference,
+  InverterReference,
+  BatteryReference,
+} from "@/types";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { getPanelReferences, savePanelReferences, getInverterReferences, saveInverterReferences, PANEL_TYPE_CHARACTERISTICS, getCountryFlagUrl } from "@/lib/solar-settings";
 import {
   savePanelReferenceToFirebase,
@@ -35,15 +65,6 @@ import {
   saveInverterReferenceToFirebase,
   deleteInverterReferenceFromFirebase,
 } from "@/lib/firestore-inverter-references";
-import { fetchWithAuth } from "@/lib/api-client";
-import { addProspectToPipeline } from "@/lib/firestore";
-import { useAuth } from "@/lib/auth-context";
-import { useOsmBuildings, type MapBounds } from "@/lib/swr-hooks";
-import { getPolygonCenter } from "@/lib/geometry";
-import { RangeSlider } from "@/components/ui/slider";
-import { StickSliderTrack } from "./StickSliderTrack";
-import { FilterLabel } from "./FilterLabel";
-import { listPoisNearPolygon } from "@/lib/poi-near-polygon";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -51,6 +72,46 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+import { fetchWithAuth } from "@/lib/api-client";
+import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
+
+type MatchingV5ApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
+
+function MatchingV5ScrollArrows({
+  targetRef,
+  step = 110,
+  className,
+}: {
+  targetRef: RefObject<HTMLDivElement | null>;
+  step?: number;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-1 justify-center shrink-0 py-0.5", className)}>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="h-8 w-8 shrink-0"
+        aria-label="Défiler la liste vers le haut"
+        onClick={() => targetRef.current?.scrollBy({ top: -step, behavior: "smooth" })}
+      >
+        <ChevronUp className="h-4 w-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="h-8 w-8 shrink-0"
+        aria-label="Défiler la liste vers le bas"
+        onClick={() => targetRef.current?.scrollBy({ top: step, behavior: "smooth" })}
+      >
+        <ChevronDown className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
 
 export function PanelReferenceForm({
   initialRef,
@@ -924,143 +985,100 @@ export function BatteryReferenceForm({
 }
 
 interface SidebarProps {
-  onAddressSelect?: (address: string, coordinates: AddressCoordinates) => void;
-  initialAddress?: string;
-  isDrawing?: boolean;
-  onDrawingChange?: (isDrawing: boolean) => void;
-  onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }>; orientation?: number }) => void;
-  onSurfaceDelete?: (surfaceId: string) => void;
   onProspectUpdate?: (patch: Partial<Prospect>) => void;
-  onValidateDrawing?: () => void;
-  searchResults?: PlaceSearchResult[];
-  onSearchResults?: (results: PlaceSearchResult[]) => void;
-  onSearchResultSelect?: (result: PlaceSearchResult, bdnbData?: { surfaceM2?: number | null; anneeConstruction?: number | null; batiment?: { id: string; polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>; totalAreaM2: number; anneeConstruction: number | null } }) => void;
-  getMapCenter?: () => AddressCoordinates | null;
-  /** Appelé quand l'utilisateur clique sur "Analyser les bâtiments" */
-  onAnalyseBuildings?: () => void;
-  /** Chargement en cours de l'analyse OSM des bâtiments */
-  isAnalysingBuildings?: boolean;
-  /** Bounds pour accéder aux bâtiments OSM (même que MapComponent) */
-  osmBoundsToFetch?: MapBounds | null;
-  /** Plage de surface (min, max) en m² pour le filtre */
-  surfaceRange?: { min: number; max: number };
-  /** Callback quand la plage surface change */
-  onSurfaceRangeChange?: (range: { min: number; max: number }) => void;
-  onTabChange?: (tab: "analyser" | "recherche" | "permis") => void;
-  /** Vide les résultats de recherche et recentre la carte (état avant recherche) */
-  onResetSearch?: () => void;
-  /** Depuis le tableau d’analyse : focus carte + prospect avec polygones OSM (évite le merge destructif de onAddressSelect) */
-  onFocusBuildingFromAnalysis?: (prospect: Prospect, center: AddressCoordinates) => void;
-  permisState?: {
+  onRefreshDiscovery?: () => void;
+  /** Couche « Découverte » (export local /geo/matching-v5-33318.geojson) */
+  discoveryState?: {
     loading: boolean;
     count: number;
-    truncated: boolean;
     error?: string | null;
+    rows?: ScoutMatchingV5Row[];
+    selectedId?: string | null;
+    selectedGroupRows?: ScoutMatchingV5Row[];
+    onSelectRow?: (id: string) => void;
   };
-  onRefreshPermis?: () => void;
-  selectedSourceYears?: number[];
-  onToggleSourceYear?: (year: number) => void;
 }
 
 export function Sidebar({
-  onAddressSelect,
-  initialAddress,
-  isDrawing = false,
-  onDrawingChange,
-  onSurfaceUpdate,
-  onSurfaceDelete,
   onProspectUpdate,
-  onValidateDrawing,
-  searchResults = [],
-  onSearchResults,
-  onSearchResultSelect,
-  getMapCenter,
-  onAnalyseBuildings,
-  isAnalysingBuildings = false,
-  osmBoundsToFetch = null,
-  surfaceRange = { min: 200, max: 2000 },
-  onSurfaceRangeChange,
-  onTabChange,
-  onResetSearch,
-  onFocusBuildingFromAnalysis,
-  permisState,
-  onRefreshPermis,
-  selectedSourceYears = [],
-  onToggleSourceYear,
+  onRefreshDiscovery,
+  discoveryState,
 }: SidebarProps) {
-  const { data: osmBuildings = [] } = useOsmBuildings(onAnalyseBuildings ? osmBoundsToFetch ?? null : null);
-  const { user } = useAuth();
-  const wasAnalysingRef = useRef(false);
-
-  // À la fin d'une analyse : mettre à jour le max si besoin, en conservant le min actuel (préréglage de l'utilisateur)
-  useEffect(() => {
-    if (wasAnalysingRef.current && !isAnalysingBuildings && osmBuildings.length > 0 && onSurfaceRangeChange) {
-      const maxSurface = Math.max(
-        2000,
-        ...osmBuildings.map((b) =>
-          b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
-        )
-      );
-      onSurfaceRangeChange({ min: surfaceRange.min, max: maxSurface });
-    }
-    wasAnalysingRef.current = isAnalysingBuildings;
-  }, [isAnalysingBuildings, osmBuildings, onSurfaceRangeChange, surfaceRange.min]);
-
-  const [address, setAddress] = useState(initialAddress || ""); // Champ vide par défaut
-  const inputRef = useRef<HTMLInputElement>(null);
-  const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
-  
-  // États pour la recherche par type
-  const [selectedPlaceType, setSelectedPlaceType] = useState<PlaceSearchType | "">("");
-  const DISTANCE_OPTIONS = [1000, 2000, 5000, 10000, 20000] as const;
-  const [selectedDistance, setSelectedDistance] = useState<number>(1000);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"analyser" | "recherche" | "permis">(
-    onAnalyseBuildings ? "analyser" : "recherche"
+  const selectedMatchingV5Row = useMemo(
+    () => discoveryState?.rows?.find((r) => r.id === discoveryState?.selectedId) ?? null,
+    [discoveryState?.rows, discoveryState?.selectedId]
   );
 
-  useEffect(() => {
-    onTabChange?.(activeTab);
-  }, [activeTab, onTabChange]);
+  /** Adresse PPM absente ou aucun établissement issu du matching adresse → proposer le test Google. */
+  const matchingV5ShowGooglePoiTest = useMemo(() => {
+    if (!selectedMatchingV5Row) return false;
+    if (!selectedMatchingV5Row.passerelleAddress?.trim()) return true;
+    return parseSiretsMatchJson(selectedMatchingV5Row.siretsJson).length === 0;
+  }, [selectedMatchingV5Row]);
 
-  // Données BDNB (surface, année, batiment complet) par placeId pour les résultats de recherche
-  const [bdnbByPlaceId, setBdnbByPlaceId] = useState<
-    Record<string, {
-      surfaceM2?: number | null;
-      anneeConstruction?: number | null;
-      batiment?: {
-        id: string;
-        polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>;
-        totalAreaM2: number;
-        anneeConstruction: number | null;
-      };
-    }>
+  const matchingV5PasserelleSirenSet = useMemo(() => {
+    if (!selectedMatchingV5Row) return new Set<string>();
+    return new Set(collectSirensFromMatchingV5Row(selectedMatchingV5Row));
+  }, [selectedMatchingV5Row]);
+
+  const matchingV5MainListRef = useRef<HTMLDivElement>(null);
+  const matchingV5PpmListRef = useRef<HTMLDivElement>(null);
+  const matchingV5SiretListRef = useRef<HTMLDivElement>(null);
+  const matchingV5ApiNomFetchedRef = useRef<Set<string>>(new Set());
+  const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
+    Record<string, MatchingV5ApiNomEntry>
   >({});
+
+  const [v5GoogleFbLoading, setV5GoogleFbLoading] = useState(false);
+  const [v5GoogleFbErr, setV5GoogleFbErr] = useState<string | null>(null);
+  const [v5GoogleFbData, setV5GoogleFbData] = useState<Record<string, unknown> | null>(null);
+  const [v5GoogleFbJsonOpen, setV5GoogleFbJsonOpen] = useState(false);
+
+  useEffect(() => {
+    setV5GoogleFbErr(null);
+    setV5GoogleFbData(null);
+    setV5GoogleFbJsonOpen(false);
+  }, [selectedMatchingV5Row?.id]);
+
+  useEffect(() => {
+    if (!selectedMatchingV5Row) return;
+    const sirens = collectSirensFromMatchingV5Row(selectedMatchingV5Row);
+    for (const siren of sirens) {
+      if (matchingV5ApiNomFetchedRef.current.has(siren)) continue;
+      matchingV5ApiNomFetchedRef.current.add(siren);
+      setMatchingV5ApiNomBySiren((prev) =>
+        prev[siren]?.status === "ok" ? prev : { ...prev, [siren]: { status: "loading" } }
+      );
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/recherche-entreprises?q=${encodeURIComponent(siren)}&per_page=1`
+          );
+          if (!res.ok) {
+            setMatchingV5ApiNomBySiren((prev) => ({ ...prev, [siren]: { status: "err" } }));
+            return;
+          }
+          const data = (await res.json()) as { result?: { companyLegalName?: string | null } };
+          const name = data.result?.companyLegalName?.trim() || undefined;
+          setMatchingV5ApiNomBySiren((prev) => ({
+            ...prev,
+            [siren]: { status: "ok", name },
+          }));
+        } catch {
+          setMatchingV5ApiNomBySiren((prev) => ({ ...prev, [siren]: { status: "err" } }));
+        }
+      })();
+    }
+  }, [
+    selectedMatchingV5Row?.id,
+    selectedMatchingV5Row?.siretsJson,
+    selectedMatchingV5Row?.passerelleAddressesJson,
+  ]);
 
   const [panelType, setPanelType] = useState<SolarPanelType>("monocrystalline");
   const [inverterType, setInverterType] = useState<InverterType>("string_inverter");
   const [panelPowerW, setPanelPowerW] = useState<string>("400");
   const [panelEfficiency, setPanelEfficiency] = useState<string>("20");
-
-  type EnrichedOsmBuildingRow = {
-    osmBuildingId: string;
-    surfaceM2: number;
-    poiName: string | null;
-    poiPlaceId?: string;
-    poiCandidates?: Array<{
-      name: string;
-      placeId?: string;
-      coordinates?: { lat: number; lng: number };
-    }>;
-    anneeConstruction: number | null;
-    centroid: { lat: number; lng: number } | null;
-  };
-
-  const [enrichedBuildings, setEnrichedBuildings] = useState<EnrichedOsmBuildingRow[] | null>(null);
-  const [isEnrichingBuildings, setIsEnrichingBuildings] = useState(false);
-  const [enrichBuildingsError, setEnrichBuildingsError] = useState<string | null>(null);
-  const enrichAbortRef = useRef<AbortController | null>(null);
 
   // Charger les paramètres depuis localStorage au montage
   useEffect(() => {
@@ -1089,910 +1107,696 @@ export function Sidebar({
     localStorage.setItem("solarEquipmentSettings", JSON.stringify(settings));
   }, [panelType, inverterType, panelPowerW, panelEfficiency]);
 
-
-  // Initialiser l'adresse avec l'adresse initiale si fournie
-  useEffect(() => {
-    if (initialAddress && !address) {
-      setAddress(initialAddress);
-    }
-  }, [initialAddress]);
-
-
-  // Initialiser l'autocomplétion Google Places pour la recherche d'adresse principale
-  // Autocomplete (legacy) n'est plus dispo pour les nouveaux clients Google (depuis mars 2025)
-  // Si Autocomplete échoue, on utilise le fallback Geocoder via handleSearch
-  useEffect(() => {
-    if (!inputRef.current) return;
-    if (!window.google || !window.google.maps) return;
-
-    const maps = window.google.maps;
-    try {
-      if (!maps.places?.Autocomplete) return;
-      const autocomplete = new maps.places.Autocomplete(inputRef.current, {
-        types: ["address"],
-        fields: ["formatted_address", "geometry", "name", "place_id"],
-      });
-
-      autocompleteRef.current = autocomplete;
-
-      // Écouter la sélection d'une adresse
-      autocomplete.addListener("place_changed", () => {
-        const place = autocomplete.getPlace();
-      
-      if (!place.geometry || !place.geometry.location) {
-        return;
-      }
-
-      const addressText = place.formatted_address || place.name || address;
-      const coordinates: AddressCoordinates = {
-        lat: place.geometry.location.lat(),
-        lng: place.geometry.location.lng(),
-      };
-
-      setAddress(addressText);
-      
-      // Notifier le composant parent
-      if (onAddressSelect) {
-        onAddressSelect(addressText, coordinates);
-      }
-    });
-
-      return () => {
-        if (autocompleteRef.current) {
-          maps.event.clearInstanceListeners(autocompleteRef.current);
-        }
-      };
-    } catch {
-      // Autocomplete indisponible (nouveau client Google) - fallback via Geocoder dans handleSearch
-    }
-  }, [onAddressSelect, address]);
-
-
-  const handleSearch = () => {
-    if (!autocompleteRef.current) {
-      // Fallback : géocoder l'adresse manuellement
-      if (!window.google || !window.google.maps) return;
-      
-      const geocoder = new window.google.maps.Geocoder();
-      geocoder.geocode({ address }, (results, status) => {
-        if (status === "OK" && results && results[0]) {
-          const result = results[0];
-          const coordinates: AddressCoordinates = {
-            lat: result.geometry.location.lat(),
-            lng: result.geometry.location.lng(),
-          };
-          
-          setAddress(result.formatted_address);
-          
-          if (onAddressSelect) {
-            onAddressSelect(result.formatted_address, coordinates);
-          }
-        } else {
-          alert("Adresse introuvable. Veuillez essayer une autre adresse.");
-        }
-      });
-    }
-  };
-
-
-  // Fonction pour rechercher les lieux par type
-  const handleSearchByType = async () => {
-    if (!selectedPlaceType) {
-      setSearchError("Veuillez sélectionner un type de lieu");
-      return;
-    }
-
-    if (!getMapCenter || typeof getMapCenter !== "function") {
-      setSearchError("La fonction de récupération du centre de la carte n'est pas disponible");
-      return;
-    }
-
-    setIsSearching(true);
-    setSearchError(null);
-
-    try {
-      const coordinates = getMapCenter();
-      if (!coordinates) {
-        throw new Error("Impossible d'obtenir le centre de la carte");
-      }
-      if (!coordinates.lat || !coordinates.lng) {
-        throw new Error("Coordonnées invalides obtenues du centre de la carte");
-      }
-
-      const radius = selectedDistance;
-      const results = await searchPlacesByType(coordinates, selectedPlaceType as PlaceSearchType, radius);
-      if (onSearchResults) {
-        onSearchResults(results);
-      }
-    } catch (error) {
-      setSearchError(error instanceof Error ? error.message : "Erreur lors de la recherche");
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  // Enrichir les résultats de recherche avec BDNB (surface, année construction)
-  useEffect(() => {
-    if (searchResults.length === 0) {
-      setBdnbByPlaceId({});
-      return;
-    }
-
-    const abortController = new AbortController();
-    const CONCURRENCY = 5;
-
-    const fetchBdnbForResult = async (
-      result: PlaceSearchResult,
-      signal: AbortSignal
-    ): Promise<{
-      placeId: string;
-      surfaceM2?: number | null;
-      anneeConstruction?: number | null;
-      batiment?: { id: string; polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number; orientation: number | null }>; totalAreaM2: number; anneeConstruction: number | null };
-    } | null> => {
-      if (signal.aborted) return null;
-      try {
-        const res = await fetchWithAuth(
-          `/api/bdnb?lat=${result.coordinates.lat}&lng=${result.coordinates.lng}`,
-          { signal }
-        );
-        if (!res.ok || signal.aborted) return null;
-        const data = await res.json();
-        if (!data.batiment || signal.aborted) {
-          return { placeId: result.placeId, surfaceM2: null, anneeConstruction: null };
-        }
-        const surfaceM2 = data.batiment.totalAreaM2 ?? data.batiment.surfaceM2 ?? null;
-        const anneeConstruction = data.batiment.anneeConstruction ?? null;
-        const batiment = data.batiment.polygonSurfaces?.length > 0
-          ? {
-              id: data.batiment.id,
-              polygonSurfaces: data.batiment.polygonSurfaces,
-              totalAreaM2: data.batiment.totalAreaM2 ?? 0,
-              anneeConstruction: data.batiment.anneeConstruction ?? null,
-            }
-          : undefined;
-        return { placeId: result.placeId, surfaceM2, anneeConstruction, batiment };
-      } catch {
-        if (signal.aborted) return null;
-        return { placeId: result.placeId, surfaceM2: null, anneeConstruction: null };
-      }
-    };
-
-    const runWithConcurrency = async () => {
-      const results = [...searchResults];
-      setBdnbByPlaceId({});
-
-      for (let i = 0; i < results.length; i += CONCURRENCY) {
-        const batch = results.slice(i, i + CONCURRENCY);
-        const settled = await Promise.all(
-          batch.map((r) => fetchBdnbForResult(r, abortController.signal))
-        );
-        if (abortController.signal.aborted) return;
-        setBdnbByPlaceId((prev) => {
-          const out = { ...prev };
-          for (const item of settled) {
-            if (item) {
-              out[item.placeId] = {
-                surfaceM2: item.surfaceM2 ?? null,
-                anneeConstruction: item.anneeConstruction ?? null,
-                batiment: item.batiment,
-              };
-            }
-          }
-          return out;
-        });
-      }
-    };
-
-    runWithConcurrency();
-    return () => abortController.abort();
-  }, [searchResults]);
-
-  // Options de types de lieux avec les types importants en premier
-  const placeTypeOptions: { value: PlaceSearchType; label: string }[] = [
-    { value: "factory", label: "Usine" },
-    { value: "storage", label: "Entrepôt logistique" },
-    { value: "industrial", label: "Zone industrielle" },
-    { value: "store", label: "Magasin" },
-    { value: "supermarket", label: "Supermarché" },
-    { value: "office", label: "Bureau" },
-    { value: "gym", label: "Salle de sport" },
-    { value: "restaurant", label: "Restaurant" },
-    { value: "shopping_mall", label: "Centre commercial" },
-  ];
-
-  const MAX_ENRICHED_BUILDINGS = 50;
-  const ENRICH_CONCURRENCY = 5;
-  const POI_PREVIEW_MAX = 26;
-
-  const sumBuildingSurfaceM2 = (b: { polygonSurfaces: Array<{ areaM2: number }> }) =>
-    b.polygonSurfaces.reduce((s, surf) => s + (surf.areaM2 || 0), 0);
-
-  const polygonCentroid = (polygon: Array<{ lat: number; lng: number }>) => {
-    if (!polygon || polygon.length === 0) return null;
-    let sumLat = 0;
-    let sumLng = 0;
-    for (const p of polygon) {
-      sumLat += p.lat;
-      sumLng += p.lng;
-    }
-    return { lat: sumLat / polygon.length, lng: sumLng / polygon.length };
-  };
-
-  const toEllipsis = (value: string | null | undefined, max = POI_PREVIEW_MAX) => {
-    const text = (value ?? "—").trim() || "—";
-    if (text.length <= max) return text;
-    return `${text.slice(0, max).trimEnd()}...`;
-  };
-
-  const getBestPolygonForBuilding = (b: { polygonSurfaces: Array<{ polygon: Array<{ lat: number; lng: number }>; areaM2: number }> }) => {
-    if (!b.polygonSurfaces?.length) return null;
-    const best = [...b.polygonSurfaces].sort((a, c) => (c.areaM2 ?? 0) - (a.areaM2 ?? 0))[0];
-    return best?.polygon?.length ? best.polygon : null;
-  };
-
-  async function runPool<T, R>(
-    items: T[],
-    concurrency: number,
-    worker: (item: T, idx: number) => Promise<R>
-  ): Promise<R[]> {
-    const out: R[] = new Array(items.length);
-    let next = 0;
-    const n = Math.max(1, Math.min(concurrency, items.length || 1));
-    const runners = Array.from({ length: n }, async () => {
-      while (next < items.length) {
-        const current = next++;
-        out[current] = await worker(items[current]!, current);
-      }
-    });
-    await Promise.all(runners);
-    return out;
+  function matchingV5ApiNomBlock(siren: string | undefined | null) {
+    const s = siren?.trim();
+    if (!s || !/^\d{9}$/.test(s)) return null;
+    const st = matchingV5ApiNomBySiren[s];
+    if (st?.status === "loading")
+      return (
+        <div className="mt-0.5 text-[10px] text-muted-foreground flex items-center gap-1">
+          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+          <span>Nom officiel (API)…</span>
+        </div>
+      );
+    if (st?.status === "ok" && st.name)
+      return (
+        <div className="mt-0.5 text-[10px] leading-snug">
+          <span className="text-muted-foreground">recherche-entreprises · </span>
+          <span className="font-medium text-foreground">{st.name}</span>
+        </div>
+      );
+    if (st?.status === "err")
+      return (
+        <div className="mt-0.5 text-[10px] text-muted-foreground">
+          recherche-entreprises · indisponible
+        </div>
+      );
+    return null;
   }
 
-  const handleEnrichFilteredBuildings = async () => {
-    if (isAnalysingBuildings) return;
-    if (!osmBuildings || osmBuildings.length === 0) {
-      setEnrichedBuildings([]);
-      setEnrichBuildingsError("Aucun bâtiment à enrichir. Lance d’abord « Analyser les bâtiments ».");
-      return;
-    }
-
-    enrichAbortRef.current?.abort();
-    const abortController = new AbortController();
-    enrichAbortRef.current = abortController;
-
-    setIsEnrichingBuildings(true);
-    setEnrichBuildingsError(null);
-    setEnrichedBuildings(null);
-
-    try {
-      let placesAvailable = false;
-      try {
-        const maps = window.google?.maps as any;
-        if (maps?.importLibrary) {
-          const placesLib = await maps.importLibrary("places");
-          placesAvailable = Boolean((placesLib as any)?.PlacesService);
-        } else {
-          placesAvailable = Boolean((window.google as any)?.maps?.places?.PlacesService);
-        }
-      } catch {
-        placesAvailable = false;
-      }
-
-      if (!placesAvailable) {
-        setEnrichBuildingsError(
-          "POI indisponible: la bibliothèque Google Places n’est pas accessible (clé non autorisée / Places API non activée)."
-        );
-      }
-
-      const filtered = osmBuildings
-        .map((b) => ({ b, surfaceM2: sumBuildingSurfaceM2(b) }))
-        .filter(({ surfaceM2 }) => surfaceM2 >= surfaceRange.min && surfaceM2 <= surfaceRange.max)
-        .sort((a, c) => c.surfaceM2 - a.surfaceM2)
-        .slice(0, MAX_ENRICHED_BUILDINGS);
-
-      const rows = await runPool(filtered, ENRICH_CONCURRENCY, async ({ b, surfaceM2 }) => {
-        if (abortController.signal.aborted) throw new DOMException("Aborted", "AbortError");
-
-        const polygon = getBestPolygonForBuilding(b);
-        const centroid = polygon ? polygonCentroid(polygon) : null;
-
-        let poiName: string | null = null;
-        let poiPlaceId: string | undefined = undefined;
-        let poiCandidates: EnrichedOsmBuildingRow["poiCandidates"] = undefined;
-        if (placesAvailable && centroid && polygon) {
-          const pois = await listPoisNearPolygon(centroid, polygon);
-          poiCandidates = pois.length > 0 ? pois : undefined;
-          const first = pois[0];
-          poiName = first?.name ?? null;
-          poiPlaceId = first?.placeId;
-        }
-
-        let anneeConstruction: number | null = null;
-        if (centroid) {
-          const res = await fetchWithAuth(
-            `/api/bdnb-neon?lat=${centroid.lat}&lng=${centroid.lng}`,
-            { signal: abortController.signal }
-          );
-          if (res.status === 403) {
-            const json = await res.json().catch(() => ({}));
-            throw new Error(json.message ?? "Quota BDNB (Neon) atteint.");
-          }
-          if (res.ok) {
-            const data = await res.json().catch(() => null);
-            const year = data?.batiment?.annee_construction;
-            anneeConstruction = typeof year === "number" ? year : null;
-          }
-        }
-
-        return {
-          osmBuildingId: b.id,
-          surfaceM2,
-          poiName,
-          poiPlaceId,
-          poiCandidates,
-          anneeConstruction,
-          centroid,
-        } satisfies EnrichedOsmBuildingRow;
-      });
-
-      if (abortController.signal.aborted) return;
-      setEnrichedBuildings(rows);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      const message = err instanceof Error ? err.message : "Erreur lors de l’enrichissement.";
-      setEnrichBuildingsError(message);
-      setEnrichedBuildings([]);
-    } finally {
-      if (!abortController.signal.aborted) {
-        setIsEnrichingBuildings(false);
-      }
-    }
-  };
-
-  const handleViewLead = (row: EnrichedOsmBuildingRow) => {
-    if (!row.centroid) {
-      toast.error("Coordonnées du bâtiment indisponibles.");
-      return;
-    }
-    const building = osmBuildings.find((b) => b.id === row.osmBuildingId);
-    const firstSurf = building?.polygonSurfaces?.[0];
-    if (!building?.polygonSurfaces?.length || !firstSurf?.polygon?.length) {
-      toast.error(
-        "Polygone introuvable : zoomez sur la zone ou relancez l’analyse pour charger les bâtiments OSM."
-      );
-      onAddressSelect?.(row.poiName || `Bâtiment ${row.osmBuildingId.slice(0, 6)}`, row.centroid);
-      return;
-    }
-
-    const centroid = getPolygonCenter(firstSurf.polygon) ?? row.centroid;
-    const roofSurfaces = building.polygonSurfaces.map((s, i) => ({
-      id: `${building.id}-${i}`,
-      area: s.areaM2,
-      polygon: s.polygon,
-      orientation: s.orientation ?? undefined,
-    }));
-    const totalArea = roofSurfaces.reduce((sum, s) => sum + s.area, 0);
-    const displayName = row.poiName || `Bâtiment ${row.osmBuildingId.slice(0, 6)}`;
-    const addressPoint = `Point ${row.centroid.lat.toFixed(5)}, ${row.centroid.lng.toFixed(5)}`;
-    const firstPoi = row.poiCandidates?.[0];
-    const poiCoordinates =
-      firstPoi?.coordinates != null
-        ? { lat: firstPoi.coordinates.lat, lng: firstPoi.coordinates.lng }
-        : undefined;
-
-    const prospect: Prospect = {
-      name: displayName,
-      address: addressPoint,
-      coordinates: centroid,
-      roofSurface: roofSurfaces[0] ?? { area: 0, polygon: [] },
-      roofSurfaces,
-      placeType: row.poiName ? "establishment" : "other",
-      placeId: row.poiPlaceId,
-      poiCandidates: row.poiCandidates,
-      poiCandidateIndex:
-        row.poiCandidates && row.poiCandidates.length > 0 ? 0 : undefined,
-      poiCoordinates,
-      qualityScore: totalArea > 0 ? Math.min(100, 10 + Math.floor(totalArea / 50)) : 10,
-      anneeConstruction: row.anneeConstruction ?? undefined,
-      siren: undefined,
-      siret: undefined,
-      companyLegalName: undefined,
-      companyManagerName: undefined,
-      companyAddress: undefined,
-      companyNaf: undefined,
-      companyEnrichmentApiUrl: undefined,
-      batteryReferenceId: undefined,
-      batteryCount: undefined,
-    };
-
-    onFocusBuildingFromAnalysis?.(prospect, row.centroid);
-  };
-
-  const handleAddRowToPipeline = async (row: EnrichedOsmBuildingRow) => {
-    if (!row.centroid) {
-      toast.error("Impossible d'ajouter: coordonnées manquantes.");
-      return;
-    }
-    try {
-      const firstPoi = row.poiCandidates?.[0];
-      const poiCoordinates =
-        firstPoi?.coordinates != null
-          ? { lat: firstPoi.coordinates.lat, lng: firstPoi.coordinates.lng }
-          : undefined;
-      const prospect: Prospect = {
-        name: row.poiName || `Bâtiment ${row.osmBuildingId.slice(0, 6)}`,
-        address: `Point ${row.centroid.lat.toFixed(5)}, ${row.centroid.lng.toFixed(5)}`,
-        coordinates: row.centroid,
-        roofSurface: { area: Math.round(row.surfaceM2), polygon: [] },
-        roofSurfaces: [{ id: `osm-${row.osmBuildingId}`, area: Math.round(row.surfaceM2), polygon: [] }],
-        placeType: "establishment",
-        placeId: row.poiPlaceId,
-        poiCandidates: row.poiCandidates,
-        poiCandidateIndex:
-          row.poiCandidates && row.poiCandidates.length > 0 ? 0 : undefined,
-        poiCoordinates,
-        qualityScore: Math.min(100, Math.max(20, Math.round(row.surfaceM2 / 20))),
-        anneeConstruction: row.anneeConstruction ?? undefined,
-        bdnbBatimentId: row.osmBuildingId,
-        userId: user?.uid ?? undefined,
-      };
-      await addProspectToPipeline(prospect, undefined, user?.uid);
-      toast.success("Ajouté au pipeline");
-    } catch (e) {
-      toast.error("Erreur lors de l'ajout au pipeline");
-    }
-  };
-
-
   return (
-    <div className="w-80 flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
-      <Tabs
-        value={activeTab}
-        onValueChange={(value) => {
-          const next = value as "analyser" | "recherche" | "permis";
-          setActiveTab(next);
-          onTabChange?.(next);
-        }}
-        className="w-full"
-      >
-        <div className="mb-4 flex">
-          <TabsList className={`grid gap-1 rounded-xl p-1 h-auto! ${onAnalyseBuildings ? "w-72 grid-cols-3" : "w-64 grid-cols-2"}`}>
-            {onAnalyseBuildings && (
-              <TabsTrigger value="analyser" className="rounded-lg px-3 py-1 text-xs">Analyser</TabsTrigger>
-            )}
-            <TabsTrigger value="recherche" className="rounded-lg px-3 py-1 text-xs">Recherche</TabsTrigger>
-            <TabsTrigger value="permis" className="rounded-lg px-3 py-1 text-xs">Permis</TabsTrigger>
-          </TabsList>
-        </div>
-
-            {/* Onglet Analyser : même structure que Recherche, zone insights */}
-            {onAnalyseBuildings && (
-              <TabsContent value="analyser" className="mt-0">
-                <Card className="rounded-xl">
-                  <CardContent className="space-y-3 p-3 md:p-3 lg:p-4">
-                    {/* Slider filtre surface + résumé, avec design identique au slider de production */}
-                    <div className="rounded-xl bg-muted/30 p-3 space-y-3">
-                    <FilterLabel
-                      label="surface"
-                      value={(() => {
-                        const count =
-                          osmBuildings?.filter((b) => {
-                            const surface = b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0);
-                            return (
-                              surface >= surfaceRange.min &&
-                              surface <= surfaceRange.max
-                            );
-                          }).length ?? 0;
-                        return `${count} · ${surfaceRange.min} – ${surfaceRange.max} m²`;
-                      })()}
-                    />
-                      <div className="flex items-center gap-2">
-                        <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-xl bg-gray-200/80 dark:bg-gray-700/50 px-3 py-3">
-                        <StickSliderTrack
-                          segments={24}
-                          selectedIndices={(() => {
-                            const sliderMax =
-                              osmBuildings.length > 0
-                                ? Math.max(
-                                    2000,
-                                    ...osmBuildings.map((b) =>
-                                      b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
-                                    )
-                                  )
-                                : 2000;
-                            const toIndex = (v: number) =>
-                              Math.max(0, Math.min(23, Math.round((v / sliderMax) * 23)));
-                            const iMin = toIndex(surfaceRange.min);
-                            const iMax = toIndex(surfaceRange.max);
-                            const start = Math.min(iMin, iMax);
-                            const end = Math.max(iMin, iMax);
-                            return Array.from({ length: end - start + 1 }, (_, idx) => start + idx);
-                          })()}
-                        />
-                        <RangeSlider
-                          min={0}
-                          max={
-                            osmBuildings.length > 0
-                              ? Math.max(
-                                  2000,
-                                  ...osmBuildings.map((b) =>
-                                    b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
-                                  )
-                                )
-                              : 2000
-                          }
-                          step={1}
-                          value={[surfaceRange.min, surfaceRange.max]}
-                          onValueChange={([min, max]) => {
-                            const rawMax =
-                              osmBuildings.length > 0
-                                ? Math.max(
-                                    2000,
-                                    ...osmBuildings.map((b) =>
-                                      b.polygonSurfaces.reduce((s, surf) => s + surf.areaM2, 0)
-                                    )
-                                  )
-                                : 2000;
-
-                            const segments = 24;
-                            const sticks = segments - 1;
-                            const sliderMax = rawMax || 1;
-                            const stepValue = sliderMax / sticks;
-
-                            const snapToStick = (value: number | undefined) => {
-                              const safe = Math.min(Math.max(value ?? 0, 0), sliderMax);
-                              const idx = Math.round(safe / stepValue);
-                              return idx * stepValue;
-                            };
-
-                            const snappedMin = snapToStick(min);
-                            const snappedMax = snapToStick(max);
-                            const finalMin = Math.round(Math.min(snappedMin, snappedMax));
-                            const finalMax = Math.round(Math.max(snappedMin, snappedMax));
-
-                            onSurfaceRangeChange?.({
-                              min: finalMin,
-                              max: finalMax,
-                            });
-                          }}
-                          className="relative z-10 [&_[data-orientation=horizontal]]:flex [&_[data-orientation=horizontal]]:items-center [&_.relative.grow]:!min-h-[12px] [&_.relative.grow]:!overflow-visible [&_.relative.grow]:!bg-transparent [&_.absolute.h-full]:!bg-transparent [&_.block]:!invisible [&_.block]:!h-4 [&_.block]:!w-4 [&_.block]:!rounded-none [&_.block]:!border-0 [&_.block]:!bg-transparent [&_.block]:!ring-0 [&_.block]:!ring-offset-0"
-                        />
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        className="h-10 w-10 rounded-xl"
-                        onClick={handleEnrichFilteredBuildings}
-                        disabled={isEnrichingBuildings || isAnalysingBuildings}
-                        title="Créer la liste (surface · POI · année)"
-                      >
-                        {isEnrichingBuildings ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <ListChecks className="h-4 w-4" />
-                        )}
-                      </Button>
-                      </div>
-
-                      {(enrichBuildingsError || enrichedBuildings) && (
-                        <div className="rounded-xl bg-background/50 border border-border/60 overflow-hidden">
-                          {enrichBuildingsError && (
-                            <div className="text-xs text-destructive px-2 py-2">{enrichBuildingsError}</div>
-                          )}
-                          {enrichedBuildings && (
-                            <div className="w-full max-h-48 overflow-y-auto bg-background">
-                              <table className="w-full table-fixed text-xs tabular-nums">
-                                <thead className="sticky top-0 bg-background">
-                                  <tr className="text-[11px] text-muted-foreground border-b">
-                                    <th className="text-left font-medium px-2 py-1.5 w-[36%]">POI</th>
-                                    <th className="text-right font-medium px-2 py-1.5 w-[24%]">Surface</th>
-                                    <th className="text-right font-medium px-2 py-1.5 w-[16%]">Année</th>
-                                    <th className="text-right font-medium px-2 py-1.5 w-[24%]">Actions</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {enrichedBuildings.map((row) => (
-                                    <tr key={row.osmBuildingId} className="border-b last:border-b-0">
-                                      <td className="px-2 py-1.5 text-foreground/90">
-                                        <div className="block w-full truncate" title={row.poiName ?? row.osmBuildingId}>
-                                          {toEllipsis(row.poiName)}
-                                        </div>
-                                      </td>
-                                      <td className="px-2 py-1.5 text-right text-foreground/90 whitespace-nowrap">
-                                        {Math.round(row.surfaceM2)} m²
-                                      </td>
-                                      <td className="px-2 py-1.5 text-right text-foreground/90 whitespace-nowrap">
-                                        {row.anneeConstruction ?? "—"}
-                                      </td>
-                                      <td className="px-2 py-1.5">
-                                        <div className="flex items-center justify-end">
-                                          <DropdownMenu>
-                                            <DropdownMenuTrigger asChild>
-                                              <Button
-                                                type="button"
-                                                variant="ghost"
-                                                size="icon"
-                                                className="h-8 w-8 shrink-0"
-                                                aria-label="Ouvrir les actions"
-                                              >
-                                                <MoreVertical className="h-4 w-4 text-muted-foreground" />
-                                              </Button>
-                                            </DropdownMenuTrigger>
-                                            <DropdownMenuContent align="end">
-                                              <DropdownMenuItem onClick={() => handleViewLead(row)}>
-                                                <Eye className="mr-2 h-4 w-4 shrink-0" />
-                                                Voir
-                                              </DropdownMenuItem>
-                                              <DropdownMenuItem onClick={() => handleAddRowToPipeline(row)}>
-                                                <Send className="mr-2 h-4 w-4 shrink-0" />
-                                                Envoyer
-                                              </DropdownMenuItem>
-                                            </DropdownMenuContent>
-                                          </DropdownMenu>
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={onAnalyseBuildings}
-                      disabled={isAnalysingBuildings}
-                      className="w-full cursor-pointer relative overflow-hidden disabled:opacity-100 disabled:bg-[#b8d93d] disabled:text-[#0f0f0f] disabled:hover:bg-[#b8d93d]"
-                    >
-                      {isAnalysingBuildings ? (
-                        <>
-                          <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                          <span>Analyse en cours…</span>
-                          <div className="absolute inset-x-0 bottom-0 h-0.5 bg-white/30 overflow-hidden rounded-b-xl">
-                            <div className="h-full w-1/4 bg-white/90 animate-[progress-slide_1.5s_ease-in-out_infinite]" />
-                          </div>
-                        </>
-                      ) : (
-                        "Analyser les bâtiments"
-                      )}
-                    </Button>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            )}
-
-            {/* Onglet Recherche : adresse en premier, par type en dessous (une seule carte) */}
-            <TabsContent value="recherche" className="mt-0">
+    <div className="w-[min(100vw-2rem,36rem)] max-w-[36rem] flex flex-col gap-4 max-h-[calc(100vh-48px)] overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: "touch" }}>
               <Card className="rounded-xl">
-                <CardContent className="space-y-4 p-4">
-                  {/* Par adresse */}
-                  <InputGroup>
-                    <InputGroupInput
-                      ref={inputRef}
-                      id="address"
-                      placeholder="Entrez une adresse..."
-                      value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleSearch();
-                        }
-                      }}
-                    />
-                    <InputGroupAddon 
-                      align="inline-end"
-                      onClick={handleSearch}
-                      className="cursor-pointer hover:text-foreground"
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          handleSearch();
-                        }
-                      }}
-                    >
-                      <Search className="h-4 w-4" />
-                    </InputGroupAddon>
-                  </InputGroup>
-
-                  {/* Par type */}
-                  <div className="space-y-2">
-                    <Select value={selectedPlaceType} onValueChange={(value) => setSelectedPlaceType(value as PlaceSearchType)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Sélectionnez un type de lieu" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {placeTypeOptions.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {DISTANCE_OPTIONS.map((d) => {
-                      const label = d >= 1000 ? `${d / 1000} km` : `${d} m`;
-                      const isSelected = selectedDistance === d;
-                      return (
-                        <button
-                          key={d}
-                          type="button"
-                          onClick={() => setSelectedDistance(d)}
-                          className={`cursor-pointer rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                            isSelected
-                              ? "border-0 bg-[#E4FE55] text-[#171717]"
-                              : "border-0 bg-muted/60 text-muted-foreground hover:bg-muted/80"
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <Button 
-                    onClick={handleSearchByType} 
-                    className="w-full cursor-pointer"
-                    disabled={isSearching || !selectedPlaceType}
-                  >
-                    {isSearching ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Recherche en cours...
-                      </>
-                    ) : (
-                      <>
-                        <Search className="h-4 w-4 mr-2" />
-                        Rechercher
-                      </>
-                    )}
-                  </Button>
-
-                  {searchError && (
-                    <div className="text-sm text-destructive bg-destructive/10 rounded-md p-2">
-                      {searchError}
-                    </div>
-                  )}
-
-                  {searchResults.length > 0 && (
-                    <div className="flex items-center justify-between gap-2 rounded-md bg-muted/50 p-2">
-                      <span className="text-sm font-medium text-muted-foreground min-w-0">
-                        {searchResults.length} résultat{searchResults.length > 1 ? "s" : ""} trouvé
-                        {searchResults.length > 1 ? "s" : ""}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                        title="Fermer la recherche"
-                        onClick={() => {
-                          onResetSearch?.();
-                          setAddress("");
-                          setSearchError(null);
-                        }}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  )}
-
-                  {searchResults.length > 0 && (
-                    <div className="space-y-3 max-h-96 overflow-y-auto">
-                      {searchResults.map((result) => (
-                        <div
-                          key={result.placeId}
-                          className="rounded-xl px-3 py-2 bg-gray-100 cursor-pointer overflow-hidden transition-colors hover:bg-gray-200/80 flex items-center gap-3 min-h-[80px]"
-                          onClick={() => onSearchResultSelect?.(result, bdnbByPlaceId[result.placeId])}
-                        >
-                          <div className="shrink-0 w-24 h-24 overflow-hidden rounded-xl">
-                            <SatelliteImage 
-                              coordinates={result.coordinates} 
-                              address={result.address}
-                              zoom={17}
-                              width={96}
-                              height={96}
-                              showOverlays={false}
-                              className="rounded-xl h-full"
-                              onClick={() => onSearchResultSelect?.(result, bdnbByPlaceId[result.placeId])}
-                            />
-                          </div>
-                          <div className="flex-1 min-w-0 pl-1 flex flex-col justify-center">
-                            <div className="text-sm font-medium truncate">{result.name}</div>
-                            <div className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                              <MapPin className="h-3 w-3 shrink-0" />
-                              <span className="truncate">{result.address}</span>
-                            </div>
-                            <div className="text-xs text-muted-foreground mt-1">
-                              {(() => {
-                                const bdnb = bdnbByPlaceId[result.placeId];
-                                if (bdnb === undefined) return <span className="italic">…</span>;
-                                const surface =
-                                  bdnb.surfaceM2 != null ? `${Math.round(bdnb.surfaceM2)} m²` : "—";
-                                const annee =
-                                  bdnb.anneeConstruction != null
-                                    ? String(bdnb.anneeConstruction)
-                                    : "—";
-                                return (
-                                  <span>
-                                    Surface: {surface} · Année: {annee}
-                                  </span>
-                                );
-                              })()}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-            <TabsContent value="permis" className="mt-0">
-              <Card className="rounded-xl">
-                <CardContent className="space-y-4 p-4">
-                  <p className="text-xs text-muted-foreground">
-                    Opportunités Sitadel C&amp;I visibles dans la zone courante de la carte.
-                  </p>
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-medium text-muted-foreground">Sources</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {[2020, 2021, 2022, 2023, 2024, 2025, 2026].map((year) => {
-                        const selected = selectedSourceYears.includes(year);
-                        return (
-                          <button
-                            key={year}
-                            type="button"
-                            onClick={() => onToggleSourceYear?.(year)}
-                            className={`cursor-pointer rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
-                              selected
-                                ? "bg-[#E4FE55] text-[#171717]"
-                                : "bg-muted/70 text-muted-foreground hover:bg-muted"
-                            }`}
-                          >
-                            SITADEL {year}
-                          </button>
-                        );
-                      })}
-                    </div>
+                <CardContent className="space-y-3 p-3 md:p-3 lg:p-4">
+                  <div className="text-sm font-semibold text-foreground">Découverte</div>
+                  <div className="text-[11px] text-muted-foreground leading-relaxed">
+                    Cadastre, IRIS, BDNB et personnes morales (Pessac). Fichier{" "}
+                    <span className="font-mono">/geo/matching-v5-33318.geojson</span> —{" "}
+                    <span className="font-mono">npm run pipeline:matching-v5:run</span>.
                   </div>
                   <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs">
-                    {permisState?.loading ? "Chargement des opportunités..." : `${permisState?.count ?? 0} point(s) chargé(s)`}
-                    {permisState?.truncated ? " (résultat tronqué)" : ""}
+                    {discoveryState?.loading ? (
+                      "Chargement…"
+                    ) : (
+                      <div>{discoveryState?.count ?? 0} entité(s) sur la carte</div>
+                    )}
                   </div>
-                  {permisState?.error ? (
-                    <div className="text-xs text-destructive bg-destructive/10 rounded-md p-2">
-                      {permisState.error}
+                  {discoveryState?.rows && discoveryState.rows.length > 0 ? (
+                    <div className="flex gap-1.5 items-stretch">
+                      <div
+                        ref={matchingV5MainListRef}
+                        className="min-h-0 max-h-52 flex-1 overflow-y-auto rounded-lg border border-border/60 bg-background/80 text-xs"
+                      >
+                        <ul className="divide-y divide-border/60">
+                          {discoveryState.rows.map((row) => {
+                            const group = discoveryState?.selectedGroupRows ?? [];
+                            const inGroup =
+                              group.length > 0 ? group.some((r) => r.id === row.id) : false;
+                            const isAnchor = discoveryState?.selectedId === row.id;
+                            const listHighlight = inGroup || isAnchor;
+                            return (
+                              <li key={row.id}>
+                                <button
+                                  type="button"
+                                  onClick={() => discoveryState?.onSelectRow?.(row.id)}
+                                  className={`w-full text-left px-3 py-2 space-y-0.5 transition-colors border-l-2 ${
+                                    listHighlight
+                                      ? isAnchor
+                                        ? "bg-emerald-500/15 border-emerald-600 text-emerald-950 dark:text-emerald-100"
+                                        : "bg-emerald-500/10 border-emerald-500/70 text-emerald-950/90 dark:text-emerald-100/90"
+                                      : "border-transparent hover:bg-muted/50"
+                                  }`}
+                                >
+                                  <div
+                                    className={`font-medium truncate ${listHighlight ? "" : "text-foreground"}`}
+                                  >
+                                    {row.label}
+                                    {isAnchor && inGroup && group.length > 1 ? (
+                                      <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
+                                        (vue principale)
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  <div className="font-mono text-[10px] text-muted-foreground truncate">
+                                    {row.grain === "building" ? "Bâtiment" : "Parcelle"} ·{" "}
+                                    {row.statusMetier || "none"} · {row.siretCount} SIRET · {row.nbBatiments}{" "}
+                                    bât. · {Math.round(row.footprintSumM2)} m²
+                                  </div>
+                                  {row.passerelleAddress ? (
+                                    <div className="text-[11px] text-muted-foreground truncate">
+                                      {row.passerelleAddress}
+                                    </div>
+                                  ) : null}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                      <MatchingV5ScrollArrows targetRef={matchingV5MainListRef} />
+                    </div>
+                  ) : !discoveryState?.loading ? (
+                    <div className="text-xs text-muted-foreground">
+                      Aucune donnée ou fichier absent. Générez le GeoJSON puis rechargez (bouton ci-dessous).
                     </div>
                   ) : null}
+                  {discoveryState?.selectedId && selectedMatchingV5Row ? (
+                    <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/25 p-3 space-y-2 text-xs">
+                      {discoveryState.selectedGroupRows &&
+                      discoveryState.selectedGroupRows.length > 1 ? (
+                        <div className="rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/25 p-2.5 space-y-2">
+                          <div className="text-[11px] font-semibold text-violet-900 dark:text-violet-100">
+                            {discoveryState.selectedGroupRows.length} cadastres liés · même bâtiment
+                            (multi-parcelles)
+                          </div>
+                          <ul className="space-y-2 max-h-40 overflow-y-auto">
+                            {discoveryState.selectedGroupRows.map((r) => (
+                              <li
+                                key={r.id}
+                                className={`rounded border border-border/60 bg-background/70 px-2 py-1.5 text-[10px] space-y-0.5 ${
+                                  discoveryState?.selectedId === r.id
+                                    ? "ring-1 ring-emerald-500/50"
+                                    : ""
+                                }`}
+                              >
+                                <div className="font-mono font-medium text-foreground">
+                                  {r.section} {r.numeroNorm} · INSEE {r.codeInsee}
+                                </div>
+                                <div className="text-muted-foreground">
+                                  SIREN : {r.sirenStatus || "—"} · {r.siretCount} SIRET ·{" "}
+                                  {r.statusTechnique || "—"}
+                                </div>
+                                {r.passerelleAddress ? (
+                                  <div className="text-muted-foreground truncate" title={r.passerelleAddress}>
+                                    PPM : {r.passerelleAddress}
+                                  </div>
+                                ) : (
+                                  <div className="text-muted-foreground italic">Pas d’adresse PPM</div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      <dl className="space-y-1 text-[11px]">
+                        <div className="flex gap-2">
+                          <dt className="text-muted-foreground w-28 shrink-0">Grain</dt>
+                          <dd className="font-mono">{selectedMatchingV5Row.grain}</dd>
+                        </div>
+                        {selectedMatchingV5Row.batimentGroupeId ? (
+                          <div className="flex gap-2">
+                            <dt className="text-muted-foreground w-28 shrink-0">bdnb_id</dt>
+                            <dd className="font-mono break-all">{selectedMatchingV5Row.batimentGroupeId}</dd>
+                          </div>
+                        ) : null}
+                        {matchingV5ShowGooglePoiTest ? (
+                          <div className="rounded-md border border-amber-200/80 dark:border-amber-900/50 bg-amber-50/60 dark:bg-amber-950/20 p-2 space-y-2">
+                            <p className="text-[10px] text-muted-foreground leading-snug">
+                              {selectedMatchingV5Row.passerelleAddress?.trim()
+                                ? "Aucun établissement SIRENE retenu pour cette adresse. Test optionnel : Nearby + détails Google (coût API), puis api.gouv."
+                                : "Aucune adresse passerelle (PPM). Test manuel : Nearby + détails Google (coût API), puis api.gouv."}
+                            </p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 text-xs w-full border-amber-300/80 dark:border-amber-800"
+                              disabled={v5GoogleFbLoading}
+                              onClick={async () => {
+                                const row = selectedMatchingV5Row;
+                                if (!row || (row.grain !== "parcelle" && row.grain !== "building")) return;
+                                const c = centroidFromGeoJsonPolygonLike(row.geometry);
+                                if (!c) {
+                                  toast.error("Impossible de calculer le centroïde (géométrie).");
+                                  return;
+                                }
+                                setV5GoogleFbLoading(true);
+                                setV5GoogleFbErr(null);
+                                setV5GoogleFbData(null);
+                                try {
+                                  const res = await fetchWithAuth(
+                                    "/api/matching-v5/google-poi-fallback",
+                                    {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({
+                                        lat: c.lat,
+                                        lng: c.lng,
+                                        parcelGeometry: row.geometry,
+                                      }),
+                                    }
+                                  );
+                                  const data = (await res.json()) as Record<string, unknown>;
+                                  if (!res.ok) {
+                                    const msg =
+                                      typeof data.error === "string"
+                                        ? data.error
+                                        : `HTTP ${res.status}`;
+                                    if (res.status === 429) {
+                                      const wait =
+                                        typeof data.retryAfterSeconds === "number"
+                                          ? data.retryAfterSeconds
+                                          : undefined;
+                                      toast.error(
+                                        wait != null
+                                          ? `${msg} Réessayez dans ~${wait}s.`
+                                          : msg
+                                      );
+                                    }
+                                    setV5GoogleFbErr(msg);
+                                    return;
+                                  }
+                                  setV5GoogleFbData(data);
+                                } catch {
+                                  setV5GoogleFbErr("Erreur réseau");
+                                } finally {
+                                  setV5GoogleFbLoading(false);
+                                }
+                              }}
+                            >
+                              {v5GoogleFbLoading ? (
+                                <>
+                                  <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin shrink-0" />
+                                  Appel Google…
+                                </>
+                              ) : (
+                                "Fallback Google (test)"
+                              )}
+                            </Button>
+                            {v5GoogleFbErr ? (
+                              <div className="text-[10px] text-destructive">{v5GoogleFbErr}</div>
+                            ) : null}
+                            {v5GoogleFbData?.google &&
+                            typeof v5GoogleFbData.google === "object" &&
+                            v5GoogleFbData.google !== null ? (
+                              <div className="text-[10px] space-y-1.5">
+                                {(() => {
+                                  const g = v5GoogleFbData.google as Record<string, unknown>;
+                                  const w = g.winner as Record<string, unknown> | null | undefined;
+                                  const excludedOutside =
+                                    typeof g.excludedOutsideParcel === "number"
+                                      ? g.excludedOutsideParcel
+                                      : 0;
+                                  const ranked = Array.isArray(g.ranked)
+                                    ? (g.ranked as Array<{
+                                        place_id?: string;
+                                        name?: string;
+                                        vicinity?: string;
+                                        types?: string[];
+                                        distanceM?: number;
+                                        relevanceScore?: number;
+                                        insideParcel?: boolean;
+                                      }>)
+                                    : [];
+
+                                  if (ranked.length > 0) {
+                                    return (
+                                      <div className="space-y-2">
+                                        <div className="font-semibold text-foreground">
+                                          POI proches (Nearby — 1 appel)
+                                        </div>
+                                        <p className="text-[9px] text-muted-foreground leading-snug">
+                                          Seuls les POI dont la position GPS est dans le polygone parcelle (export V5)
+                                          sont gardés ; bonus de pertinence +0,2. Adresse formatée : n°1 uniquement
+                                          (1× Place Details).
+                                        </p>
+                                        {excludedOutside > 0 ? (
+                                          <p className="text-[9px] text-amber-800 dark:text-amber-200/90">
+                                            {excludedOutside} POI Nearby exclus (hors emprise parcelle).
+                                          </p>
+                                        ) : null}
+                                        <ol className="list-decimal pl-4 space-y-2 marker:text-muted-foreground">
+                                          {ranked.map((p, i) => {
+                                            const typesStr = (p.types ?? [])
+                                              .slice(0, 4)
+                                              .filter(Boolean)
+                                              .join(", ");
+                                            const isWinner = i === 0;
+                                            return (
+                                              <li key={p.place_id ?? i} className="pl-0.5">
+                                                <div className="font-medium text-foreground">
+                                                  {p.name ?? "—"}
+                                                  {p.insideParcel ? (
+                                                    <span className="ml-1 font-normal text-xs text-sky-700 dark:text-sky-300">
+                                                      (sur parcelle)
+                                                    </span>
+                                                  ) : null}
+                                                  {isWinner ? (
+                                                    <span className="ml-1 font-normal text-emerald-700 dark:text-emerald-400">
+                                                      (retenu)
+                                                    </span>
+                                                  ) : null}
+                                                </div>
+                                                {p.vicinity ? (
+                                                  <div className="text-muted-foreground mt-0.5">
+                                                    {p.vicinity}
+                                                  </div>
+                                                ) : null}
+                                                <div className="text-muted-foreground mt-0.5">
+                                                  {typeof p.distanceM === "number"
+                                                    ? `~${p.distanceM} m`
+                                                    : null}
+                                                  {typeof p.relevanceScore === "number"
+                                                    ? ` · pertinence ${p.relevanceScore}`
+                                                    : null}
+                                                  {typesStr ? ` · ${typesStr}` : null}
+                                                </div>
+                                                {isWinner &&
+                                                w &&
+                                                typeof w.formatted_address === "string" ? (
+                                                  <div className="mt-1.5 rounded border border-emerald-200/70 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/30 px-2 py-1">
+                                                    <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                                                      Place Details (facturé)
+                                                    </div>
+                                                    <div className="text-foreground mt-0.5">
+                                                      {w.formatted_address}
+                                                    </div>
+                                                  </div>
+                                                ) : null}
+                                              </li>
+                                            );
+                                          })}
+                                        </ol>
+                                      </div>
+                                    );
+                                  }
+
+                                  if (g.rawNearbyCount === 0) {
+                                    return (
+                                      <div className="text-muted-foreground">
+                                        Aucun résultat Nearby dans le rayon.
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                    <div className="text-muted-foreground">
+                                      {excludedOutside > 0
+                                        ? `Aucun POI dans l’emprise parcelle (${excludedOutside} exclus hors polygone).`
+                                        : "Aucun POI après classement (distance / types)."}
+                                    </div>
+                                  );
+                                })()}
+                                {(() => {
+                                  const ea = v5GoogleFbData.etablissementsAtAddress;
+                                  if (!ea || typeof ea !== "object") return null;
+                                  const o = ea as Record<string, unknown>;
+                                  const anchor =
+                                    typeof o.anchorAddress === "string" ? o.anchorAddress : "";
+                                  const cp =
+                                    typeof o.codePostal === "string" ? o.codePostal : "";
+                                  const query = typeof o.query === "string" ? o.query : "";
+                                  const total =
+                                    typeof o.totalApiResults === "number"
+                                      ? o.totalApiResults
+                                      : null;
+                                  const skipped = o.skipped === true;
+                                  const reason = typeof o.reason === "string" ? o.reason : "";
+                                  const etabs = Array.isArray(o.etablissements)
+                                    ? o.etablissements
+                                    : [];
+                                  return (
+                                    <div className="border-t border-border/60 pt-1.5 mt-1 space-y-2">
+                                      <div className="font-semibold text-foreground text-[11px]">
+                                        api.gouv — Établissements à l’adresse
+                                      </div>
+                                      {anchor ? (
+                                        <p className="text-[9px] text-muted-foreground leading-snug break-words">
+                                          Adresse d’ancrage (Place Details POI #1) :{" "}
+                                          <span className="text-foreground/90">{anchor}</span>
+                                          {cp ? <> · CP filtre <span className="font-mono">{cp}</span></> : null}
+                                        </p>
+                                      ) : null}
+                                      {query ? (
+                                        <p className="text-[9px] text-muted-foreground break-words">
+                                          Requête : {query}
+                                          {total != null ? ` · total api.gouv : ${total}` : null}
+                                          {!skipped && cp
+                                            ? ` · gardés au CP ${cp} : ${etabs.length}`
+                                            : null}
+                                        </p>
+                                      ) : null}
+                                      {skipped ? (
+                                        <div className="text-[10px] text-muted-foreground">
+                                          api.gouv : {reason || "Étape ignorée."}
+                                        </div>
+                                      ) : etabs.length === 0 ? (
+                                        <div className="text-[10px] text-muted-foreground">
+                                          Aucun établissement actif au CP {cp || "—"}.
+                                        </div>
+                                      ) : (
+                                        <ol className="list-decimal pl-4 space-y-1.5 marker:text-muted-foreground text-[10px]">
+                                          {etabs.map((item, i) => {
+                                            const e = item as Record<string, unknown>;
+                                            const siren = String(e.siren ?? "");
+                                            const siret = String(e.siret ?? "");
+                                            const nom = String(e.nom_complet ?? "—");
+                                            const adr = String(e.adresse ?? "");
+                                            const ecp = String(e.code_postal ?? "");
+                                            const naf =
+                                              typeof e.activite_principale === "string"
+                                                ? e.activite_principale
+                                                : "";
+                                            const eff =
+                                              typeof e.tranche_effectif_salarie === "string"
+                                                ? e.tranche_effectif_salarie
+                                                : "";
+                                            const dirig =
+                                              typeof e.company_manager_name === "string"
+                                                ? e.company_manager_name
+                                                : "";
+                                            const onPasserelle =
+                                              siren.length === 9 &&
+                                              matchingV5PasserelleSirenSet.has(siren);
+                                            return (
+                                              <li key={`${siret || siren}-${i}`} className="pl-0.5">
+                                                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                                                  <span className="font-mono">{siret || "—"}</span>
+                                                  <span className="font-mono text-muted-foreground">
+                                                    SIREN {siren || "—"}
+                                                  </span>
+                                                  {onPasserelle ? (
+                                                    <span className="text-[9px] rounded bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 px-1 py-0">
+                                                      sur passerelle
+                                                    </span>
+                                                  ) : null}
+                                                </div>
+                                                <div className="text-foreground mt-0.5">{nom}</div>
+                                                {adr || ecp ? (
+                                                  <div className="text-muted-foreground mt-0.5">
+                                                    {[adr, ecp].filter(Boolean).join(" · ")}
+                                                  </div>
+                                                ) : null}
+                                                {naf || eff || dirig ? (
+                                                  <div className="text-muted-foreground mt-0.5 break-words">
+                                                    {naf ? <>NAF <span className="font-mono">{naf}</span></> : null}
+                                                    {naf && (eff || dirig) ? " · " : null}
+                                                    {eff ? <>effectif <span className="font-mono">{eff}</span></> : null}
+                                                    {eff && dirig ? " · " : null}
+                                                    {dirig ? <>{dirig}</> : null}
+                                                  </div>
+                                                ) : null}
+                                              </li>
+                                            );
+                                          })}
+                                        </ol>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                                <button
+                                  type="button"
+                                  className="text-[10px] text-primary underline-offset-2 hover:underline"
+                                  onClick={() => setV5GoogleFbJsonOpen((o) => !o)}
+                                >
+                                  {v5GoogleFbJsonOpen ? "Masquer" : "Voir"} la réponse JSON
+                                </button>
+                                {v5GoogleFbJsonOpen ? (
+                                  <pre className="max-h-40 overflow-auto rounded bg-muted/50 p-2 text-[9px] leading-tight whitespace-pre-wrap break-all">
+                                    {JSON.stringify(v5GoogleFbData, null, 2)}
+                                  </pre>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {selectedMatchingV5Row.grain === "parcelle" ? (
+                          <>
+                            <div className="flex gap-2">
+                              <dt className="text-muted-foreground w-28 shrink-0">Parcelle</dt>
+                              <dd className="font-mono">
+                                {selectedMatchingV5Row.section} {selectedMatchingV5Row.numeroNorm}
+                              </dd>
+                            </div>
+                            <div className="flex gap-2">
+                              <dt className="text-muted-foreground w-28 shrink-0">Etat métier</dt>
+                              <dd className="font-mono">{selectedMatchingV5Row.statusMetier || "none"}</dd>
+                            </div>
+                            <div className="flex gap-2">
+                              <dt className="text-muted-foreground w-28 shrink-0">Etat technique</dt>
+                              <dd className="font-mono">{selectedMatchingV5Row.statusTechnique || "—"}</dd>
+                            </div>
+                            <div className="flex gap-2">
+                              <dt className="text-muted-foreground w-28 shrink-0">SIRET détectés</dt>
+                              <dd className="font-mono">{selectedMatchingV5Row.siretCount}</dd>
+                            </div>
+                            <div className="flex gap-2">
+                              <dt className="text-muted-foreground w-28 shrink-0">Σ footprints</dt>
+                              <dd className="font-mono">{Math.round(selectedMatchingV5Row.footprintSumM2)} m²</dd>
+                            </div>
+                        <div className="flex gap-2">
+                          <dt className="text-muted-foreground w-28 shrink-0">Adresse</dt>
+                          <dd className="break-words">{selectedMatchingV5Row.passerelleAddress || "—"}</dd>
+                        </div>
+                        <div className="flex gap-2">
+                          <dt className="text-muted-foreground w-28 shrink-0">IRIS</dt>
+                              <dd>
+                                {selectedMatchingV5Row.codeIris || "—"}{" "}
+                                {selectedMatchingV5Row.nomIris ? `· ${selectedMatchingV5Row.nomIris}` : ""}
+                              </dd>
+                            </div>
+                            <div className="mt-3 space-y-3 border-t border-emerald-200/50 dark:border-emerald-800/50 pt-3">
+                              <div>
+                                <div className="text-[11px] font-semibold text-foreground">
+                                  Passerelle — SIREN (PPM)
+                                </div>
+                                <p className="text-[10px] text-muted-foreground mt-0.5">
+                                  {(() => {
+                                    const ppm = parsePasserelleAddressesJson(
+                                      selectedMatchingV5Row.passerelleAddressesJson
+                                    );
+                                    return `${ppm.length} SIREN déclaré(s) · statut parcelle ${selectedMatchingV5Row.sirenStatus || "—"}`;
+                                  })()}
+                                </p>
+                                <div className="mt-1.5 flex gap-1.5 items-stretch">
+                                  <div
+                                    ref={matchingV5PpmListRef}
+                                    className="min-h-0 max-h-36 flex-1 space-y-1.5 overflow-y-auto"
+                                  >
+                                    {parsePasserelleAddressesJson(
+                                      selectedMatchingV5Row.passerelleAddressesJson
+                                    ).map((p, i) => (
+                                      <div
+                                        key={`${p.siren ?? "x"}-${i}`}
+                                        className="rounded-md border border-border/60 bg-background/90 px-2 py-1.5 text-[10px] leading-snug"
+                                      >
+                                        <div className="font-mono text-[11px] font-medium">
+                                          {p.siren || "—"}
+                                        </div>
+                                        {p.denomination ? (
+                                          <div className="text-foreground mt-0.5">{p.denomination}</div>
+                                        ) : null}
+                                        {matchingV5ApiNomBlock(p.siren)}
+                                        {p.address ? (
+                                          <div className="text-muted-foreground mt-0.5">{p.address}</div>
+                                        ) : null}
+                                        {typeof p.rows === "number" ? (
+                                          <div className="text-muted-foreground mt-0.5">
+                                            {p.rows} ligne(s) PPM
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <MatchingV5ScrollArrows
+                                    targetRef={matchingV5PpmListRef}
+                                    step={90}
+                                    className="self-center"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-[11px] font-semibold text-foreground">
+                                  SIRENE — établissements (matching adresse)
+                                </div>
+                                <p className="text-[10px] text-muted-foreground mt-0.5">
+                                  {selectedMatchingV5Row.siretCount} SIRET · confiance{" "}
+                                  {Math.round(selectedMatchingV5Row.matchingConfidence)} ·{" "}
+                                  {selectedMatchingV5Row.matchingReason || "—"}
+                                </p>
+                                <div className="mt-1.5 flex gap-1.5 items-stretch">
+                                  <div
+                                    ref={matchingV5SiretListRef}
+                                    className="min-h-0 max-h-64 flex-1 space-y-2 overflow-y-auto"
+                                  >
+                                    {parseSiretsMatchJson(selectedMatchingV5Row.siretsJson).map((e) => (
+                                      <div
+                                        key={e.siret}
+                                        className="rounded-md border border-border/60 bg-background/90 px-2 py-2 text-[10px] leading-snug"
+                                      >
+                                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                                          <span className="font-mono text-[11px] font-semibold">{e.siret}</span>
+                                          {e.siren ? (
+                                            <span className="font-mono text-[10px] text-muted-foreground">
+                                              SIREN {e.siren}
+                                            </span>
+                                          ) : null}
+                                          {e.score != null ? (
+                                            <span className="text-[10px] text-muted-foreground">
+                                              score {Math.round(e.score)}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        {e.denomination ? (
+                                          <div className="text-foreground mt-1 font-medium">{e.denomination}</div>
+                                        ) : null}
+                                        {matchingV5ApiNomBlock(e.siren)}
+                                        {e.adresse_etablissement ? (
+                                          <div className="text-muted-foreground mt-1">{e.adresse_etablissement}</div>
+                                        ) : null}
+                                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground">
+                                          {e.tranche_effectifs ? (
+                                            <span>
+                                              Effectifs : {labelTrancheEffectifs(e.tranche_effectifs)} (
+                                              {e.tranche_effectifs})
+                                              {e.annee_effectifs
+                                                ? ` · millésime ${e.annee_effectifs}`
+                                                : ""}
+                                            </span>
+                                          ) : e.annee_effectifs ? (
+                                            <span>Effectifs : — · millésime {e.annee_effectifs}</span>
+                                          ) : (
+                                            <span>Effectifs : —</span>
+                                          )}
+                                        </div>
+                                        {e.activite_principale ? (
+                                          <div className="mt-0.5 font-mono text-[10px]">
+                                            APE {e.activite_principale}
+                                          </div>
+                                        ) : null}
+                                        {e.reason ? (
+                                          <div className="mt-1 text-[10px] text-muted-foreground">
+                                            Règle : {e.reason}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <MatchingV5ScrollArrows
+                                    targetRef={matchingV5SiretListRef}
+                                    step={100}
+                                    className="self-center"
+                                  />
+                                </div>
+                                {parseSiretsMatchJson(selectedMatchingV5Row.siretsJson).length === 0 &&
+                                selectedMatchingV5Row.statusMetier === "none" ? (
+                                  <p className="text-[10px] text-muted-foreground mt-1">
+                                    Aucun établissement retenu. Vérifiez l’adresse passerelle et le référentiel{" "}
+                                    <span className="font-mono">scout_etablissements</span>.
+                                  </p>
+                                ) : null}
+                              </div>
+                            </div>
+                          </>
+                        ) : null}
+                      </dl>
+                      {selectedMatchingV5Row.passerelleAddressesJson &&
+                      parsePasserelleAddressesJson(selectedMatchingV5Row.passerelleAddressesJson).length === 0 ? (
+                        <pre className="mt-2 max-h-24 overflow-auto rounded bg-muted/50 p-2 text-[10px] leading-snug">
+                          {selectedMatchingV5Row.passerelleAddressesJson}
+                        </pre>
+                      ) : null}
+                      {selectedMatchingV5Row.parcellesJson ? (
+                        <pre className="mt-2 max-h-36 overflow-auto rounded bg-muted/50 p-2 text-[10px] leading-snug">
+                          {(() => {
+                            try {
+                              return JSON.stringify(
+                                JSON.parse(selectedMatchingV5Row.parcellesJson),
+                                null,
+                                2
+                              );
+                            } catch {
+                              return selectedMatchingV5Row.parcellesJson;
+                            }
+                          })()}
+                        </pre>
+                      ) : null}
+                      {selectedMatchingV5Row.buildingsJson ? (
+                        <pre className="mt-2 max-h-36 overflow-auto rounded bg-muted/50 p-2 text-[10px] leading-snug">
+                          {(() => {
+                            try {
+                              return JSON.stringify(
+                                JSON.parse(selectedMatchingV5Row.buildingsJson),
+                                null,
+                                2
+                              );
+                            } catch {
+                              return selectedMatchingV5Row.buildingsJson;
+                            }
+                          })()}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {discoveryState?.error ? (
+                    <div className="text-xs text-destructive bg-destructive/10 rounded-md p-2">{discoveryState.error}</div>
+                  ) : null}
                   <Button
-                    onClick={() => onRefreshPermis?.()}
+                    type="button"
+                    onClick={() => onRefreshDiscovery?.()}
                     className="w-full cursor-pointer"
-                    disabled={permisState?.loading}
+                    disabled={discoveryState?.loading}
                   >
-                    {permisState?.loading ? (
+                    {discoveryState?.loading ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                         Chargement...
                       </>
                     ) : (
-                      "Charger la zone visible"
+                      "Recharger la couche"
                     )}
                   </Button>
                 </CardContent>
               </Card>
-            </TabsContent>
-      </Tabs>
 
     </div>
   );

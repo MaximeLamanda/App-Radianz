@@ -40,7 +40,6 @@ export async function resetProfileCounters(
       {
         creditsResetAt: new Timestamp(data.creditsResetAt.seconds, data.creditsResetAt.nanoseconds),
         bdnbRequestCount: data.bdnbRequestCount ?? 0,
-        bdnbNeonRequestCount: data.bdnbNeonRequestCount ?? 0,
         osmRequestCount: data.osmRequestCount ?? 0,
         sitadelMapRequestCount: data.sitadelMapRequestCount ?? 0,
       },
@@ -56,7 +55,7 @@ export async function resetProfileCounters(
  */
 export async function incrementServerCount(
   uid: string,
-  field: "bdnbRequestCount" | "bdnbNeonRequestCount" | "osmRequestCount" | "sitadelMapRequestCount"
+  field: "bdnbRequestCount" | "osmRequestCount" | "sitadelMapRequestCount"
 ): Promise<void> {
   try {
     const db = getAdminDb();

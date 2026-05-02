@@ -3,10 +3,12 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Map, Settings, LogOut } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { LayoutDashboard, Map, ScanSearch, Settings, LogOut } from "lucide-react";
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
+import { useUserProfile } from "@/lib/swr-hooks";
 import { SettingsPopup } from "@/components/solar-scout/SettingsPopup";
 import {
   Sidebar,
@@ -23,20 +25,31 @@ import {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const { user } = useAuth();
+  const { data: userProfile } = useUserProfile(user?.uid ?? null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
-  const menuItems = [
-    {
-      title: "Home",
-      url: "/",
-      icon: LayoutDashboard,
-    },
-    {
-      title: "Solar Scout",
-      url: "/solar-scout",
-      icon: Map,
-    },
-  ];
+  const menuItems = React.useMemo(() => {
+    const items: Array<{ title: string; url: string; icon: LucideIcon }> = [
+      {
+        title: "Home",
+        url: "/",
+        icon: LayoutDashboard,
+      },
+      {
+        title: "Découverte",
+        url: "/discovery",
+        icon: ScanSearch,
+      },
+    ];
+    if (userProfile?.status === "admin") {
+      items.push({
+        title: "Solar Scout",
+        url: "/solar-scout",
+        icon: Map,
+      });
+    }
+    return items;
+  }, [userProfile?.status]);
 
   return (
     <Sidebar variant="inset" collapsible="icon" {...props}>

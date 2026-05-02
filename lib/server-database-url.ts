@@ -5,9 +5,11 @@
  * - `Radianz_DATABASE_URL` (poolé, usage principal)
  * - `Radianz_DATABASE_URL_UNPOOLED` (direct ; dernier recours si pas de poolé)
  *
- * Fallbacks sans préfixe pour CI, autres environnements ou intégrations Neon/Vercel.
+ * Fallbacks sans préfixe pour CI et autres environnements.
  */
 const KEYS = [
+  /** Dev local explicite (ex. Docker `docker compose`). */
+  "LOCAL_DATABASE_URL",
   // Vercel / bonnes pratiques: variables souvent en MAJUSCULES
   "RADIANZ_DATABASE_URL",
   "Radianz_DATABASE_URL",
@@ -15,7 +17,6 @@ const KEYS = [
   "Radianz_POSTGRES_URL",
   "POSTGRES_URL",
   "DATABASE_URL",
-  "NEON_DATABASE_URL",
   "RADIANZ_DATABASE_URL_UNPOOLED",
   "Radianz_DATABASE_URL_UNPOOLED",
   "DATABASE_URL_UNPOOLED",

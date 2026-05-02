@@ -73,6 +73,21 @@ export default function LeadInboxPage() {
                         </div>
                       </div>
                     </div>
+                    <div className="ml-6 min-w-[320px]">
+                      <div className="text-sm text-muted-foreground mb-1">
+                        Passerelle personne morale
+                      </div>
+                      <div className="font-semibold">
+                        {lead.companyLegalName || "Non trouvé"}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {lead.companyLegalForm || "Forme juridique inconnue"}
+                      </div>
+                      <div className="text-sm mt-1">{lead.companyAddress || "Adresse inconnue"}</div>
+                      <div className="text-xs text-muted-foreground mt-2">
+                        SIREN: {lead.siren || "N/A"} · Parcelles: {lead.parcellesCount ?? 0}
+                      </div>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

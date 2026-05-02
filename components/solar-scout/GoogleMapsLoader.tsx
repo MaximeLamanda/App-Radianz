@@ -90,7 +90,7 @@ export function GoogleMapsLoader({ children }: GoogleMapsLoaderProps) {
     // Charger le script Google Maps - SANS places pour éviter le blocage des nouveaux clients (mars 2025+)
     // La bibliothèque places sera chargée dynamiquement via importLibrary quand nécessaire
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=drawing&callback=initGoogleMaps&loading=async`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initGoogleMaps&loading=async`;
     script.async = true;
     script.defer = true;
     

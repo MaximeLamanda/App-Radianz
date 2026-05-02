@@ -9,6 +9,10 @@ export interface ApiEtablissementGouv {
   latitude?: string;
   longitude?: string;
   liste_enseignes?: string[] | null;
+  tranche_effectif_salarie?: string;
+  annee_tranche_effectif_salarie?: string;
+  /** Présent sur certains établissements dans matching_etablissements */
+  activite_principale?: string;
 }
 
 export type SiegeApiGouv = ApiEtablissementGouv;
@@ -27,12 +31,26 @@ export interface ResultatApiRechercheEntreprises {
   nom_raison_sociale?: string;
   siege?: SiegeApiGouv;
   activite_principale?: string;
+  /**
+   * Statut administratif de l’unité légale : "A" = Actif, "C" = Cessé.
+   * Utilisé pour exclure les sociétés inactives du scoring.
+   */
+  etat_administratif?: string;
   dirigeants?: Array<DirigeantPersonnePhysiqueGouv | { type_dirigeant?: string; denomination?: string }>;
   matching_etablissements?: ApiEtablissementGouv[];
+  /** Unité légale — prioritaire sur le siège pour l’effectif global */
+  tranche_effectif_salarie?: string;
+  annee_tranche_effectif_salarie?: string;
 }
 
+export type MapResultatApiToEnrichmentOpts = {
+  /** SIRET 14 chiffres : priorise l’établissement dans matching_etablissements (effectif / NAF à l’échelle locale). */
+  preferSiret?: string;
+};
+
 export function mapResultatApiToEnrichment(
-  result: ResultatApiRechercheEntreprises
+  result: ResultatApiRechercheEntreprises,
+  opts?: MapResultatApiToEnrichmentOpts
 ): EnrichmentResult {
   const siege = result.siege;
   const firstDirigeantPhysique = result.dirigeants?.find(
@@ -46,13 +64,64 @@ export function mapResultatApiToEnrichment(
       (firstDirigeantPhysique.qualite ? ` (${firstDirigeantPhysique.qualite})` : "")
     : undefined;
 
+  const prefer = (opts?.preferSiret ?? "").trim();
+  let etabMatch: ApiEtablissementGouv | undefined;
+  if (/^\d{14}$/.test(prefer)) {
+    const stSiege = String(siege?.siret ?? "").trim();
+    if (stSiege === prefer) {
+      etabMatch = siege;
+    } else {
+      etabMatch = (result.matching_etablissements ?? []).find((e) => String(e?.siret ?? "").trim() === prefer);
+    }
+  }
+
+  const nafFromEtab =
+    etabMatch?.activite_principale != null && String(etabMatch.activite_principale).trim() !== ""
+      ? String(etabMatch.activite_principale).trim()
+      : undefined;
+
+  const trancheFromEtab =
+    etabMatch?.tranche_effectif_salarie != null && String(etabMatch.tranche_effectif_salarie).trim() !== ""
+      ? String(etabMatch.tranche_effectif_salarie).trim()
+      : undefined;
+
+  const anneeFromEtab =
+    etabMatch?.annee_tranche_effectif_salarie != null && String(etabMatch.annee_tranche_effectif_salarie).trim() !== ""
+      ? String(etabMatch.annee_tranche_effectif_salarie).trim()
+      : undefined;
+
+  const effectifCode =
+    trancheFromEtab ??
+    result.tranche_effectif_salarie ??
+    siege?.tranche_effectif_salarie;
+  const codeTrim = effectifCode != null ? String(effectifCode).trim() : "";
+
+  const anneeOut =
+    anneeFromEtab ??
+    (siege?.annee_tranche_effectif_salarie != null
+      ? String(siege.annee_tranche_effectif_salarie).trim()
+      : undefined) ??
+    (result.annee_tranche_effectif_salarie != null
+      ? String(result.annee_tranche_effectif_salarie).trim()
+      : undefined);
+
+  const siretOut =
+    etabMatch?.siret != null && String(etabMatch.siret).trim() !== ""
+      ? String(etabMatch.siret).trim()
+      : siege?.siret != null
+        ? String(siege.siret).trim()
+        : undefined;
+
   return {
     siren: result.siren ?? undefined,
-    siret: siege?.siret ?? undefined,
+    siret: siretOut,
     companyLegalName: result.nom_complet ?? result.nom_raison_sociale ?? undefined,
     companyManagerName: managerName,
     companyAddress: siege?.geo_adresse ?? siege?.adresse ?? undefined,
-    companyNaf: result.activite_principale ?? undefined,
+    companyNaf: nafFromEtab ?? result.activite_principale ?? undefined,
+    /** Code INSEE seul (ex. 03), pas de libellé */
+    companyTrancheEffectif: codeTrim !== "" ? codeTrim : undefined,
+    companyAnneeTrancheEffectif: anneeOut !== "" ? anneeOut : undefined,
   };
 }
 

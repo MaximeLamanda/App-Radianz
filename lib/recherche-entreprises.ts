@@ -9,6 +9,10 @@ export interface EnrichmentResult {
   companyAddress?: string;
   companyNaf?: string;
   companyPhone?: string;
+  /** Code tranche d’effectif INSEE (ex. 03) */
+  companyTrancheEffectif?: string;
+  /** Année de la tranche d’effectif (réponse api.gouv, ex. 2022) */
+  companyAnneeTrancheEffectif?: string;
 }
 
 /**

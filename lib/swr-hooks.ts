@@ -23,8 +23,6 @@ import { getProspectsForPipeline } from "@/lib/firestore";
 import { getProspectByShareToken } from "@/lib/firestore";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import type { UserProfile } from "@/lib/firestore-user-profile";
-import { collection, getDocs, query, orderBy } from "firebase/firestore";
-import { db } from "@/lib/firebase";
 import type {
   PanelReference,
   InverterReference,
@@ -87,18 +85,15 @@ async function fetchBatteryReferences(userId: string): Promise<BatteryReference[
 }
 
 async function fetchLeads(): Promise<Lead[]> {
-  const leadsRef = collection(db, "leads");
-  const q = query(leadsRef, orderBy("createdAt", "desc"));
-  const querySnapshot = await getDocs(q);
-  const leadsData: Lead[] = [];
-  querySnapshot.forEach((doc) => {
-    leadsData.push({
-      id: doc.id,
-      ...doc.data(),
-      createdAt: doc.data().createdAt?.toDate() ?? new Date(),
-    } as Lead);
-  });
-  return leadsData;
+  const res = await fetchWithAuth("/api/leads?codeInsee=33318");
+  if (!res.ok) {
+    throw new Error(`Erreur API leads (${res.status})`);
+  }
+  const data = (await res.json()) as { leads?: Lead[] };
+  return (data.leads ?? []).map((lead) => ({
+    ...lead,
+    createdAt: new Date(lead.createdAt),
+  }));
 }
 
 export function usePanelReferences(userId: string | null): {

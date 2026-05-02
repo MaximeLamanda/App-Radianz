@@ -1,19 +1,12 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode, type ComponentType } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Popover,
   PopoverTrigger,
@@ -23,15 +16,34 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
-import { Plus, Trash2, X, Loader2, AlertCircle, Zap, FileCheck, Info, Building2, MapPin, Hash, Tag, User, Phone, Maximize2, Link2, Eye, Map, PenTool, ExternalLink, Calendar, Battery, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  X,
+  Loader2,
+  AlertCircle,
+  Zap,
+  FileCheck,
+  Info,
+  Link2,
+  Eye,
+  Map as MapIcon,
+  ExternalLink,
+  Battery,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
+import { PieChart, Pie, Cell } from "recharts";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 
@@ -43,20 +55,20 @@ import { BatterySelectCard } from "./BatterySelectCard";
 import { EquipmentSelectCard, EquipmentThumbnail } from "./EquipmentSelectCard";
 import { surfaceToKwp, getUsableRoofAreaM2 } from "@/lib/surface-to-kwp";
 import {
-  BUILDING_ENERGY_CONSUMPTION_DATA,
+  buildTypicalConsumptionDayForMonth,
   getEnergyConsumption,
   getEnergyConsumptionForMonth,
   getHourlyConsumptionProfileKwhPerM2,
-  isKnownPlaceType,
-  normalizePlaceTypeForConsumption,
   type MonthIndex,
 } from "@/lib/building-energy-consumption";
 import {
+  buildTypicalDayForMonth,
   getProductionFromPerKwp,
   getProductionPerKwpFromSolarPotential,
-  buildTypicalDayForMonth,
+  getPVGISData,
+  validateCoordinates,
+  type PVGISData,
 } from "@/lib/pvgis";
-import { buildTypicalConsumptionDayForMonth } from "@/lib/building-energy-consumption";
 import { runProductionSimulation, runSimulationOneDayForChart, scaleBatteryForCount } from "@/lib/battery-simulation";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
 import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
@@ -85,9 +97,23 @@ import {
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { useAuth } from "@/lib/auth-context";
 import { getUserProfile } from "@/lib/firestore-user-profile";
-import { fetchWithAuth } from "@/lib/api-client";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
 import type { ScoredCandidate } from "@/lib/find-local-siren";
+import { fetchWithAuth } from "@/lib/api-client";
+import {
+  centroidWeightedFromParcelleRowGeometries,
+  collectSirensFromMatchingV5Row,
+  collectSirensFromMatchingV5Rows,
+  parseMatchingV5BuildingsJson,
+  parsePasserelleAddressesJson,
+  parseSiretsMatchJson,
+  type ScoutMatchingV5Row,
+  type V5BuildingsJsonEntry,
+  type V5PasserellePpmEntry,
+} from "@/lib/scout-matching-v5-map";
+import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
+import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
+import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
 import type { Prospect, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 
 /** Config des lignes données prospect : liste fixe, une entrée par ligne (skeleton / valeur / "No data"). */
@@ -100,53 +126,58 @@ function websiteHref(raw: string): string {
 
 const PROSPECT_DATA_ROWS: {
   label: string;
-  icon: ComponentType<{ className?: string }>;
   getValue: (p: Prospect) => string | undefined;
   isBdnb: boolean;
   isPhone?: boolean;
   isWebsite?: boolean;
 }[] = [
-  { label: "SIREN", icon: Hash, getValue: (p) => p.siren ?? undefined, isBdnb: false },
-  { label: "SIRET", icon: Hash, getValue: (p) => p.siret ?? undefined, isBdnb: false },
-  { label: "Dénomination", icon: Building2, getValue: (p) => p.companyLegalName ?? undefined, isBdnb: false },
-  { label: "Adresse siège", icon: MapPin, getValue: (p) => p.companyAddress ?? undefined, isBdnb: false },
-  { label: "Code NAF", icon: Tag, getValue: (p) => p.companyNaf ?? undefined, isBdnb: false },
-  { label: "Gérant", icon: User, getValue: (p) => p.companyManagerName ?? undefined, isBdnb: false },
-  { label: "Téléphone", icon: Phone, getValue: (p) => (p.contact?.nationalPhoneNumber ?? p.contact?.internationalPhoneNumber) ?? undefined, isBdnb: false, isPhone: true },
+  {
+    label: "Type",
+    getValue: (p) => translatePlaceType(p.placeType) || p.placeType || undefined,
+    isBdnb: false,
+  },
+  {
+    label: "Surface",
+    getValue: (p) => {
+      const area = p.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? p.roofSurface?.area ?? 0;
+      return `${area.toFixed(0)} m²`;
+    },
+    isBdnb: true,
+  },
+  { label: "SIREN", getValue: (p) => p.siren ?? undefined, isBdnb: false },
+  { label: "SIRET", getValue: (p) => p.siret ?? undefined, isBdnb: false },
+  { label: "Dénomination", getValue: (p) => p.companyLegalName ?? undefined, isBdnb: false },
+  { label: "Adresse siège", getValue: (p) => p.companyAddress ?? undefined, isBdnb: false },
+  { label: "Code NAF", getValue: (p) => p.companyNaf ?? undefined, isBdnb: false },
+  {
+    label: "Effectif",
+    getValue: (p) => p.companyTrancheEffectif ?? undefined,
+    isBdnb: false,
+  },
+  { label: "Gérant", getValue: (p) => p.companyManagerName ?? undefined, isBdnb: false },
+  { label: "Téléphone", getValue: (p) => (p.contact?.nationalPhoneNumber ?? p.contact?.internationalPhoneNumber) ?? undefined, isBdnb: false, isPhone: true },
   {
     label: "Site web",
-    icon: ExternalLink,
     getValue: (p) => p.contact?.websiteUri ?? undefined,
     isBdnb: false,
     isWebsite: true,
   },
-  { label: "Année construction", icon: Calendar, getValue: (p) => (p.anneeConstruction != null ? String(p.anneeConstruction) : undefined), isBdnb: true },
+  { label: "Année construction", getValue: (p) => (p.anneeConstruction != null ? String(p.anneeConstruction) : undefined), isBdnb: true },
 ];
-
-/** Options du select : types canoniques (sans doublons) + type actuel si inconnu */
-function getPlaceTypeOptions(currentValue: string): { value: string; label: string }[] {
-  const canonicalTypes = new Set<string>();
-  const known = BUILDING_ENERGY_CONSUMPTION_DATA.filter((d) => {
-    const canonical = normalizePlaceTypeForConsumption(d.googlePlaceType);
-    if (canonicalTypes.has(canonical)) return false;
-    canonicalTypes.add(canonical);
-    return true;
-  }).map((d) => ({
-    value: d.googlePlaceType,
-    label: translatePlaceType(d.googlePlaceType),
-  }));
-  if (!currentValue || isKnownPlaceType(currentValue)) return known;
-  return [
-    { value: currentValue, label: translatePlaceType(currentValue) || currentValue },
-    ...known,
-  ];
-}
 
 /** Détermine le niveau de confiance basé sur le score (0-1000), calibré après pondération adresse. */
 function getConfidenceLevel(score: number): "high" | "medium" | "low" {
   if (score >= 600) return "high";
   if (score >= 350) return "medium";
   return "low";
+}
+
+/** Lettre score « opérationnel » (même seuils que la confiance matching adresse). */
+function operationalScoreLetterFromMatching(confidence: number): "A" | "B" | "C" {
+  const level = getConfidenceLevel(Math.round(Math.max(0, confidence)));
+  if (level === "high") return "A";
+  if (level === "medium") return "B";
+  return "C";
 }
 
 /** Retourne les propriétés du badge de confiance */
@@ -170,51 +201,999 @@ function getConfidenceBadgeProps(level: "high" | "medium" | "low") {
   }
 }
 
-function PlaceTypeSelect({
-  value,
-  onValueChange,
-  disabled,
-  variant = "default",
+/** Dernier bloc de chiffres contigu dans l’identifiant BDNB construction (affichage court au lieu de l’id complet). */
+function bdnbConstructionShortNumber(constructionId: string): string {
+  const s = constructionId.trim();
+  if (!s || s === "—") return "—";
+  const runs = s.match(/\d+/g);
+  return runs?.length ? runs[runs.length - 1]! : "—";
+}
+
+type DiscoveryApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
+
+/** Contenu du drawer en mode découverte PostgreSQL (matching V5), même tiroir que Solar Scout. */
+function ProspectDrawerDiscoverySection({
+  row,
+  linkedParcelleRows,
+  isOpen,
 }: {
-  value: string;
-  onValueChange: (value: string) => void;
-  disabled?: boolean;
-  variant?: "default" | "dark";
+  row: ScoutMatchingV5Row;
+  /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
+  linkedParcelleRows: ScoutMatchingV5Row[];
+  isOpen: boolean;
 }) {
-  const options = useMemo(() => getPlaceTypeOptions(value), [value]);
-  const displayValue =
-    value && options.some((o) => o.value === value)
-      ? value
-      : options.find((o) => normalizePlaceTypeForConsumption(o.value) === normalizePlaceTypeForConsumption(value))
-          ?.value ?? value ?? "other";
-  const contentClassName =
-    variant === "dark"
-      ? "bg-black text-white border-white/20 **:data-radix-select-viewport:bg-black [&_button]:text-white hover:[&_button]:bg-white/10"
-      : undefined;
-  const itemClassName =
-    variant === "dark"
-      ? "focus:bg-white/10 focus:text-white data-highlighted:bg-white/10 data-highlighted:text-white text-white/90"
-      : undefined;
+  const parcelleCluster = useMemo(() => {
+    const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
+    if (filtered.length > 0) return filtered;
+    if (row.grain === "parcelle") return [row];
+    return [];
+  }, [linkedParcelleRows, row]);
+
+  const discoveryClusterKey = useMemo(
+    () => `${row.id}|${parcelleCluster.map((p) => p.id).sort().join(",")}`,
+    [row.id, parcelleCluster]
+  );
+
+  const matchingV5ApiNomFetchedRef = useRef<Set<string>>(new Set());
+  const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
+    Record<string, DiscoveryApiNomEntry>
+  >({});
+  const [discoveryMainTab, setDiscoveryMainTab] = useState("terrain");
+
+  useEffect(() => {
+    matchingV5ApiNomFetchedRef.current.clear();
+    setMatchingV5ApiNomBySiren({});
+    setDiscoveryMainTab("terrain");
+  }, [discoveryClusterKey]);
+
+  const sirensForApiNom = useMemo(() => {
+    if (parcelleCluster.length > 0) return collectSirensFromMatchingV5Rows(parcelleCluster);
+    return collectSirensFromMatchingV5Row(row);
+  }, [parcelleCluster, row]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (discoveryMainTab !== "entreprises" && discoveryMainTab !== "terrain") return;
+    const sirens = sirensForApiNom;
+    for (const siren of sirens) {
+      if (matchingV5ApiNomFetchedRef.current.has(siren)) continue;
+      matchingV5ApiNomFetchedRef.current.add(siren);
+      setMatchingV5ApiNomBySiren((prev) =>
+        prev[siren]?.status === "ok" ? prev : { ...prev, [siren]: { status: "loading" } }
+      );
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/recherche-entreprises?q=${encodeURIComponent(siren)}&per_page=1`
+          );
+          if (!res.ok) {
+            setMatchingV5ApiNomBySiren((prev) => ({ ...prev, [siren]: { status: "err" } }));
+            return;
+          }
+          const data = (await res.json()) as { result?: { companyLegalName?: string | null } };
+          const name = data.result?.companyLegalName?.trim() || undefined;
+          setMatchingV5ApiNomBySiren((prev) => ({
+            ...prev,
+            [siren]: { status: "ok", name },
+          }));
+        } catch {
+          setMatchingV5ApiNomBySiren((prev) => ({ ...prev, [siren]: { status: "err" } }));
+        }
+      })();
+    }
+  }, [isOpen, discoveryMainTab, sirensForApiNom]);
+
+  const passerelleFlat = useMemo(() => {
+    type Entry = { parcelleLabel: string; ppm: V5PasserellePpmEntry };
+    const out: Entry[] = [];
+    const rows =
+      parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [];
+    for (const pr of rows) {
+      const label =
+        pr.section && pr.numeroNorm
+          ? `${pr.section} ${pr.numeroNorm} · ${pr.codeInsee || "—"}`
+          : pr.id;
+      for (const ppm of parsePasserelleAddressesJson(pr.passerelleAddressesJson)) {
+        out.push({ parcelleLabel: label, ppm });
+      }
+    }
+    if (out.length === 0 && row.grain === "building") {
+      const label = (row.label || "").trim() || row.id;
+      for (const ppm of parsePasserelleAddressesJson(row.passerelleAddressesJson)) {
+        out.push({ parcelleLabel: label, ppm });
+      }
+    }
+    return out;
+  }, [parcelleCluster, row]);
+
+  const sirets = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ReturnType<typeof parseSiretsMatchJson> = [];
+    const addFrom = (r: ScoutMatchingV5Row) => {
+      for (const e of parseSiretsMatchJson(r.siretsJson)) {
+        if (seen.has(e.siret)) continue;
+        seen.add(e.siret);
+        out.push(e);
+      }
+    };
+    for (const pr of parcelleCluster) addFrom(pr);
+    if (row.grain === "building") addFrom(row);
+    if (out.length === 0 && row.grain === "parcelle" && parcelleCluster.length === 0) addFrom(row);
+    return out;
+  }, [parcelleCluster, row]);
+
+  const uniqueSirenPasserelle = useMemo(
+    () =>
+      new Set(
+        passerelleFlat.map(({ ppm }) => String(ppm.siren || "").trim()).filter(Boolean)
+      ),
+    [passerelleFlat]
+  );
+  const multiEntreprises = useMemo(() => {
+    const anyShared =
+      parcelleCluster.some((p) => p.statusMetier === "shared") ||
+      row.statusMetier === "shared" ||
+      sirets.length > 1;
+    return anyShared || uniqueSirenPasserelle.size > 1;
+  }, [parcelleCluster, row.statusMetier, sirets.length, uniqueSirenPasserelle.size]);
+
+  /** Lignes `buildings_json` ; pour une ligne `building` sans JSON, une ligne synthétique à partir de la row. */
+  const buildingDetailRows = useMemo((): V5BuildingsJsonEntry[] => {
+    const byBc = new Map<string, V5BuildingsJsonEntry>();
+    for (const pr of parcelleCluster.length > 0 ? parcelleCluster : []) {
+      for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
+        if (!byBc.has(b.batimentConstructionId)) byBc.set(b.batimentConstructionId, b);
+      }
+    }
+    if (byBc.size > 0) return Array.from(byBc.values());
+
+    const parsed = parseMatchingV5BuildingsJson(row.buildingsJson);
+    if (parsed.length > 0) return parsed;
+    if (row.grain !== "building") return [];
+    const bc = row.batimentConstructionId?.trim() || "";
+    const bg = row.batimentGroupeId?.trim() || null;
+    if (!bc && !bg) return [];
+    const props = row.properties ?? {};
+    const annRaw = props.annee_construction;
+    const ann =
+      typeof annRaw === "number" && Number.isFinite(annRaw)
+        ? annRaw
+        : (() => {
+            const n = Number(String(annRaw ?? "").trim());
+            return Number.isFinite(n) ? n : null;
+          })();
+    const fpRaw = props.footprint_m2;
+    const fpFromProps =
+      typeof fpRaw === "number" && Number.isFinite(fpRaw)
+        ? fpRaw
+        : (() => {
+            const n = Number(String(fpRaw ?? "").trim());
+            return Number.isFinite(n) ? n : null;
+          })();
+    const footprintM2 = fpFromProps ?? (row.footprintSumM2 > 0 ? row.footprintSumM2 : null);
+    const ms = String(props.matching_status ?? "").trim();
+    const md = String(props.matching_decision ?? "").trim();
+    const mss = String(props.matching_siren_selected ?? "").trim();
+    return [
+      {
+        batimentConstructionId: bc || "—",
+        batimentGroupeId: bg,
+        anneeConstruction: ann,
+        footprintM2,
+        intersectionAreaM2: null,
+        matchingStatus: ms || "—",
+        matchingDecision: md,
+        matchingSirenSelected: mss,
+      },
+    ];
+  }, [row, parcelleCluster]);
+
+  /** Uniquement les établissements issus du matching adresse (SIRET), pas la liste PPM brute. */
+  const discoverySiretRows = useMemo(
+    () => sirets.map((e) => ({ key: e.siret, e })),
+    [sirets]
+  );
+
+  const footprintSumTotal = useMemo(() => {
+    if (parcelleCluster.length > 0) {
+      return parcelleCluster.reduce((s, p) => s + p.footprintSumM2, 0);
+    }
+    return row.footprintSumM2;
+  }, [parcelleCluster, row.footprintSumM2]);
+
+  const panelRef = typeof window !== "undefined" ? getRecommendedPanelReferenceSync() : null;
+  const kwpEst = surfaceToKwp(footprintSumTotal, undefined, undefined, panelRef);
+  const cartePolygonAreaM2 = useMemo(() => {
+    if (parcelleCluster.length === 0) return polygonAreaM2ApproxWgs84(row.geometry);
+    return parcelleCluster.reduce((sum, p) => sum + polygonAreaM2ApproxWgs84(p.geometry), 0);
+  }, [parcelleCluster, row.geometry]);
+
+  const scoreDisplay = useMemo(() => {
+    if (parcelleCluster.length === 0) {
+      return Math.round(Math.max(0, row.matchingConfidence));
+    }
+    const m = Math.max(...parcelleCluster.map((p) => p.matchingConfidence), row.matchingConfidence);
+    return Math.round(Math.max(0, m));
+  }, [parcelleCluster, row.matchingConfidence]);
+
+  const centroid = useMemo(() => {
+    const w = centroidWeightedFromParcelleRowGeometries(parcelleCluster);
+    if (w) return w;
+    return centroidFromGeoJsonPolygonLike(row.geometry);
+  }, [parcelleCluster, row.geometry]);
+
+  /** Découverte : pas de type Google lieu — profil conso « other » (kWh/m²/an typique). */
+  const discoveryPlaceType = "other";
+  const [discoveryChartViewMode, setDiscoveryChartViewMode] = useState<"monthly" | "daily">("monthly");
+  const [discoveryChartMonthIndex, setDiscoveryChartMonthIndex] = useState(6);
+  const [discoveryPvgis, setDiscoveryPvgis] = useState<PVGISData | null>(null);
+  const [discoveryPvgisLoading, setDiscoveryPvgisLoading] = useState(false);
+  const [discoveryPvgisError, setDiscoveryPvgisError] = useState<string | null>(null);
+  /** Complète NAF / effectifs via `/api/recherche-entreprises` (api.gouv) quand absents de sirets_json. */
+  const [discoveryGouvEtabBySiret, setDiscoveryGouvEtabBySiret] = useState<
+    Record<string, { status: "loading" | "ok" | "err"; naf?: string; tranche?: string; annee?: string }>
+  >({});
+
+  useEffect(() => {
+    setDiscoveryGouvEtabBySiret({});
+  }, [discoveryClusterKey]);
+
+  useEffect(() => {
+    if (!isOpen || discoveryMainTab !== "entreprises") return;
+    let cancelled = false;
+    const siretsToResetOnCleanup: string[] = [];
+    for (const e of sirets) {
+      const siret = e.siret?.trim();
+      if (!siret || !/^\d{14}$/.test(siret)) continue;
+      const needNaf = !(e.activite_principale || "").trim();
+      const needTranche = !(e.tranche_effectifs || "").trim();
+      if (!needNaf && !needTranche) continue;
+
+      siretsToResetOnCleanup.push(siret);
+
+      setDiscoveryGouvEtabBySiret((prev) => {
+        const cur = prev[siret];
+        if (cur?.status === "loading" || cur?.status === "ok") return prev;
+        return { ...prev, [siret]: { status: "loading" } };
+      });
+
+      void (async () => {
+        try {
+          const res = await fetch(`/api/recherche-entreprises?q=${encodeURIComponent(siret)}&per_page=1`);
+          if (cancelled) return;
+          if (!res.ok) {
+            setDiscoveryGouvEtabBySiret((p) => ({ ...p, [siret]: { status: "err" } }));
+            return;
+          }
+          const data = (await res.json()) as {
+            result?: {
+              companyNaf?: string;
+              companyTrancheEffectif?: string;
+              companyAnneeTrancheEffectif?: string;
+            } | null;
+          };
+          if (cancelled) return;
+          const r = data.result;
+          setDiscoveryGouvEtabBySiret((p) => ({
+            ...p,
+            [siret]: {
+              status: "ok",
+              naf: r?.companyNaf?.trim() || undefined,
+              tranche: r?.companyTrancheEffectif?.trim() || undefined,
+              annee: r?.companyAnneeTrancheEffectif?.trim() || undefined,
+            },
+          }));
+        } catch {
+          if (!cancelled) {
+            setDiscoveryGouvEtabBySiret((p) => ({ ...p, [siret]: { status: "err" } }));
+          }
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+      if (siretsToResetOnCleanup.length > 0) {
+        setDiscoveryGouvEtabBySiret((prev) => {
+          const next = { ...prev };
+          for (const st of siretsToResetOnCleanup) {
+            if (next[st]?.status === "loading") delete next[st];
+          }
+          return next;
+        });
+      }
+    };
+  }, [isOpen, discoveryMainTab, sirets]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!centroid || !validateCoordinates({ lat: centroid.lat, lng: centroid.lng })) {
+      setDiscoveryPvgis(null);
+      setDiscoveryPvgisError(null);
+      setDiscoveryPvgisLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDiscoveryPvgisLoading(true);
+    setDiscoveryPvgisError(null);
+    void getPVGISData({ lat: centroid.lat, lng: centroid.lng })
+      .then((d) => {
+        if (!cancelled) setDiscoveryPvgis(d);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setDiscoveryPvgis(null);
+          setDiscoveryPvgisError(e instanceof Error ? e.message : "Erreur PVGIS");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDiscoveryPvgisLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, discoveryClusterKey, centroid]);
+
+  const discoveryChartMonthlyData = useMemo(() => {
+    if (!discoveryPvgis || kwpEst <= 0 || footprintSumTotal <= 0) return [];
+    const perKwpMonthly = discoveryPvgis.monthlyProduction;
+    const { monthlyProduction } = getProductionFromPerKwp(
+      discoveryPvgis.annualProduction,
+      perKwpMonthly,
+      kwpEst
+    );
+    const surfaceM2 = footprintSumTotal;
+    return monthlyProduction.map((m) => ({
+      month: m.month,
+      production: m.production,
+      consumption: Math.round(
+        getEnergyConsumptionForMonth(discoveryPlaceType, (m.month - 1) as MonthIndex) * surfaceM2
+      ),
+    }));
+  }, [discoveryPvgis, kwpEst, footprintSumTotal]);
+
+  const discoveryChartDailyData = useMemo(() => {
+    if (!discoveryPvgis || footprintSumTotal <= 0 || kwpEst <= 0) return undefined;
+    const perKwpMonthly = discoveryPvgis.monthlyProduction;
+    const prodDay = buildTypicalDayForMonth(perKwpMonthly, discoveryChartMonthIndex, kwpEst);
+    const consDay = buildTypicalConsumptionDayForMonth(
+      discoveryPlaceType,
+      discoveryChartMonthIndex,
+      footprintSumTotal
+    );
+    return Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      production: prodDay[hour] ?? 0,
+      consumption: consDay[hour] ?? 0,
+    }));
+  }, [discoveryPvgis, footprintSumTotal, kwpEst, discoveryChartMonthIndex]);
+
+  const discoveryBatimentsCount = buildingDetailRows.length;
+  const discoveryEntreprisesCount = discoverySiretRows.length;
+
+  /** Nom INSEE (API) si dispo, sinon dénomination JSON ; une seule ligne + `title` pour le texte complet. */
+  const discoveryRaisonSocialeDisplay = (
+    siren: string | undefined | null,
+    denominationJson: string | undefined | null
+  ) => {
+    const den = (denominationJson || "").trim();
+    const s = siren?.trim();
+    const lineWrap =
+      "block min-w-0 break-words text-xs font-medium leading-relaxed tracking-tight text-foreground";
+
+    if (!s || !/^\d{9}$/.test(s)) {
+      const t = den || "—";
+      return (
+        <span className={lineWrap} title={t}>
+          {t}
+        </span>
+      );
+    }
+    const st = matchingV5ApiNomBySiren[s];
+    if (st?.status === "loading") {
+      if (den) {
+        return (
+          <span className={lineWrap} title={den}>
+            {den}
+          </span>
+        );
+      }
+        return (
+        <span
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-muted-foreground"
+          title="Chargement du nom officiel…"
+        >
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
+          <span className="sr-only">Chargement du nom officiel</span>
+        </span>
+      );
+    }
+    if (st?.status === "ok" && st.name?.trim()) {
+      const t = st.name.trim();
+      return (
+        <span className={lineWrap} title={t}>
+          {t}
+        </span>
+      );
+    }
+    const t = den || "—";
+    return (
+      <span className={lineWrap} title={t}>
+        {t}
+      </span>
+    );
+  };
+
+  const discoveryValueTd = (
+    value: string,
+    monoOrOpts?: boolean | { mono?: boolean; singleLine?: boolean }
+  ) => {
+    const opts = typeof monoOrOpts === "boolean" ? { mono: monoOrOpts } : monoOrOpts ?? {};
+    const mono = opts.mono ?? false;
+    const singleLine = opts.singleLine ?? false;
+    const v = value.trim() || "—";
+    return (
+      <TableCell className={cn("min-w-[10rem] max-w-xl text-xs leading-relaxed", mono && "font-mono")}>
+        <span
+          className={cn("block min-w-0", singleLine ? "truncate whitespace-nowrap" : "break-words")}
+          title={v !== "—" ? v : undefined}
+        >
+          {v}
+        </span>
+      </TableCell>
+    );
+  };
+
+  const terrainDetailParcelles = useMemo(() => {
+    if (parcelleCluster.length > 0) return parcelleCluster;
+    if (row.grain === "parcelle") return [row];
+    return [];
+  }, [parcelleCluster, row]);
+
+  const opConfidenceForLetter = useMemo(() => {
+    if (parcelleCluster.length === 0) return row.matchingConfidence;
+    return Math.max(...parcelleCluster.map((p) => p.matchingConfidence), row.matchingConfidence);
+  }, [parcelleCluster, row.matchingConfidence]);
+  const opScoreLetter = operationalScoreLetterFromMatching(opConfidenceForLetter);
+
+  const heroAddress = useMemo(() => {
+    const addrs = parcelleCluster
+      .map((p) => p.passerelleAddress?.trim())
+      .filter((x): x is string => Boolean(x));
+    const uniq = Array.from(new Set(addrs));
+    if (uniq.length === 1) return uniq[0]!;
+    if (uniq.length > 1) return uniq.join(" · ");
+    return row.passerelleAddress?.trim() || "Pas d’adresse passerelle";
+  }, [parcelleCluster, row.passerelleAddress]);
+
+  const heroTypeLine = useMemo(() => {
+    if (row.grain === "building") {
+      return `Bâtiment multi-parcelles · empreinte BDNB ${footprintSumTotal.toLocaleString("fr-FR")} m²`;
+    }
+    if (parcelleCluster.length > 1) {
+      return `${parcelleCluster.length} parcelles cadastrales liées (partage) · empreinte BDNB Σ ${footprintSumTotal.toLocaleString("fr-FR")} m² · contours ~${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
+    }
+    return `Parcelle cadastrale · empreinte BDNB ${footprintSumTotal.toLocaleString("fr-FR")} m² · contour ~${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
+  }, [row.grain, parcelleCluster, footprintSumTotal, cartePolygonAreaM2]);
+
+  const geoPillLabel = (() => {
+    const n = (row.nomIris || "").trim().replace(/\s+/g, " ");
+    if (n) return n.slice(0, 26).toUpperCase();
+    const ci = (row.codeInsee || "").trim();
+    if (ci.length >= 2) return `DEPT. ${ci.slice(0, 2)}`;
+    return "ZONE";
+  })();
+  const empreinteM2Formatted = `${footprintSumTotal.toLocaleString("fr-FR")} m²`;
+  const contourM2Formatted = `${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
+  const kwcRounded = `${Math.round(kwpEst)} kWc`;
 
   return (
-    <Select value={displayValue} onValueChange={onValueChange} disabled={disabled}>
-      <SelectTrigger
-        className={
-          variant === "dark"
-            ? "h-auto w-fit min-w-0 max-w-[90px] border-0 px-3 py-1.5 text-[10px] uppercase text-white/60 hover:text-white/80 [&>span]:text-white/60 [&>span]:uppercase [&>span]:text-[10px] [&>span]:truncate [&>span]:block bg-white/10 hover:bg-white/15 focus:ring-0 focus:ring-offset-0 [&_svg]:text-white/60 [&_svg]:opacity-80 [&_svg]:h-3 [&_svg]:w-3 placeholder:text-white/60 justify-start gap-1"
-            : "bg-white"
-        }
-      >
-        <SelectValue placeholder="Choisir un type" />
-      </SelectTrigger>
-      <SelectContent className={contentClassName}>
-        {options.map((opt) => (
-          <SelectItem key={opt.value} value={opt.value} className={itemClassName}>
-            {opt.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <Tabs
+      value={discoveryMainTab}
+      onValueChange={setDiscoveryMainTab}
+      variant="line"
+      className="drawer-discovery"
+    >
+      <div className="drawer-discovery-hero">
+        <h3 className="drawer-discovery-title" title={row.label}>
+          {row.label}
+        </h3>
+        <p className="drawer-discovery-hero-address" title={heroAddress}>
+          {heroAddress}
+        </p>
+        <p className="drawer-discovery-subtitle">{heroTypeLine}</p>
+        <div className="drawer-discovery-pills">
+          <span
+            className="drawer-discovery-pill drawer-discovery-pill-score"
+            title={`Score opérationnel (matching V5) : ${scoreDisplay}`}
+          >
+            Score {opScoreLetter}
+          </span>
+          <span className="drawer-discovery-pill drawer-discovery-pill-inverse">{kwcRounded}</span>
+          <span
+            className="drawer-discovery-pill drawer-discovery-pill-muted"
+            title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
+          >
+            Empreinte {empreinteM2Formatted}
+          </span>
+          <span
+            className="drawer-discovery-pill drawer-discovery-pill-muted"
+            title={
+              row.grain === "parcelle"
+                ? parcelleCluster.length > 1
+                  ? "Somme des aires des polygones parcelles (approx. géodésique locale)"
+                  : "Aire du polygone parcelle sur la carte (approx. géodésique locale)"
+                : "Aire du polygone affiché (bâtiment) sur la carte"
+            }
+          >
+            {row.grain === "parcelle"
+              ? parcelleCluster.length > 1
+                ? "Contours parcelles"
+                : "Contour parcelle"
+              : "Contour carte"}{" "}
+            {contourM2Formatted}
+          </span>
+          <span
+            className="drawer-discovery-pill drawer-discovery-pill-muted"
+            title={row.nomIris || row.codeInsee}
+          >
+            {geoPillLabel}
+          </span>
+          <span className="drawer-discovery-pill drawer-discovery-pill-muted">Ombrage non estimé</span>
+          {multiEntreprises ? (
+            <span className="drawer-discovery-pill drawer-discovery-pill-secondary">Multi-entreprises</span>
+          ) : null}
+          {parcelleCluster.length > 1 ? (
+            <span
+              className="drawer-discovery-pill drawer-discovery-pill-secondary"
+              title="Même composante connexe via bâtiments en statut « partage » (matching V5)"
+            >
+              {parcelleCluster.length} cadastres liés
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      <TabsList className="w-full">
+        <TabsTrigger value="terrain">Terrain</TabsTrigger>
+        <TabsTrigger value="solaire">Solaire</TabsTrigger>
+        <TabsTrigger value="batiments" className="inline-flex items-center gap-1.5">
+          <span>Bâtiments</span>
+          <span
+            className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
+            aria-label={`${discoveryBatimentsCount} bâtiment${discoveryBatimentsCount !== 1 ? "s" : ""}`}
+          >
+            {discoveryBatimentsCount}
+          </span>
+        </TabsTrigger>
+        <TabsTrigger value="entreprises" className="inline-flex items-center gap-1.5">
+          <span>Entreprises</span>
+          <span
+            className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
+            aria-label={`${discoveryEntreprisesCount} établissement${discoveryEntreprisesCount !== 1 ? "s" : ""}`}
+          >
+            {discoveryEntreprisesCount}
+          </span>
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="terrain" className="drawer-discovery-panel space-y-4">
+        <section aria-labelledby="discovery-terrain-ppm">
+          <h4 id="discovery-terrain-ppm" className="drawer-discovery-section-title">
+            SIREN propriétaires (passerelle PPM)
+          </h4>
+          {passerelleFlat.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-[0.6875rem] text-muted-foreground">
+              Aucune ligne PPM pour {parcelleCluster.length > 1 ? "ces parcelles" : "cette parcelle"} (
+              <span className="font-mono text-foreground/80">passerelle_addresses_json</span> vide).
+            </div>
+          ) : (
+            <div className="drawer-discovery-table-wrap">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-0 hover:bg-transparent">
+                    <TableHead className="min-w-[9rem]">Parcelle</TableHead>
+                    <TableHead className="min-w-[7rem]">SIREN</TableHead>
+                    <TableHead className="min-w-[12rem]">Raison sociale (PPM)</TableHead>
+                    <TableHead className="min-w-[13rem]">Adresse (PPM)</TableHead>
+                    <TableHead className="min-w-[4rem]">Lignes</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {passerelleFlat.map(({ parcelleLabel, ppm: p }, i) => {
+                    const siren = String(p.siren || "").trim() || "—";
+                    const key = `${parcelleLabel}-${siren}-${i}`;
+                    const addrPpm = (p.address || "").trim() || "—";
+                    return (
+                      <TableRow key={key} className="border-0">
+                        <TableCell className="min-w-[9rem] whitespace-nowrap font-mono text-[0.65rem] align-top text-muted-foreground">
+                          {parcelleLabel}
+                        </TableCell>
+                        <TableCell className="min-w-[7rem] whitespace-nowrap font-mono text-xs align-top">
+                          <span title={siren !== "—" ? siren : undefined}>{siren}</span>
+                        </TableCell>
+                        <TableCell className="min-w-[12rem] max-w-[20rem] align-top text-xs">
+                          {discoveryRaisonSocialeDisplay(p.siren, p.denomination)}
+                        </TableCell>
+                        <TableCell className="min-w-[13rem] max-w-[22rem] align-top text-xs leading-relaxed text-muted-foreground">
+                          <span
+                            className="block min-w-0 max-w-full truncate whitespace-nowrap"
+                            title={addrPpm !== "—" ? addrPpm : undefined}
+                          >
+                            {addrPpm}
+                          </span>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
+                          {p.rows != null && Number.isFinite(Number(p.rows)) ? String(p.rows) : "—"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </section>
+
+        <section aria-labelledby="discovery-terrain-parcelle">
+          <h4 id="discovery-terrain-parcelle" className="drawer-discovery-section-title">
+            Détail parcelle & adresse
+          </h4>
+          {terrainDetailParcelles.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-[0.6875rem] text-muted-foreground">
+              Aucune parcelle cadastrale liée à cette entité pour le détail terrain.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {terrainDetailParcelles.map((pr) => (
+                <div key={pr.id} className="space-y-2">
+                  {terrainDetailParcelles.length > 1 ? (
+                    <p className="text-[0.65rem] font-semibold leading-tight text-muted-foreground font-mono">
+                      {pr.section && pr.numeroNorm ? `${pr.section} ${pr.numeroNorm}` : pr.id} · INSEE{" "}
+                      {pr.codeInsee || "—"}
+                    </p>
+                  ) : null}
+                  <div className="drawer-discovery-table-wrap">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-0 hover:bg-transparent">
+                          <TableHead className="min-w-[11rem] whitespace-nowrap">Champ</TableHead>
+                          <TableHead className="min-w-[14rem]">Valeur</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow className="border-0">
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">Parcelle</TableCell>
+                          {discoveryValueTd(
+                            pr.section && pr.numeroNorm ? `${pr.section} ${pr.numeroNorm}` : "—",
+                            true
+                          )}
+                        </TableRow>
+                        <TableRow className="border-0">
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            Commune (INSEE)
+                          </TableCell>
+                          {discoveryValueTd(pr.codeInsee || "—", true)}
+                        </TableRow>
+                        <TableRow className="border-0">
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">IRIS</TableCell>
+                          {discoveryValueTd(
+                            (pr.codeIris || "").trim()
+                              ? `${pr.codeIris}${pr.nomIris ? ` (${pr.nomIris})` : ""}`
+                              : "—"
+                          )}
+                        </TableRow>
+                        <TableRow className="border-0">
+                          <TableCell className="max-w-[11rem] whitespace-normal text-xs leading-snug text-muted-foreground">
+                            Adresse passerelle (PPM)
+                          </TableCell>
+                          {discoveryValueTd(pr.passerelleAddress?.trim() || "—", { singleLine: true })}
+                        </TableRow>
+                        <TableRow className="border-0">
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            Statut SIREN parcelle
+                          </TableCell>
+                          {discoveryValueTd(pr.sirenStatus || "—", true)}
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </TabsContent>
+
+      <TabsContent value="solaire" className="drawer-discovery-panel space-y-3">
+        <div className="drawer-discovery-callout">
+          <p className="font-semibold text-foreground">Écart par rapport à une fiche prospect</p>
+          <ul className="mt-2 list-inside list-disc space-y-1.5 text-muted-foreground">
+            <li>
+              <span className="text-foreground">Type de lieu Google</span> (commerce, bureaux, etc.) : profil de
+              consommation <span className="font-mono text-foreground">« other »</span> — estimation générique kWh/m²/an
+              × empreinte BDNB.
+            </li>
+            <li>
+              <span className="text-foreground">Consommation réelle</span> : pas de données énergie du site, ni
+              simulation batterie / autoconsommation détaillée.
+            </li>
+            <li>
+              <span className="text-foreground">Toit / orientation</span> : PVGIS au centroïde
+              {parcelleCluster.length > 1
+                ? " (moyenne pondérée par la surface de chaque polygone parcelle du groupe)"
+                : " du polygone carte"}{" "}
+              avec inclinaison et azimuth optimaux, pas le modèle 3D du toit prospect.
+            </li>
+          </ul>
+        </div>
+
+        {footprintSumTotal <= 0 || kwpEst <= 0 ? (
+          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+            Empreinte ou kWc nul : graphique production / consommation non affiché.
+          </div>
+        ) : !centroid ? (
+          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+            Centroïde introuvable : impossible d’appeler PVGIS.
+          </div>
+        ) : discoveryPvgisLoading ? (
+          <div className="drawer-discovery-chart-shell space-y-2">
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-[220px] w-full rounded-lg" />
+          </div>
+        ) : discoveryPvgisError ? (
+          <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2.5 text-xs text-destructive">
+            {discoveryPvgisError}
+          </div>
+        ) : discoveryChartMonthlyData.length > 0 ? (
+          <div className="drawer-discovery-chart-shell">
+            <div className="mb-1 flex shrink-0 items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-col gap-1">
+                <span className="drawer-discovery-subpanel-title">Production / consommation</span>
+                <span className="text-[0.65rem] leading-snug text-muted-foreground">
+                  Mensuel kWh — conso estimée profil « other » ×{" "}
+                  {footprintSumTotal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
+                </span>
+              </div>
+              <div
+                role="tablist"
+                className="drawer-discovery-segmented"
+                aria-label="Vue du graphique"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={discoveryChartViewMode === "monthly"}
+                  onClick={() => setDiscoveryChartViewMode("monthly")}
+                  className={cn(
+                    discoveryChartViewMode === "monthly"
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Mensuel
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={discoveryChartViewMode === "daily"}
+                  onClick={() => setDiscoveryChartViewMode("daily")}
+                  className={cn(
+                    discoveryChartViewMode === "daily"
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Journalier
+                </button>
+              </div>
+            </div>
+            <div className="h-[240px] min-w-0 w-full">
+              <MonthlyProductionChart
+                viewMode={discoveryChartViewMode}
+                onViewModeChange={setDiscoveryChartViewMode}
+                selectedMonthIndex={discoveryChartMonthIndex}
+                onSelectedMonthIndexChange={setDiscoveryChartMonthIndex}
+                data={discoveryChartMonthlyData}
+                dailyData={discoveryChartDailyData}
+              />
+            </div>
+          </div>
+        ) : null}
+      </TabsContent>
+
+      <TabsContent value="batiments" className="drawer-discovery-panel space-y-3">
+        <div>
+          <p className="drawer-discovery-subpanel-title">Constructions BDNB (export matching)</p>
+          <p className="mt-1 max-w-prose text-[0.7rem] leading-relaxed text-muted-foreground">
+            Colonne « N° » : dernier bloc de chiffres de l’id construction BDNB. Survol pour l’id complet et le groupe.{" "}
+            <span className="font-mono text-foreground/90">buildings_json</span>.
+          </p>
+        </div>
+        {buildingDetailRows.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+            Aucun détail bâtiment dans l’export pour cette entité (parcelle sans{" "}
+            <span className="font-mono text-foreground/80">buildings_json</span> ou bâtiment non renseigné).
+          </div>
+        ) : (
+          <div className="drawer-discovery-table-wrap">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-0 hover:bg-transparent">
+                  <TableHead className="min-w-[4rem]">N°</TableHead>
+                  <TableHead className="min-w-[4.5rem]">Année</TableHead>
+                  <TableHead className="min-w-[6rem]">Empreinte</TableHead>
+                  <TableHead className="min-w-[6rem]">Intersect.</TableHead>
+                  <TableHead className="min-w-[14rem]">Statut</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {buildingDetailRows.map((b, i) => (
+                  <TableRow key={`${b.batimentConstructionId}-${i}`} className="border-0">
+                    <TableCell
+                      className="whitespace-nowrap font-mono text-xs tabular-nums"
+                      title={
+                        b.batimentConstructionId && b.batimentConstructionId !== "—"
+                          ? `Construction BDNB : ${b.batimentConstructionId}${
+                              b.batimentGroupeId ? ` · groupe : ${b.batimentGroupeId}` : ""
+                            }`
+                          : undefined
+                      }
+                    >
+                      {bdnbConstructionShortNumber(b.batimentConstructionId)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
+                      {b.anneeConstruction != null ? b.anneeConstruction : "—"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
+                      {b.footprintM2 != null
+                        ? `${b.footprintM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
+                      {b.intersectionAreaM2 != null
+                        ? `${b.intersectionAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="min-w-[12rem] max-w-[24rem] text-xs leading-relaxed text-muted-foreground">
+                      {(() => {
+                        const parts = [
+                          b.matchingStatus || "—",
+                          b.matchingDecision?.trim(),
+                          b.matchingSirenSelected
+                            ? `SIREN retenu : ${b.matchingSirenSelected}`
+                            : "",
+                        ].filter(Boolean);
+                        const line = parts.join(" · ");
+                        return (
+                          <span
+                            className="block min-w-0 break-words font-mono text-foreground"
+                            title={line}
+                          >
+                            {line}
+                          </span>
+                        );
+                      })()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </TabsContent>
+
+      <TabsContent value="entreprises" className="drawer-discovery-panel-last space-y-3">
+        <div>
+          <p className="drawer-discovery-subpanel-title">Établissements (matching adresse)</p>
+          <p className="mt-1 max-w-prose text-[0.7rem] leading-relaxed text-muted-foreground">
+            SIRET issus de <span className="font-mono text-foreground/90">sirets_json</span> ; NAF et effectifs
+            complétés via api.gouv si absents du JSON.
+          </p>
+        </div>
+        <div className="drawer-discovery-table-wrap">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-0 hover:bg-transparent">
+                <TableHead className="min-w-[12rem]">Raison sociale</TableHead>
+                <TableHead className="min-w-[6.5rem]">SIREN</TableHead>
+                <TableHead className="min-w-[8.5rem]">SIRET</TableHead>
+                <TableHead className="min-w-[7rem]">Code NAF (APE)</TableHead>
+                <TableHead className="min-w-[9rem]">Effectifs</TableHead>
+                <TableHead className="min-w-[13rem]">Adresse</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+            {discoverySiretRows.length === 0 ? (
+              <TableRow className="border-0">
+                <TableCell colSpan={6} className="py-10 text-center text-xs leading-relaxed text-muted-foreground">
+                  Aucun établissement matché sur l’adresse passerelle (
+                  <span className="font-mono text-foreground/80">sirets_json</span> vide ou matching non abouti).
+                </TableCell>
+              </TableRow>
+            ) : (
+              discoverySiretRows.map((r) => {
+                const e = r.e;
+                const gouv = discoveryGouvEtabBySiret[e.siret];
+                const nafFromJson = (e.activite_principale || "").trim();
+                const nafFromApi = gouv?.status === "ok" ? (gouv.naf || "").trim() : "";
+                const naf = nafFromJson || nafFromApi;
+                const trancheCode = (e.tranche_effectifs || "").trim() || (gouv?.status === "ok" ? gouv.tranche || "" : "");
+                const effYearJson = (e.annee_effectifs || "").trim();
+                const effYearApi = gouv?.status === "ok" ? (gouv.annee || "").trim() : "";
+                const effYear = effYearJson || effYearApi;
+                const effLib = labelTrancheEffectifs(trancheCode || undefined);
+                const effectifsCell =
+                  gouv?.status === "loading" && !trancheCode ? (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      api.gouv…
+                    </span>
+                  ) : effLib === "—" && !effYear ? (
+                    "—"
+                  ) : effYear ? (
+                    `${effLib} (${effYear})`
+                  ) : (
+                    effLib
+                  );
+                const nafCell =
+                  gouv?.status === "loading" && !naf ? (
+                    <span className="inline-flex max-w-full items-center gap-1 truncate text-muted-foreground">
+                      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                      …
+                    </span>
+                  ) : (
+                    naf || "—"
+                  );
+                const nafTitle = typeof nafCell === "string" ? nafCell : undefined;
+                const effTitle =
+                  typeof effectifsCell === "string" ? effectifsCell : undefined;
+                const addr = (e.adresse_etablissement || "").trim() || "—";
+                return (
+                  <TableRow key={r.key} className="border-0">
+                    <TableCell className="min-w-[12rem] max-w-[20rem] align-top">
+                      {discoveryRaisonSocialeDisplay(e.siren, e.denomination)}
+                    </TableCell>
+                    <TableCell className="min-w-[6.5rem] whitespace-nowrap font-mono text-xs align-top">
+                      <span title={e.siren || undefined}>{e.siren || "—"}</span>
+                    </TableCell>
+                    <TableCell className="min-w-[8.5rem] whitespace-nowrap font-mono text-xs align-top">
+                      <span title={e.siret}>{e.siret}</span>
+                    </TableCell>
+                    <TableCell className="min-w-[7rem] max-w-[13rem] align-top text-xs">
+                      {typeof nafCell === "string" ? (
+                        <span className="block min-w-0 break-words font-mono leading-relaxed" title={nafTitle}>
+                          {nafCell}
+                        </span>
+                      ) : (
+                        nafCell
+                      )}
+                    </TableCell>
+                    <TableCell className="min-w-[9rem] max-w-[15rem] align-top text-xs">
+                      {typeof effectifsCell === "string" ? (
+                        <span className="block min-w-0 break-words leading-relaxed" title={effTitle}>
+                          {effectifsCell}
+                        </span>
+                      ) : (
+                        effectifsCell
+                      )}
+                    </TableCell>
+                    <TableCell className="min-w-[13rem] max-w-[22rem] align-top text-xs leading-relaxed text-muted-foreground">
+                      <span
+                        className="block min-w-0 max-w-full truncate whitespace-nowrap"
+                        title={addr !== "—" ? addr : undefined}
+                      >
+                        {addr}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+        </div>
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -226,29 +1205,14 @@ interface ProspectDrawerProps {
   onOpenChange: (open: boolean) => void;
   onAddToPipeline?: () => void;
   onSaveSuccess?: () => void;
-  isDrawing?: boolean;
-  onDrawingChange?: (isDrawing: boolean) => void;
-  onSurfaceUpdate?: (surface: { area: number; polygon: Array<{ lat: number; lng: number }>; orientation?: number }) => void;
-  onSurfaceDelete?: (surfaceId: string) => void;
   /** Patch fusionné dans le state parent (éviter `...prospect` depuis une closure async). */
   onProspectUpdate?: (patch: Partial<Prospect>) => void;
-  onValidateDrawing?: () => void;
   voirHref?: (prospectId: string) => string;
+  /** Mode découverte matching V5 (carte / tiroir sans prospect Firestore). */
+  discoveryRow?: ScoutMatchingV5Row | null;
+  /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). Défaut : parcelle seule. */
+  discoveryLinkedParcelleRows?: ScoutMatchingV5Row[] | null;
 }
-
-type NeonBdnbBatiment = {
-  id: string;
-  code_commune_insee: string | null;
-  annee_construction: number | null;
-  dpe_mix_arrete_classe: string | null;
-  nb_logements: number | null;
-  surface_habitable_logement: string | number | null;
-  usage_principal_bdnb_open: string | null;
-  geom_geojson_wgs84: string | null;
-  distance_m: number | null;
-};
-
-type NeonBdnbResponse = { batiment: NeonBdnbBatiment | null };
 
 export function ProspectDrawer({
   prospect,
@@ -257,13 +1221,10 @@ export function ProspectDrawer({
   onOpenChange,
   onAddToPipeline,
   onSaveSuccess,
-  isDrawing = false,
-  onDrawingChange,
-  onSurfaceUpdate,
-  onSurfaceDelete,
   onProspectUpdate,
-  onValidateDrawing,
   voirHref = (id) => `/solar-scout?prospectId=${id}`,
+  discoveryRow = null,
+  discoveryLinkedParcelleRows = null,
 }: ProspectDrawerProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -286,12 +1247,8 @@ export function ProspectDrawer({
   const [companyEnrichmentLoading, setCompanyEnrichmentLoading] = useState(false);
   const [phase2Scoring, setPhase2Scoring] = useState<ScoredCandidate[] | null>(null);
   const [phase2ScoringLoading, setPhase2ScoringLoading] = useState(false);
-  const [prospectDetailsOpen, setProspectDetailsOpen] = useState(false);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
   const { user } = useAuth();
-  const [neonBdnbLoading, setNeonBdnbLoading] = useState(false);
-  const [neonBdnbError, setNeonBdnbError] = useState<string | null>(null);
-  const [neonBdnb, setNeonBdnb] = useState<NeonBdnbBatiment | null>(null);
 
   /** Mis à true uniquement au clic sur Perfect fit / Highest production — resync batterie quand la cible kWh change. */
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
@@ -316,6 +1273,7 @@ export function ProspectDrawer({
         companyManagerName: undefined,
         companyAddress: undefined,
         companyNaf: undefined,
+        companyTrancheEffectif: undefined,
         companyEnrichmentApiUrl: undefined,
         companyPhone: undefined,
       };
@@ -409,6 +1367,7 @@ export function ProspectDrawer({
         companyManagerName: enrichment.companyManagerName ?? prospect.companyManagerName,
         companyAddress: enrichment.companyAddress ?? prospect.companyAddress,
         companyNaf: enrichment.companyNaf ?? prospect.companyNaf,
+        companyTrancheEffectif: enrichment.companyTrancheEffectif ?? prospect.companyTrancheEffectif,
         companyEnrichmentApiUrl: winningQuery ? buildApiGouvSearchUrl(winningQuery) : undefined,
       });
     };
@@ -469,47 +1428,6 @@ export function ProspectDrawer({
     prospect?.poiCandidateIndex,
     onProspectUpdate,
   ]);
-
-  // Test BDNB depuis Neon (lookup nearest par coordonnées)
-  useEffect(() => {
-    if (!isOpen || !prospect?.coordinates?.lat || !prospect?.coordinates?.lng) {
-      setNeonBdnb(null);
-      setNeonBdnbError(null);
-      setNeonBdnbLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setNeonBdnbLoading(true);
-    setNeonBdnbError(null);
-
-    const run = async () => {
-      const url = `/api/bdnb-neon?lat=${encodeURIComponent(String(prospect.coordinates.lat))}&lng=${encodeURIComponent(
-        String(prospect.coordinates.lng)
-      )}`;
-      const res = await fetchWithAuth(url);
-      if (cancelled) return;
-      if (!res.ok) {
-        const json = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(json?.error || `Erreur ${res.status}`);
-      }
-      const data = (await res.json()) as NeonBdnbResponse;
-      if (cancelled) return;
-      setNeonBdnb(data?.batiment ?? null);
-    };
-
-    run()
-      .catch((e) => {
-        if (!cancelled) setNeonBdnbError(e instanceof Error ? e.message : "Erreur Neon inconnue");
-      })
-      .finally(() => {
-        if (!cancelled) setNeonBdnbLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, prospect?.coordinates?.lat, prospect?.coordinates?.lng]);
 
   const { data: panelsData } = usePanelReferences(user?.uid ?? null);
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
@@ -1244,15 +2162,24 @@ export function ProspectDrawer({
   ]);
 
   return (
-    <div className="h-full w-full bg-white border border-border shadow-xl flex flex-col rounded-2xl overflow-hidden">
-        <div className="p-4 rounded-t-2xl">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold leading-none tracking-tight">Informations du prospect</h2>
+    <div className="h-full w-full bg-white border border-border flex flex-col rounded-2xl overflow-hidden">
+        <div className="rounded-t-2xl p-3 sm:p-4">
+          <div
+            className={cn(
+              "flex items-start gap-3",
+              discoveryRow ? "justify-end" : "justify-between"
+            )}
+          >
+            {discoveryRow ? (
+              <p className="sr-only">Détails découverte matching V5</p>
+            ) : (
+              <h2 className="text-lg font-semibold leading-none tracking-tight">Informations du prospect</h2>
+            )}
             <Button
               variant="outline"
               size="icon"
               onClick={() => onOpenChange(false)}
-              className="h-8 w-8"
+              className="h-8 w-8 shrink-0"
               title="Fermer"
             >
               <X className="h-4 w-4 text-muted-foreground" />
@@ -1295,6 +2222,15 @@ export function ProspectDrawer({
                 <Skeleton className="h-12 flex-1 rounded-md" />
               </div>
             </>
+          ) : discoveryRow ? (
+            <ProspectDrawerDiscoverySection
+              row={discoveryRow}
+              linkedParcelleRows={
+                discoveryLinkedParcelleRows ??
+                (discoveryRow.grain === "parcelle" ? [discoveryRow] : [])
+              }
+              isOpen={isOpen}
+            />
           ) : prospect ? (
             <>
               {/* Score en tag */}
@@ -1310,25 +2246,13 @@ export function ProspectDrawer({
               <div className="w-full space-y-2">
                 <div className="space-y-2">
               {/* Bloc prospect : nom, adresse, type, lat/lon */}
-              <Card className="bg-black border-0 text-white overflow-hidden rounded-xl">
+              <Card className="bg-white border border-border text-foreground shadow-none overflow-hidden rounded-xl">
                 <CardContent className="py-3 px-4">
                   <div className="flex flex-col gap-3 relative">
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <span className="text-[10px] uppercase tracking-wide text-white/70">Prospect</span>
-                      <button
-                        type="button"
-                        onClick={() => setProspectDetailsOpen(true)}
-                        className="p-1.5 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors"
-                        title="Voir plus de détails"
-                        aria-label="Voir plus de détails"
-                      >
-                        <Maximize2 className="h-4 w-4" />
-                      </button>
-                    </div>
                     <div className="space-y-0 [&>p]:m-0 [&>p]:leading-tight">
                     {prospect.name && (
                       <div className="flex items-center gap-1 min-w-0">
-                        <p className="text-xl font-medium truncate flex-1 min-w-0" title={prospect.name}>
+                        <p className="text-xl font-medium text-foreground truncate flex-1 min-w-0" title={prospect.name}>
                           {prospect.name}
                         </p>
                         {prospect.poiCandidates && prospect.poiCandidates.length > 1 && onProspectUpdate && (
@@ -1337,7 +2261,7 @@ export function ProspectDrawer({
                               type="button"
                               variant="ghost"
                               size="icon"
-                              className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted shrink-0"
                               disabled={
                                 companyEnrichmentLoading || (prospect.poiCandidateIndex ?? 0) <= 0
                               }
@@ -1351,7 +2275,7 @@ export function ProspectDrawer({
                               type="button"
                               variant="ghost"
                               size="icon"
-                              className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted shrink-0"
                               disabled={
                                 companyEnrichmentLoading ||
                                 (prospect.poiCandidateIndex ?? 0) >= prospect.poiCandidates.length - 1
@@ -1367,87 +2291,52 @@ export function ProspectDrawer({
                       </div>
                     )}
                     {prospect.address && (
-                      <p className="text-xs text-white/80 truncate" title={prospect.address}>
+                      <p className="text-xs text-muted-foreground truncate" title={prospect.address}>
                         {prospect.address}
                       </p>
                     )}
                     </div>
 
-                    <Separator className="bg-white/20 my-2" />
-
-                    {/* Type | Surface | Année (séparateurs verticaux) */}
-                    <div className="rounded-lg px-3 py-2 bg-white/10 flex items-stretch gap-0">
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60">Type</span>
-                        <PlaceTypeSelect
-                          variant="dark"
-                          value={prospect.placeType}
-                          onValueChange={(value) => {
-                            if (onProspectUpdate) {
-                              onProspectUpdate({ placeType: value });
-                            }
-                          }}
-                          disabled={!onProspectUpdate}
-                        />
-                      </div>
-                      <Separator orientation="vertical" className="bg-white/20 h-auto my-1" />
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60">Surface</span>
-                        {bdnbLoading ? (
-                          <Skeleton className="h-6 w-12 bg-white/20 rounded" />
-                        ) : (
-                          <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
-                            {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0).toFixed(0)} m²
-                          </div>
-                        )}
-                      </div>
-                      <Separator orientation="vertical" className="bg-white/20 h-auto my-1" />
-                      <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60" title="Année de construction (BDNB)">Année</span>
-                        {bdnbLoading ? (
-                          <Skeleton className="h-6 w-10 bg-white/20 rounded" />
-                        ) : (
-                          <div className="px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors text-[10px] uppercase text-white/60 min-w-fit">
-                            {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <Separator className="bg-white/20 my-2" />
+                    <Separator className="my-2" />
 
                     {/* Entreprise (api.gouv) — liste fixe : skeleton / valeur / "No data" par ligne */}
-                    <div className="space-y-3 text-xs pt-3">
+                    <div className="divide-y divide-border text-xs pt-3">
                       {PROSPECT_DATA_ROWS.map((row) => {
-                        const Icon = row.icon;
                         const isLoading = row.isBdnb ? bdnbLoading : companyEnrichmentLoading;
                         const value = row.getValue(prospect);
                         return (
-                          <div key={row.label} className="flex items-center gap-4 min-w-0">
-                            <div className="flex shrink-0 items-center gap-1.5 text-white/70 w-[115px]">
-                              <Icon className="h-3.5 w-3.5 opacity-70" />
+                          <div key={row.label} className="flex items-center gap-4 min-w-0 py-2.5 first:pt-0 last:pb-0">
+                            <div className="shrink-0 text-muted-foreground w-[115px]">
                               <span>{row.label}</span>
                             </div>
                             {isLoading ? (
-                              <Skeleton className="h-3.5 flex-1 bg-white/20" />
+                              <Skeleton className="h-3.5 flex-1" />
                             ) : value ? (
                               row.isPhone ? (
-                                <a href={`tel:${value.replace(/\s/g, "")}`} className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline" title={value}>{value}</a>
+                                <a
+                                  href={`tel:${value.replace(/\s/g, "")}`}
+                                  className="font-mono text-foreground truncate min-w-0 flex-1 text-left pl-1 hover:underline"
+                                  title={value}
+                                >
+                                  {value}
+                                </a>
                               ) : row.isWebsite ? (
                                 <a
                                   href={websiteHref(value)}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-white truncate min-w-0 flex-1 text-left pl-1 hover:underline inline-flex items-center gap-1"
+                                  className="font-mono text-foreground truncate min-w-0 flex-1 text-left pl-1 hover:underline inline-flex items-center gap-1"
                                   title={value}
                                 >
                                   <span className="truncate">{value}</span>
                                 </a>
                               ) : (
-                                <span className={`truncate min-w-0 flex-1 text-left pl-1 ${row.label === "SIREN" || row.label === "SIRET" || row.label === "Code NAF" ? "font-mono text-white" : "text-white"}`} title={value}>{value}</span>
+                                <span className="font-mono truncate min-w-0 flex-1 text-left pl-1 text-foreground" title={value}>
+                                  {value}
+                                </span>
                               )
                             ) : (
-                              <span className="text-white/50 min-w-0 flex-1 text-left pl-1">No data</span>
+                              <span className="font-mono text-muted-foreground min-w-0 flex-1 text-left pl-1">No data</span>
                             )}
                           </div>
                         );
@@ -1456,13 +2345,13 @@ export function ProspectDrawer({
 
                     {/* Ligne Lat/Lon (gauche) + Badge (droite) - en bas */}
                     <div className="flex items-center justify-between gap-2 pt-1 mt-auto">
-                      <div className="flex gap-3 text-[11px] text-white/60 shrink-0">
+                      <div className="flex gap-3 text-[11px] text-muted-foreground shrink-0">
                         <span>Lat {prospect.coordinates.lat.toFixed(5)}</span>
                         <span>Lon {prospect.coordinates.lng.toFixed(5)}</span>
                       </div>
                       <div className="shrink-0">
                         {phase2ScoringLoading && (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-white/70" />
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                         )}
                         {!phase2ScoringLoading && phase2Scoring && phase2Scoring.filter((p) => p.score > 0).length > 0 && (() => {
                           const filteredScoring = phase2Scoring.filter((p) => p.score > 0);
@@ -1473,7 +2362,7 @@ export function ProspectDrawer({
                             <Popover>
                               <PopoverTrigger asChild>
                                 <button className="cursor-pointer">
-                                  <Badge variant="outline" className={`text-xs font-semibold ${badgeProps.className} cursor-pointer hover:opacity-80 transition-opacity border-white/30`}>
+                                  <Badge variant="outline" className={`text-xs font-semibold ${badgeProps.className} cursor-pointer hover:opacity-80 transition-opacity border-border`}>
                                     {badgeProps.label}
                                   </Badge>
                                 </button>
@@ -1497,6 +2386,7 @@ export function ProspectDrawer({
                                                 siret: p.siret,
                                                 companyLegalName: p.nom_complet,
                                                 companyAddress: p.adresse,
+                                                companyTrancheEffectif: undefined,
                                               });
                                               toast.success("Informations mises à jour", {
                                                 description: `Établissement ${p.nom_complet} sélectionné`,
@@ -1534,306 +2424,86 @@ export function ProspectDrawer({
                 </CardContent>
               </Card>
 
-              {/* Test: données BDNB depuis Neon */}
-              <Card className="bg-black border-0 text-white overflow-hidden rounded-xl">
-                <CardContent className="py-3 px-4">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <span className="text-[10px] uppercase tracking-wide text-white/70">From Neon (test)</span>
-                    {neonBdnbLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-white/70" />}
-                  </div>
+              {/* Score opérationnel : surface + année construction */}
+              {(() => {
+                const totalArea = prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0;
+                const annee = prospect.anneeConstruction ?? null;
 
-                  {neonBdnbError ? (
-                    <div className="text-xs text-red-200 break-words">
-                      Erreur: {neonBdnbError}
-                    </div>
-                  ) : neonBdnbLoading ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-3.5 w-40 bg-white/20" />
-                      <Skeleton className="h-3.5 w-64 bg-white/20" />
-                      <Skeleton className="h-16 w-full bg-white/20" />
-                    </div>
-                  ) : neonBdnb ? (
-                    <div className="space-y-2 text-xs">
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-white/80">
-                        <span className="font-mono text-white">id: {neonBdnb.id}</span>
-                        <span>dist: {neonBdnb.distance_m != null ? `${Math.round(neonBdnb.distance_m)} m` : "—"}</span>
-                        <span>commune: {neonBdnb.code_commune_insee ?? "—"}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-white/70">
-                        <div>Année: <span className="text-white/90">{neonBdnb.annee_construction ?? "—"}</span></div>
-                        <div>DPE: <span className="text-white/90">{neonBdnb.dpe_mix_arrete_classe ?? "—"}</span></div>
-                        <div>Logements: <span className="text-white/90">{neonBdnb.nb_logements ?? "—"}</span></div>
-                        <div>Surf hab: <span className="text-white/90">{neonBdnb.surface_habitable_logement ?? "—"}</span></div>
-                        <div className="col-span-2">Usage: <span className="text-white/90">{neonBdnb.usage_principal_bdnb_open ?? "—"}</span></div>
-                      </div>
+                // Surface sub-score /50 : échelonné linéairement entre 700 m² et 10 000 m²
+                let scoreSurface = 0;
+                if (totalArea >= 10000) scoreSurface = 50;
+                else if (totalArea >= 700) scoreSurface = Math.round(((totalArea - 700) / (10000 - 700)) * 50);
+                else scoreSurface = 0;
 
-                      <div className="pt-1">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <span className="text-[10px] uppercase tracking-wide text-white/60">GeoJSON (WGS84)</span>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7 px-2 text-[10px] bg-white/0 border-white/20 text-white/80 hover:bg-white/10 hover:text-white"
-                            onClick={async () => {
-                              const g = neonBdnb.geom_geojson_wgs84;
-                              if (!g) return;
-                              try {
-                                await navigator.clipboard.writeText(g);
-                                toast.success("GeoJSON copié");
-                              } catch {
-                                toast.error("Impossible de copier");
-                              }
-                            }}
-                            disabled={!neonBdnb.geom_geojson_wgs84}
-                            title={neonBdnb.geom_geojson_wgs84 ? "Copier GeoJSON" : "Aucune géométrie"}
-                          >
-                            Copier
-                          </Button>
-                        </div>
-                        <pre className="max-h-28 overflow-auto rounded-md bg-white/10 p-2 text-[10px] leading-snug text-white/80 whitespace-pre-wrap break-words">
-                          {(neonBdnb.geom_geojson_wgs84 ?? "—").slice(0, 800)}
-                          {(neonBdnb.geom_geojson_wgs84 && neonBdnb.geom_geojson_wgs84.length > 800) ? "\n…(tronqué)" : ""}
-                        </pre>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-white/60">
-                      Aucun bâtiment trouvé (base Neon limitée à Bordeaux pour l’instant).
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+                // Année construction sub-score /50
+                let scoreAnnee = 0;
+                if (annee != null) {
+                  if (annee > 2010) scoreAnnee = 50;
+                  else if (annee >= 1990) scoreAnnee = 25;
+                  else scoreAnnee = 0;
+                }
 
-              <Dialog open={prospectDetailsOpen} onOpenChange={setProspectDetailsOpen}>
-                <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col p-0 bg-black border-0 [&>button]:text-white [&>button]:right-4 [&>button]:top-4 hover:[&>button]:bg-white/10 hover:[&>button]:text-white">
-                  <DialogHeader className="px-4 md:px-5 pt-4 md:pt-5 pb-2">
-                    <DialogTitle className="text-white text-lg font-semibold">
-                      {prospect.name || "Détails du prospect"}
-                    </DialogTitle>
-                  </DialogHeader>
-                  <div className="flex-1 overflow-y-auto px-4 md:px-5 pb-4 md:pb-5 space-y-4">
-                    <div className="space-y-0 [&>p]:m-0 [&>p]:leading-tight">
-                      {prospect.name && (
-                        <div className="flex items-center gap-1 min-w-0">
-                          <p className="text-xl font-medium text-white truncate flex-1 min-w-0" title={prospect.name}>
-                            {prospect.name}
-                          </p>
-                          {prospect.poiCandidates && prospect.poiCandidates.length > 1 && onProspectUpdate && (
-                            <div className="flex shrink-0 items-center gap-0.5">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
-                                disabled={
-                                  companyEnrichmentLoading || (prospect.poiCandidateIndex ?? 0) <= 0
-                                }
-                                onClick={() => void handlePoiNavigate(-1)}
-                                aria-label="POI précédent"
-                                title="POI précédent"
-                              >
-                                <ChevronLeft className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-white/80 hover:text-white hover:bg-white/10 shrink-0"
-                                disabled={
-                                  companyEnrichmentLoading ||
-                                  (prospect.poiCandidateIndex ?? 0) >= prospect.poiCandidates.length - 1
-                                }
-                                onClick={() => void handlePoiNavigate(1)}
-                                aria-label="POI suivant"
-                                title="POI suivant"
-                              >
-                                <ChevronRight className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {prospect.address && (
-                        <p className="text-sm text-white/80 mt-1 wrap-break-word" title={prospect.address}>{prospect.address}</p>
-                      )}
-                    </div>
-                    <div className="rounded-lg px-4 py-3 bg-white/10 flex gap-6 flex-wrap">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60">Type</span>
-                        <span className="text-sm text-white">{translatePlaceType(prospect.placeType) || prospect.placeType || "—"}</span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60">Surface</span>
-                        <span className="text-sm text-white">{(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0).toFixed(0)} m²</span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60">Orientation</span>
-                        <span className="text-sm text-white">
-                          {(() => {
-                            const surfaces = prospect.roofSurfaces ?? (prospect.roofSurface ? [prospect.roofSurface] : []);
-                            const firstOrientation = surfaces[0]?.orientation;
-                            return firstOrientation != null ? `${Math.abs(firstOrientation).toFixed(1)}°` : "—";
-                          })()}
-                        </span>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-white/60">Année</span>
-                        <span className="text-sm text-white">{prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}</span>
-                      </div>
-                    </div>
-                    {(prospect.siren || prospect.companyLegalName || prospect.companyManagerName || prospect.companyAddress || prospect.companyNaf || prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber || prospect.contact?.websiteUri) && (
-                      <div className="space-y-3 text-sm">
-                        <div className="text-[10px] uppercase tracking-wide text-white/60">Entreprise</div>
-                        <div className="space-y-2">
-                          {prospect.siren && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">SIREN</span><span className="text-white font-mono break-all">{prospect.siren}</span></div>
-                          )}
-                          {prospect.siret && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">SIRET</span><span className="text-white font-mono break-all">{prospect.siret}</span></div>
-                          )}
-                          {prospect.companyLegalName && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Dénomination</span><span className="text-white wrap-break-word">{prospect.companyLegalName}</span></div>
-                          )}
-                          {prospect.companyAddress && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Adresse siège</span><span className="text-white wrap-break-word">{prospect.companyAddress}</span></div>
-                          )}
-                          {prospect.companyNaf && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Code NAF</span><span className="text-white font-mono">{prospect.companyNaf}</span></div>
-                          )}
-                          {prospect.companyManagerName && (
-                            <div className="flex gap-3"><span className="text-white/70 w-24 shrink-0">Gérant</span><span className="text-white wrap-break-word">{prospect.companyManagerName}</span></div>
-                          )}
-                          {(prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber) && (
-                            <div className="flex gap-3">
-                              <span className="text-white/70 w-24 shrink-0">Téléphone</span>
-                              <a href={`tel:${(prospect.contact?.internationalPhoneNumber || prospect.contact?.nationalPhoneNumber || "").replace(/\s/g, "")}`} className="text-white hover:underline">{prospect.contact?.nationalPhoneNumber || prospect.contact?.internationalPhoneNumber}</a>
-                            </div>
-                          )}
-                          {prospect.contact?.websiteUri && (
-                            <div className="flex gap-3 min-w-0">
-                              <span className="text-white/70 w-24 shrink-0">Site web</span>
-                              <a
-                                href={websiteHref(prospect.contact.websiteUri)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-white hover:underline truncate min-w-0"
-                                title={prospect.contact.websiteUri}
-                              >
-                                {prospect.contact.websiteUri}
-                              </a>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    {prospect.coordinates && (
-                      <div className="flex gap-4 text-xs text-white/60 pt-2 border-t border-white/20">
-                        <span>Lat {prospect.coordinates.lat.toFixed(5)}</span>
-                        <span>Lon {prospect.coordinates.lng.toFixed(5)}</span>
-                      </div>
-                    )}
-                  </div>
-                </DialogContent>
-              </Dialog>
+                const totalScore = scoreSurface + scoreAnnee;
+                const pct = totalScore; // 0–100
 
-              {/* Section des surfaces */}
-              <div className="bg-gray-100 rounded-xl py-3 px-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-[10px] uppercase tracking-wide text-gray-500">Surfaces</div>
-                  {!isDrawing && (
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => {
-                        if (onDrawingChange) {
-                          onDrawingChange(true);
-                        }
-                      }}
-                      className="h-8 w-8"
-                      title="Ajouter une surface"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
+                const donutData = [
+                  { value: pct },
+                  { value: 100 - pct },
+                ];
 
-                {/* Liste des surfaces */}
-                <div className="space-y-2">
-                  {(() => {
-                    // Utiliser roofSurfaces si disponible, sinon utiliser roofSurface pour compatibilité
-                    const surfaces = prospect.roofSurfaces || 
-                      (prospect.roofSurface.area > 0 ? [prospect.roofSurface] : []);
-                    
-                    
-                    if (surfaces.length === 0) {
-                      return (
-                        <div className="text-sm text-muted-foreground text-center py-2">
-                          Aucune surface définie
-                        </div>
-                      );
-                    }
+                let scoreColor = "#ef4444"; // red
+                if (pct >= 70) scoreColor = "#22c55e"; // green
+                else if (pct >= 40) scoreColor = "#f59e0b"; // amber
 
-                    return surfaces.map((surface, index) => {
-                      const surfaceId = surface.id || `surface-${index}`;
-                      const surfaceKwp = surfaceToKwp(surface.area);
-                      return (
-                        <div
-                          key={surfaceId}
-                          className="rounded-xl border border-border bg-white p-3 shadow-xs flex items-stretch gap-3"
-                        >
-                          <div className="shrink-0 flex items-center">
-                            <div className="w-2.5 h-2.5 rounded-full bg-[#E4FE55]" />
+                return (
+                  <Card className="bg-muted/40 border border-border rounded-xl overflow-hidden">
+                    <CardContent className="py-3 px-4">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-3">Score opérationnel</div>
+                      <div className="flex items-center gap-4">
+                        {/* Donut */}
+                        <div className="relative shrink-0" style={{ width: 80, height: 80 }}>
+                          <PieChart width={80} height={80}>
+                            <Pie
+                              data={donutData}
+                              cx={35}
+                              cy={35}
+                              innerRadius={26}
+                              outerRadius={36}
+                              startAngle={90}
+                              endAngle={-270}
+                              dataKey="value"
+                              strokeWidth={0}
+                            >
+                              <Cell fill={scoreColor} />
+                              <Cell fill="hsl(var(--muted))" />
+                            </Pie>
+                          </PieChart>
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <span className="text-sm font-semibold" style={{ color: scoreColor }}>{pct}</span>
                           </div>
-                          <div className="flex-1 min-w-0 flex flex-col justify-center">
-                            <div className="font-semibold text-xs text-foreground">
-                              Surface {index + 1}
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                                {surface.area.toFixed(2)} m²
-                              </span>
-                            </div>
-                          </div>
-                          {/* Bouton de suppression */}
-                            {!isDrawing && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => {
-                                  if (onSurfaceDelete) {
-                                    onSurfaceDelete(surfaceId);
-                                  } else if (onProspectUpdate && prospect) {
-                                    // Fallback: supprimer directement depuis le prospect
-                                    const surfaces = prospect.roofSurfaces || 
-                                      (prospect.roofSurface.area > 0 ? [prospect.roofSurface] : []);
-                                    const updatedSurfaces = surfaces.filter((s, idx) => 
-                                      (s.id || `surface-${idx}`) !== surfaceId
-                                    );
-                                    
-                                    // Calculer la surface totale
-                                    const totalArea = updatedSurfaces.reduce((sum, s) => sum + s.area, 0);
-                                    
-                                    onProspectUpdate({
-                                      roofSurfaces: updatedSurfaces,
-                                      roofSurface: updatedSurfaces.length > 0 
-                                        ? updatedSurfaces[0] 
-                                        : { area: 0, polygon: [] },
-                                    });
-                                  }
-                                }}
-                                className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                                title="Supprimer cette surface"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            )}
                         </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
+                        {/* Détail */}
+                        <div className="flex flex-col gap-1.5 text-xs min-w-0">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-muted-foreground truncate">Surface toiture</span>
+                            <span className="font-medium tabular-nums">
+                              {totalArea > 0 ? `${Math.round(totalArea)} m²` : "—"}
+                              <span className="text-muted-foreground ml-1">({scoreSurface}/50)</span>
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-muted-foreground truncate">Année construction</span>
+                            <span className="font-medium tabular-nums">
+                              {annee != null ? annee : "—"}
+                              <span className="text-muted-foreground ml-1">({scoreAnnee}/50)</span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })()}
 
               {prospect.exposure && (
                 <div className="bg-gray-100 rounded-xl py-3 px-4">
@@ -2397,79 +3067,65 @@ export function ProspectDrawer({
           )}
         </div>
 
-        <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl">
-          {prospect?.id && (
-            <div className="flex flex-wrap gap-2">
-              <Link href={voirHref(prospect.id)}>
+        {!discoveryRow ? (
+          <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl">
+            {prospect?.id && (
+              <div className="flex flex-wrap gap-2">
+                <Link href={voirHref(prospect.id)}>
+                  <Button
+                    variant="default"
+                    size="icon"
+                    className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
+                    title={isOnMap ? "Voir" : "Voir sur la carte"}
+                    aria-label={isOnMap ? "Voir" : "Voir sur la carte"}
+                  >
+                    {isOnMap ? (
+                      <Eye className="h-4 w-4" />
+                    ) : (
+                      <MapIcon className="h-4 w-4" />
+                    )}
+                  </Button>
+                </Link>
                 <Button
                   variant="default"
                   size="icon"
                   className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
-                  title={isOnMap ? "Voir" : "Voir sur la carte"}
-                  aria-label={isOnMap ? "Voir" : "Voir sur la carte"}
+                  onClick={handleOpenSharePage}
+                  disabled={isGeneratingLink}
+                  title={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
+                  aria-label={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
                 >
-                  {isOnMap ? (
-                    <Eye className="h-4 w-4" />
+                  {isGeneratingLink ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Map className="h-4 w-4" />
+                    <ExternalLink className="h-4 w-4" />
                   )}
                 </Button>
-              </Link>
-              <Button
-                variant="default"
-                size="icon"
-                className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
-                onClick={handleOpenSharePage}
-                disabled={isGeneratingLink}
-                title={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
-                aria-label={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
-              >
-                {isGeneratingLink ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ExternalLink className="h-4 w-4" />
-                )}
-              </Button>
-              <Button
-                onClick={handleSave}
-                className="flex-1 min-w-0"
-                size="lg"
-                disabled={isSaving}
-              >
-                {isSaving ? "Enregistrement..." : "Enregistrer"}
-              </Button>
-            </div>
-          )}
-          {prospect && onAddToPipeline && !prospect.id && (
-            <div className="flex gap-2">
-              {onDrawingChange && (
                 <Button
-                  variant="default"
-                  size="icon"
-                  className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
-                  onClick={() => onDrawingChange(!isDrawing)}
-                  title={isDrawing ? "Quitter l'édition" : "Surface"}
-                  aria-label={isDrawing ? "Quitter l'édition" : "Surface"}
+                  onClick={handleSave}
+                  className="flex-1 min-w-0"
+                  size="lg"
+                  disabled={isSaving}
                 >
-                  {isDrawing ? (
-                    <X className="h-4 w-4" />
-                  ) : (
-                    <PenTool className="h-4 w-4" />
-                  )}
+                  {isSaving ? "Enregistrement..." : "Enregistrer"}
                 </Button>
-              )}
-              <Button
-                variant={(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 ? "default" : "secondary"}
-                onClick={handleAddToPipeline}
-                className="flex-1"
-                size="lg"
-                disabled={isAdding}
-              >
-                {isAdding ? "Ajout en cours..." : "Ajouter au pipeline"}
-              </Button>
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+            {prospect && onAddToPipeline && !prospect.id && (
+              <div className="flex gap-2">
+                <Button
+                  variant={(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 ? "default" : "secondary"}
+                  onClick={handleAddToPipeline}
+                  className="flex-1"
+                  size="lg"
+                  disabled={isAdding}
+                >
+                  {isAdding ? "Ajout en cours..." : "Ajouter au pipeline"}
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : null}
     </div>
   );
 }

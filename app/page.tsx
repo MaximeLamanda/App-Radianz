@@ -38,7 +38,6 @@ import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
 import { updateProspectInPipeline, updateProspect } from "@/lib/firestore";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { getUserProfile } from "@/lib/firestore-user-profile";
-import { surfaceToKwp } from "@/lib/surface-to-kwp";
 import { getSolarEquipmentSettings } from "@/lib/solar-settings";
 import { useDrawer } from "@/lib/drawer-context";
 import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference, BatteryReference } from "@/types";
@@ -427,7 +426,6 @@ function HomePage() {
           prospect={selectedProspect}
           isOpen={true}
           onOpenChange={handleDrawerOpenChange}
-          isDrawing={false}
           onProspectUpdate={(patch) => {
             setSelectedProspect((prev) => {
               if (!prev) return prev;
@@ -444,50 +442,6 @@ function HomePage() {
               }
               return merged;
             });
-          }}
-          onSurfaceDelete={(surfaceId) => {
-            const prospect = selectedProspect;
-            if (!prospect) return;
-            const surfaces = prospect.roofSurfaces || 
-              (prospect.roofSurface?.area ? [{ ...prospect.roofSurface, id: "surface-0" }] : []);
-            const updatedSurfaces = surfaces.filter((s, idx) => 
-              (s.id || `surface-${idx}`) !== surfaceId
-            );
-            const totalArea = updatedSurfaces.reduce((sum, s) => sum + s.area, 0);
-            const estimatedKwp = surfaceToKwp(totalArea);
-            const prev = prospect.solarPotential;
-            const updatedProspect: Prospect = {
-              ...prospect,
-              roofSurfaces: updatedSurfaces,
-              roofSurface: updatedSurfaces.length > 0 
-                ? updatedSurfaces[updatedSurfaces.length - 1] 
-                : { area: 0, polygon: [] },
-              qualityScore: calculateQualityScore(totalArea, prospect.placeType),
-              solarPotential: {
-                ...prev,
-                maxArrayPanelsCount: prev?.maxArrayPanelsCount ?? 0,
-                maxArrayAreaMeters2: totalArea,
-                maxSunshineHoursPerYear: prev?.maxSunshineHoursPerYear ?? 0,
-                maxKwhPerYear: prev?.maxKwhPerYear ?? 0,
-                estimatedKwp,
-                pvgisDataFetched: false,
-              },
-            };
-            setSelectedProspect(updatedProspect);
-            mutateProspects((prev) =>
-              prev ? prev.map((x) => (x.id === prospect.id ? updatedProspect : x)) : prev
-            );
-            if (prospect.id) {
-              updateProspectInPipeline(prospect.id, updatedProspect, { estimatedKwp })
-                .then(() => {
-                  mutateProspects();
-                  toast.success("Surface supprimée");
-                })
-                .catch((err) => {
-                  console.error("Erreur Firestore après suppression de surface:", err);
-                  toast.error("Erreur lors de la sauvegarde");
-                });
-            }
           }}
           onSaveSuccess={() => mutateProspects()}
           voirHref={(id) => `/solar-scout?prospectId=${id}`}

@@ -1,0 +1,119 @@
+import { NextRequest, NextResponse } from "next/server";
+import { Client } from "pg";
+import { requireAuth } from "@/lib/api-auth-quota";
+import {
+  getServerDatabaseUrl,
+  getServerDatabaseUrlEnvHint,
+  getServerDatabaseUrlEnvPresence,
+} from "@/lib/server-database-url";
+import { getScoutMatchingV5TableRef } from "@/lib/scout-matching-v5-table";
+
+const MAX_LIMIT = 5000;
+
+function parseBBox(searchParams: URLSearchParams): {
+  minLng: number;
+  minLat: number;
+  maxLng: number;
+  maxLat: number;
+} | null {
+  const minLat = Number(searchParams.get("minLat"));
+  const maxLat = Number(searchParams.get("maxLat"));
+  const minLng = Number(searchParams.get("minLng"));
+  const maxLng = Number(searchParams.get("maxLng"));
+  if (![minLat, maxLat, minLng, maxLng].every((n) => Number.isFinite(n))) {
+    return null;
+  }
+  return { minLng, minLat, maxLng, maxLat };
+}
+
+export async function GET(request: NextRequest) {
+  const authResult = await requireAuth(request);
+  if (!authResult.ok) return authResult.response;
+
+  const databaseUrl = getServerDatabaseUrl();
+  if (!databaseUrl) {
+    return NextResponse.json(
+      {
+        error: `Variable Postgres manquante (${getServerDatabaseUrlEnvHint()})`,
+        envPresence: getServerDatabaseUrlEnvPresence(),
+      },
+      { status: 500 }
+    );
+  }
+
+  const { searchParams } = request.nextUrl;
+  const codeInsee = (searchParams.get("code_insee") ?? "").trim();
+  if (!codeInsee) {
+    return NextResponse.json({ error: "Paramètre code_insee requis." }, { status: 400 });
+  }
+
+  let limit = Math.trunc(Number(searchParams.get("limit") ?? "2000"));
+  if (!Number.isFinite(limit) || limit < 1) limit = 2000;
+  limit = Math.min(Math.max(limit, 1), MAX_LIMIT);
+
+  const bbox = parseBBox(searchParams);
+  const tableRef = getScoutMatchingV5TableRef(process.env.SCOUT_MATCHING_V5_TABLE);
+  const grainRaw = (searchParams.get("grain") ?? "").trim().toLowerCase();
+  const grainFilter =
+    grainRaw === "building" || grainRaw === "parcelle" ? grainRaw : null;
+
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const params: unknown[] = [codeInsee];
+    let p = 2;
+    let sqlFrom = `FROM ${tableRef.qualifiedSql} WHERE code_insee = $1`;
+
+    if (bbox) {
+      sqlFrom += `
+            AND geom && ST_MakeEnvelope($${p}::double precision, $${p + 1}::double precision, $${p + 2}::double precision, $${p + 3}::double precision, 4326)
+            AND ST_Intersects(geom, ST_MakeEnvelope($${p}::double precision, $${p + 1}::double precision, $${p + 2}::double precision, $${p + 3}::double precision, 4326))`;
+      params.push(bbox.minLng, bbox.minLat, bbox.maxLng, bbox.maxLat);
+      p += 4;
+    }
+    if (grainFilter) {
+      sqlFrom += ` AND grain = $${p}`;
+      params.push(grainFilter);
+      p += 1;
+    }
+    const limitPlaceholder = p;
+    params.push(limit);
+
+    const { rows } = await client.query<{
+      scout_v5_id: string;
+      geometry: GeoJSON.Geometry;
+      properties_json: Record<string, unknown>;
+    }>(
+      `
+      SELECT
+        scout_v5_id,
+        ST_AsGeoJSON(geom)::json AS geometry,
+        properties_json
+      ${sqlFrom}
+      ORDER BY scout_v5_id
+      LIMIT $${limitPlaceholder}
+      `,
+      params
+    );
+
+    const features = rows
+      .filter(
+        (r) =>
+          r.geometry &&
+          (r.geometry.type === "Polygon" || r.geometry.type === "MultiPolygon")
+      )
+      .map((r) => ({
+        type: "Feature" as const,
+        id: r.scout_v5_id,
+        geometry: r.geometry,
+        properties: r.properties_json ?? {},
+      }));
+
+    return NextResponse.json({ type: "FeatureCollection", features });
+  } catch (err) {
+    console.error("[matching-v5/features]", err);
+    return NextResponse.json({ error: "Erreur requête Postgres" }, { status: 500 });
+  } finally {
+    await client.end();
+  }
+}

@@ -133,7 +133,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("[sitadel-opportunities] Erreur:", error);
-    return NextResponse.json({ error: "Erreur lors de la requête Sitadel Neon" }, { status: 500 });
+    return NextResponse.json({ error: "Erreur lors de la requête Sitadel" }, { status: 500 });
   } finally {
     await client.end();
   }

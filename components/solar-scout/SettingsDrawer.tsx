@@ -804,20 +804,6 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                         </span>
                       </div>
                     )}
-                    {quotaDisplay && (
-                      <div className="flex items-center justify-between py-2 border-t border-dashed">
-                        <div className="flex items-center gap-1.5">
-                          <Sparkles className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm">Crédits BDNB (Neon)</span>
-                        </div>
-                        <span className="text-sm font-medium tabular-nums">
-                          {quotaDisplay.bdnbNeon.current}
-                          {quotaDisplay.bdnbNeon.limit != null
-                            ? ` / ${quotaDisplay.bdnbNeon.limit}`
-                            : " ∞"}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 )}
               </TabsContent>

@@ -16,13 +16,9 @@ export type AuthQuotaResult =
   | { ok: false; response: NextResponse };
 
 /**
- * Vérifie l'authentification et les quotas.
- * Retourne { ok: true, context } ou { ok: false, response } en cas d'erreur.
+ * Vérifie uniquement l'authentification Firebase (Bearer), sans quota ni lecture Firestore profil.
  */
-export async function requireAuthAndQuota(
-  request: Request,
-  api: ApiType
-): Promise<AuthQuotaResult> {
+export async function requireAuth(request: Request): Promise<AuthQuotaResult> {
   const authHeader = request.headers.get("Authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
@@ -46,6 +42,21 @@ export async function requireAuthAndQuota(
       ),
     };
   }
+
+  return { ok: true, context: { uid } };
+}
+
+/**
+ * Vérifie l'authentification et les quotas.
+ * Retourne { ok: true, context } ou { ok: false, response } en cas d'erreur.
+ */
+export async function requireAuthAndQuota(
+  request: Request,
+  api: ApiType
+): Promise<AuthQuotaResult> {
+  const authResult = await requireAuth(request);
+  if (!authResult.ok) return authResult;
+  const { uid } = authResult.context;
 
   let profile = await getServerUserProfile(uid);
 
@@ -80,11 +91,9 @@ export function incrementQuotaAfterSuccess(uid: string, api: ApiType): void {
   const field =
     api === "bdnb"
       ? "bdnbRequestCount"
-      : api === "bdnb_neon"
-        ? "bdnbNeonRequestCount"
-        : api === "osm"
-          ? "osmRequestCount"
-          : "sitadelMapRequestCount";
+      : api === "osm"
+        ? "osmRequestCount"
+        : "sitadelMapRequestCount";
   incrementServerCount(uid, field).catch((err) => {
     console.warn(`[${api}] Increment quota:`, err);
   });

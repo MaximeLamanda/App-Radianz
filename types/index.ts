@@ -127,6 +127,8 @@ export interface Prospect {
   companyManagerName?: string;
   companyAddress?: string;
   companyNaf?: string;
+  /** Code tranche d’effectif INSEE (ex. 03), source API recherche-entreprises */
+  companyTrancheEffectif?: string;
   companyPhone?: string;
   /** URL api.gouv directe qui a trouvé le résultat (pour affichage / test) */
   companyEnrichmentApiUrl?: string;
@@ -161,6 +163,13 @@ export interface Lead {
   qualityScore: number;
   contactName?: string;
   thumbnailUrl?: string;
+  siren?: string;
+  siret?: string;
+  companyLegalName?: string;
+  companyLegalForm?: string;
+  companyAddress?: string;
+  parcellesCount?: number;
+  codeInsee?: string;
   createdAt: Date;
 }
 

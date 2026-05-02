@@ -80,7 +80,11 @@ export async function GET(request: NextRequest) {
       chosen = results[0];
     }
 
-    return NextResponse.json({ result: mapResultatApiToEnrichment(chosen) });
+    const qTrim = q.trim();
+    const preferSiret = /^\d{14}$/.test(qTrim) ? qTrim : undefined;
+    return NextResponse.json({
+      result: mapResultatApiToEnrichment(chosen, preferSiret ? { preferSiret } : undefined),
+    });
   } catch (e) {
     console.error("[recherche-entreprises]", e);
     return NextResponse.json(

@@ -34,3 +34,46 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Données brutes pipeline (très lourdes — voir data/west-france/README.md)
+data/west-france/sirene/
+data/west-france/bdnb_zips/
+data/west-france/bdnb_extract/
+data/west-france/out/
+data/west-france/**/*.log
+
+# SITADEL : zips et CSV extraits (régénérables — métadonnées restent suivies si besoin)
+data/sitadel/raw/*.zip
+data/sitadel/extracted/**/*.csv
+
+# BDNB open data téléchargé / extrait (très lourd)
+bdnb/dep33_millesime_2025_07a/
+
+# Pipeline Python (venv local — recréer avec python3 -m venv)
+data-pipeline/python/.venv*
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sorties scripts ad hoc (enrichissements, exports)
+scripts/output/
+
+# Extractions POI OSM locales (régénérables)
+data-pipeline/python/out/**/*.parquet
+
+# Pipeline data-pipeline/out : rien de lourd versionné (GeoJSON, Parquet, CSV matching)
+data-pipeline/out/**/*.geojson
+data-pipeline/out/**/*.parquet
+data-pipeline/out/matching/**/*.csv
+
+# Dumps PostgreSQL / téléchargements partiels (très lourds)
+open_data_millesime_*/
+*.crdownload
+
+# datasource/ : binaires et CSV lourds — chemins documentés dans datasource/README.md
+datasource/**/*.osm.pbf
+datasource/**/*.zip
+datasource/**/*.json.gz
+datasource/**/*.parquet
+datasource/**/*.csv
+datasource/bdnb/dep33_extract/

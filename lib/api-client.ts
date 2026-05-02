@@ -9,7 +9,11 @@ import { auth } from "./firebase";
 export async function fetchWithAuth(url: string, init?: RequestInit): Promise<Response> {
   let token: string | null = null;
   if (typeof window !== "undefined" && auth.currentUser) {
-    token = await auth.currentUser.getIdToken();
+    try {
+      token = await auth.currentUser.getIdToken();
+    } catch {
+      token = null;
+    }
   }
   const headers = new Headers(init?.headers);
   if (token) {

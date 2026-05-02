@@ -1,0 +1,26 @@
+# Postgres + PostGIS en local (BDNB, scripts d’import, routes bbox Postgres).
+# Aucune dépendance à Neon : définir DATABASE_URL vers ce service dans .env.local
+#
+# Démarrage : docker compose up -d
+# URL : postgresql://bdnb:bdnb@127.0.0.1:5433/bdnb_local
+
+services:
+  postgres-bdnb:
+    image: postgis/postgis:16-3.4
+    container_name: solar-view-postgres-bdnb
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: bdnb
+      POSTGRES_PASSWORD: bdnb
+      POSTGRES_DB: bdnb_local
+    volumes:
+      - pgdata_bdnb_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bdnb -d bdnb_local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata_bdnb_local:
