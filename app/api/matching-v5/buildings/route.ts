@@ -66,14 +66,16 @@ async function handleRequest(request: NextRequest) {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    const { rows } = await client.query<{
-      batiment_construction_id: string;
-      batiment_groupe_id: string | null;
-      annee_construction: number | null;
-      footprint_m2: number | null;
-      geometry: GeoJSON.Geometry;
-    }>(
-      `
+    const runBuildingsQuery = async (withFfoJoin: boolean) =>
+      client.query<{
+        batiment_construction_id: string;
+        batiment_groupe_id: string | null;
+        annee_construction: number | null;
+        footprint_m2: number | null;
+        geometry: GeoJSON.Geometry;
+      }>(
+        withFfoJoin
+          ? `
       SELECT
         bc.batiment_construction_id::text,
         bc.batiment_groupe_id::text,
@@ -89,9 +91,45 @@ async function handleRequest(request: NextRequest) {
           OR
           (array_length($2::text[], 1) IS NOT NULL AND bc.batiment_groupe_id::text = ANY($2::text[]))
         )
+      `
+          : `
+      SELECT
+        bc.batiment_construction_id::text,
+        bc.batiment_groupe_id::text,
+        NULL::integer AS annee_construction,
+        ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
+        ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::json AS geometry
+      FROM ${tableRef.qualifiedSql} bc
+      WHERE bc.geom_cstr IS NOT NULL
+        AND (
+          (array_length($1::text[], 1) IS NOT NULL AND bc.batiment_construction_id::text = ANY($1::text[]))
+          OR
+          (array_length($2::text[], 1) IS NOT NULL AND bc.batiment_groupe_id::text = ANY($2::text[]))
+        )
       `,
-      [constructionIds, groupIds]
-    );
+        [constructionIds, groupIds]
+      );
+
+    let rows: Array<{
+      batiment_construction_id: string;
+      batiment_groupe_id: string | null;
+      annee_construction: number | null;
+      footprint_m2: number | null;
+      geometry: GeoJSON.Geometry;
+    }>;
+    try {
+      const res = await runBuildingsQuery(true);
+      rows = res.rows;
+    } catch (err) {
+      const pgCode = (err as { code?: string } | null)?.code;
+      // Tolère les environnements où la table FFO n'est pas encore déployée.
+      if (pgCode === "42P01" || pgCode === "42703") {
+        const res = await runBuildingsQuery(false);
+        rows = res.rows;
+      } else {
+        throw err;
+      }
+    }
 
     const features = rows
       .filter((r) => r.geometry && (r.geometry.type === "Polygon" || r.geometry.type === "MultiPolygon"))
@@ -110,7 +148,9 @@ async function handleRequest(request: NextRequest) {
     return NextResponse.json({ type: "FeatureCollection", features });
   } catch (err) {
     console.error("[matching-v5/buildings]", err);
-    return NextResponse.json({ error: "Erreur requête Postgres" }, { status: 500 });
+    const message = err instanceof Error ? err.message : "Erreur inconnue";
+    const pgCode = (err as { code?: string } | null)?.code ?? null;
+    return NextResponse.json({ error: "Erreur requête Postgres", message, pgCode }, { status: 500 });
   } finally {
     await client.end();
   }
