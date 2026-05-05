@@ -6,8 +6,12 @@ import {
   findMatchingV5LinkedParcelleRows,
   findMatchingV5LinkedParcelleRowsTransitive,
   findMatchingV5ParcelleRowsForBuilding,
+  findMatchingV5RowIdForBatimentFootprint,
+  formatV5OsmPoiTypeLabelForDisplay,
+  mergeOsmPoisFromParcelleRows,
   parseGoogleNearbyRankedJson,
   parseMatchingV5BuildingsJson,
+  parseOsmPoisJson,
   parseSiretsMatchJson,
 } from "./scout-matching-v5-map";
 
@@ -90,6 +94,98 @@ describe("findMatchingV5ParcelleRowsForBuilding", () => {
   });
 });
 
+describe("formatV5OsmPoiTypeLabelForDisplay", () => {
+  it("laisse inchangé un libellé déjà métier (sans syntaxe clé:valeur)", () => {
+    expect(formatV5OsmPoiTypeLabelForDisplay("Restauration rapide")).toBe("Restauration rapide");
+    expect(formatV5OsmPoiTypeLabelForDisplay("Garage / réparation auto")).toBe("Garage / réparation auto");
+  });
+
+  it("convertit l’ancien format OSM leisure: … en libellé client", () => {
+    expect(formatV5OsmPoiTypeLabelForDisplay("leisure: amusement_arcade")).toBe("Salle d'arcades");
+  });
+
+  it("convertit shop:yes", () => {
+    expect(formatV5OsmPoiTypeLabelForDisplay("shop:yes")).toBe("Magasin");
+  });
+
+  it("repli générique pour autres clé:valeur OSM", () => {
+    expect(formatV5OsmPoiTypeLabelForDisplay("leisure: unknown_xyz")).toBe("Loisirs — Unknown Xyz");
+  });
+});
+
+describe("parseOsmPoisJson", () => {
+  it("parse un tableau JSON valide", () => {
+    const raw = JSON.stringify([
+      {
+        osm_type: "n",
+        osm_id: 1,
+        name: "Garage Dupont",
+        address: "3 Rue des Artisans, 33600 Pessac",
+        website: "https://example.com",
+        phone: "+33 5 56 00 00 00",
+        poi_primary_key: "shop",
+        poi_primary_value: "car_repair",
+        poi_type_label: "Garage / réparation auto",
+        osm_url: "https://www.openstreetmap.org/node/1",
+        lat: 44.8,
+        lng: -0.63,
+      },
+    ]);
+    const list = parseOsmPoisJson(raw);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.name).toBe("Garage Dupont");
+    expect(list[0]?.address).toBe("3 Rue des Artisans, 33600 Pessac");
+    expect(list[0]?.osm_id).toBe(1);
+  });
+
+  it("humanise poi_type_label au parse (exports hérités clé:valeur OSM)", () => {
+    const raw = JSON.stringify([
+      {
+        osm_type: "n",
+        osm_id: 1,
+        name: "Fun",
+        address: "",
+        website: "",
+        phone: "",
+        poi_type_label: "leisure: amusement_arcade",
+        osm_url: "u",
+        lat: 1,
+        lng: 2,
+      },
+    ]);
+    const list = parseOsmPoisJson(raw);
+    expect(list[0]?.poi_type_label).toBe("Salle d'arcades");
+  });
+
+  it("retourne vide si invalide", () => {
+    expect(parseOsmPoisJson("")).toEqual([]);
+    expect(parseOsmPoisJson("{")).toEqual([]);
+  });
+});
+
+describe("mergeOsmPoisFromParcelleRows", () => {
+  it("dédoublonne par osm_type+osm_id", () => {
+    const json = JSON.stringify([
+      {
+        osm_type: "n",
+        osm_id: 9,
+        name: "A",
+        address: "",
+        website: "",
+        phone: "",
+        poi_type_label: "shop:yes",
+        osm_url: "u",
+        lat: 1,
+        lng: 2,
+      },
+    ]);
+    const a = parcelle({ id: "p1", section: "A", numeroNorm: "1", codeInsee: "33", osmPoisJson: json });
+    const b = parcelle({ id: "p2", section: "B", numeroNorm: "2", codeInsee: "33", osmPoisJson: json });
+    const merged = mergeOsmPoisFromParcelleRows([a, b]);
+    expect(merged).toHaveLength(1);
+  });
+});
+
 describe("parseGoogleNearbyRankedJson", () => {
   it("parse un tableau JSON valide", () => {
     const raw = JSON.stringify([
@@ -134,7 +230,7 @@ describe("collectPartageBatimentConstructionIds", () => {
 });
 
 describe("collectBatimentIdsForMatchingV5BuildingsApi", () => {
-  it("ignore les lignes non-parcelle et déduplique", () => {
+  it("collecte buildings_json des parcelles + ids bâtiment multi-parcelles, avec déduplication", () => {
     const p = parcelle({
       id: "p1",
       section: "ET",
@@ -146,7 +242,47 @@ describe("collectBatimentIdsForMatchingV5BuildingsApi", () => {
       ]),
     });
     const rows = [p, buildingRow("b1", "[]")];
-    expect(collectBatimentIdsForMatchingV5BuildingsApi(rows)).toEqual(["bdnb-bg-A:1", "bdnb-bg-B:1"]);
+    expect(collectBatimentIdsForMatchingV5BuildingsApi(rows)).toEqual(["bdnb-bg-A:1", "bdnb-bg-B:1", "bc-1"]);
+  });
+});
+
+describe("findMatchingV5RowIdForBatimentFootprint", () => {
+  it("retourne null si id vide", () => {
+    expect(findMatchingV5RowIdForBatimentFootprint([parcelle({ id: "p1", section: "A", numeroNorm: "0001", codeInsee: "33" })], "")).toBeNull();
+  });
+
+  it("priorise une ligne building dont batimentConstructionId correspond", () => {
+    const b = buildingRow("building:x", "[]");
+    const p = parcelle({
+      id: "p1",
+      section: "HC",
+      numeroNorm: "0045",
+      codeInsee: "33318",
+      buildingsJson: JSON.stringify([{ batiment_construction_id: "bc-1" }]),
+    });
+    expect(findMatchingV5RowIdForBatimentFootprint([p, b], "bc-1")).toBe("building:x");
+  });
+
+  it("retourne la parcelle si aucune ligne building ne correspond", () => {
+    const p = parcelle({
+      id: "p1",
+      section: "HC",
+      numeroNorm: "0045",
+      codeInsee: "33318",
+      buildingsJson: JSON.stringify([{ batiment_construction_id: "bc-only-parcelle" }]),
+    });
+    expect(findMatchingV5RowIdForBatimentFootprint([p], "bc-only-parcelle")).toBe("p1");
+  });
+
+  it("matche batiment_groupe_id dans buildings_json", () => {
+    const p = parcelle({
+      id: "p2",
+      section: "AB",
+      numeroNorm: "0001",
+      codeInsee: "33318",
+      buildingsJson: JSON.stringify([{ batiment_groupe_id: "bg-shared", batiment_construction_id: "x" }]),
+    });
+    expect(findMatchingV5RowIdForBatimentFootprint([p], "bg-shared")).toBe("p2");
   });
 });
 

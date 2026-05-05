@@ -13,6 +13,10 @@ Partir du **cadastre** et produire un export exploitable pour qualification “p
 
 Le script V5 est **autonome** (un seul fichier Python orchestrateur + module fallback Google dédié). Un **fallback Google** optionnel (`--google-fallback`) est implémenté dans le même script ; il ne s’active que si une clé `GOOGLE_MAPS_API_KEY` (ou équivalent) est fournie.
 
+## Neon (prod client) vs Postgres local (pipeline)
+
+Toutes les tables listées ci-dessous servent à **produire** l’export V5 sur ta machine. Pour **Neon** vu par Vercel / Discovery, seuls le résultat `scout_matching_v5_features` et les géométries BDNB (`batiment_construction` + `batiment_groupe_ffo_bat`, schéma aligné sur `BDNB_CONSTRUCTIONS_TABLE`) sont nécessaires côté app — le reste peut rester local si tu ne déploies pas d’autres écrans qui les lisent. Détail et options d’import ciblé : [`NEON-MIGRATION-DOCKER.md`](NEON-MIGRATION-DOCKER.md) § 6.
+
 ## Données / tables utilisées
 
 - **Cadastre parcelles** : `public.cadastre_france_feuilles_geom`
@@ -36,6 +40,12 @@ Le script V5 est **autonome** (un seul fichier Python orchestrateur + module fal
 
 - **IRIS** : `public/geo/iris-bordeaux-metropole.geojson` (servi en `/geo/…`)
   - jointure : centroïde de parcelle → “within” IRIS
+
+- **POI OpenStreetMap (optionnel)** : `public.osm_poi` (schéma [`data-pipeline/sql/004_osm_poi.sql`](../data-pipeline/sql/004_osm_poi.sql))
+  - remplissage : script [`data-pipeline/matching_v5/import_osm_poi.py`](../data-pipeline/matching_v5/import_osm_poi.py) à partir d’un extrait `.osm.pbf` (voir [`data-pipeline/README.md`](../data-pipeline/README.md) section « POI OpenStreetMap »). Le schéma est **appliqué automatiquement** au lancement de l’import (inutile d’exécuter `psql` à la main si `psql` n’est pas installé).
+  - jointure : pour chaque **parcelle retenue** à l’export, les points `osm_poi` avec `ST_Within(geom, parcelle.geom)` (EPSG:4326), tri par distance au `PointOnSurface` de la parcelle, plafond **`--osm-poi-max`** (défaut 50).
+  - attributs exportés (dérivés des tags OSM) : nom (`name` / `brand` / …), site (`website` / `contact:website`), téléphone (`phone` / `contact:phone`), type (`shop`, `amenity`, `craft`, etc. → `poi_type_label` avec libellés FR partiels).
+  - désactivation : **`--no-osm-poi`** sur `run_matching_v5.py`. Table surchargée : variable d’environnement **`OSM_POI_TABLE`** (identifiants SQL validés).
 
 ## Règles de matching (building ↔ parcelle)
 
@@ -134,6 +144,7 @@ Champs clés (properties) :
 - `matching_debug_json` : détails de la décision (`winner_parcelle`, SIREN communs, scores d'intersection)
 - `buildings_json` : liste des buildings associés (dont `batiment_construction_id`, `batiment_groupe_id`, `annee_construction`, `footprint_m2`, etc.)
 - champs d’audit **fallback Google** (si activé) : `google_fallback_attempted`, `google_fallback_success`, `google_fallback_group_id`, `google_anchor_address`, compteurs / traces (`google_nearby_status`, …)
+- **POI OSM** (si table `osm_poi` présente et non `--no-osm-poi`) : `osm_pois_json` (tableau JSON normalisé), `osm_poi_count`, `osm_pois_status` (`ok` \| `skipped_no_table` \| `error` \| `disabled`), `osm_poi_truncated`, `osm_data_as_of` (max `imported_at` de `osm_poi` au moment du run). Lignes `grain=building` : `osm_pois_status=not_applicable`.
 
 ### GeoJSON
 
@@ -273,10 +284,12 @@ Activable en ligne de commande sur `run_matching_v5.py`. Chaîne : **Nearby Sear
 ### Conditions métier
 
 - **IRIS** : le fallback n’est déclenché que pour une **composante connexe** de parcelles **déjà retenues à l’export** (même filtre footprint que les lignes CSV) dans laquelle **au moins une** parcelle a `nom_iris` égal à **Parc Industriel** (comparaison insensible à la casse, libellé IRIS Bordeaux Métropole).
-- **Besoin** : au moins une parcelle de la composante est encore sans SIRET après le matching passerelle (`siret_count == 0`, `status_technique != source_missing`), comme avant.
+- **Déclenchement** : la composante devient éligible dès qu’elle contient au moins une parcelle en IRIS **Parc Industriel** (pas de condition sur `siret_count` / `status_technique`).
+- **Signal OSM** : si la composante contient **au moins 1 POI OSM distinct** avec `website` non vide (tags `website` / `contact:website` / `url` normalisés), le fallback Google est **ignoré** pour cette composante.
+  - le comptage est fait sur l’union des parcelles du groupe, avec dédoublonnage par paire `(osm_type, osm_id)`.
 - **Groupement « domino »** : deux parcelles exportées sont reliées si un même `batiment_construction_id` intersecte les deux ; la relation est **transitive** (chaîne A–B–C → une seule composante).
 - **Un appel par composante** : géométrie passée à Google = **union Shapely** des polygones parcelle des membres exportés du groupe ; un seul centroïde pour Nearby. Les compteurs `nearby` / `details` / `api_gouv` du log sont incrémentés **une fois par groupe** ayant tenté l’appel.
-- **Propagation** : le résultat du re-match local (même ancrage pour tout le groupe) est appliqué à **chaque** parcelle exportée de la composante qui remplissait encore le critère « besoin fallback », y compris si son IRIS n’est pas « Parc Industriel » (tant qu’au moins une autre parcelle du groupe l’est).
+- **Propagation** : le résultat du re-match local (même ancrage pour tout le groupe) est appliqué à **chaque** parcelle exportée de la composante, y compris si son IRIS n’est pas « Parc Industriel » (tant qu’au moins une autre parcelle du groupe l’est).
 - **Traçabilité** : colonne `google_fallback_group_id` (hash stable des clés parcelle du groupe) renseignée sur les lignes avec `google_fallback_attempted = true`.
 
 ### Hors script
@@ -286,5 +299,5 @@ Activable en ligne de commande sur `run_matching_v5.py`. Chaîne : **Nearby Sear
 ## Points d’attention / prochaines étapes
 
 - Les parcelles sans PPM n’auront pas d’adresse passerelle (c’est attendu).
-- Le fallback Google consomme des quotas Google et api.gouv ; limiter son usage aux besoins (déjà filtré IRIS Parc Industriel + groupes exportés).
+- Le fallback Google consomme des quotas Google et api.gouv ; limiter son usage aux besoins (déjà filtré IRIS Parc Industriel + groupes exportés + OSM avec lien).
 

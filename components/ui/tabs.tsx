@@ -1,3 +1,5 @@
+"use client"
+
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
@@ -51,23 +53,100 @@ const Tabs = React.forwardRef<HTMLDivElement, TabsProps>(
 )
 Tabs.displayName = "Tabs"
 
+const SCROLL_EDGE_EPS = 3
+
+function useTabsListLineScrollFades(scrollRef: React.MutableRefObject<HTMLDivElement | null>) {
+  const [leftFade, setLeftFade] = React.useState(false)
+  const [rightFade, setRightFade] = React.useState(false)
+
+  const update = React.useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const { scrollLeft, scrollWidth, clientWidth } = el
+    const overflow = scrollWidth > clientWidth + SCROLL_EDGE_EPS
+    setLeftFade(overflow && scrollLeft > SCROLL_EDGE_EPS)
+    setRightFade(overflow && scrollLeft < scrollWidth - clientWidth - SCROLL_EDGE_EPS)
+  }, [scrollRef])
+
+  React.useLayoutEffect(() => {
+    update()
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => update())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollRef, update])
+
+  return { leftFade, rightFade, update }
+}
+
 const TabsList = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => {
+>(({ className, children, ...props }, ref) => {
   const context = React.useContext(TabsContext)
   const variant = context?.variant ?? "default"
+  const scrollRef = React.useRef<HTMLDivElement | null>(null)
+  const { leftFade, rightFade, update } = useTabsListLineScrollFades(scrollRef)
+
+  const setScrollRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollRef.current = node
+      if (typeof ref === "function") {
+        ref(node)
+      } else if (ref) {
+        ;(ref as React.MutableRefObject<HTMLDivElement | null>).current = node
+      }
+    },
+    [ref]
+  )
+
+  if (variant === "line") {
+    return (
+      <div
+        className={cn(
+          "relative w-full min-w-0 rounded-none border-0 border-b border-border bg-transparent",
+          className
+        )}
+      >
+        {leftFade ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-0 z-10 w-10 bg-linear-to-r from-card to-transparent"
+          />
+        ) : null}
+        {rightFade ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 z-10 w-10 bg-linear-to-l from-card to-transparent"
+          />
+        ) : null}
+        <div
+          ref={setScrollRef}
+          onScroll={update}
+          className={cn(
+            "inline-flex h-auto w-full min-w-0 flex-nowrap items-end justify-start gap-0 overflow-x-auto overflow-y-hidden bg-transparent p-0 text-muted-foreground",
+            "[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+          )}
+          {...props}
+        >
+          {children}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div
       ref={ref}
       className={cn(
-        variant === "line"
-          ? "inline-flex h-auto w-full flex-wrap items-end justify-start gap-0 rounded-none border-0 border-b border-border bg-transparent p-0 text-muted-foreground"
-          : "inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground",
+        "inline-flex h-9 items-center justify-center gap-1 rounded-lg bg-muted p-1 text-muted-foreground",
         className
       )}
       {...props}
-    />
+    >
+      {children}
+    </div>
   )
 })
 TabsList.displayName = "TabsList"
@@ -94,12 +173,12 @@ const TabsTrigger = React.forwardRef<HTMLButtonElement, TabsTriggerProps>(
         className={cn(
           "inline-flex items-center justify-center whitespace-nowrap text-sm font-medium ring-offset-background transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
           line
-            ? "rounded-none border-b-2 border-transparent bg-transparent px-2.5 py-2.5 shadow-none hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            ? "shrink-0 rounded-none border-b-2 border-transparent bg-transparent px-2.5 py-2.5 shadow-none hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
             : cn(
-                "rounded-sm px-3 py-1.5",
+                "rounded-full px-3.5 py-1.5 text-xs font-medium",
                 isActive
-                  ? "bg-background text-foreground shadow-xs"
-                  : "text-muted-foreground hover:bg-background/50"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-card/60"
               ),
           className
         )}

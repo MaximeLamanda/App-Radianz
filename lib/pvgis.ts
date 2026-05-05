@@ -190,8 +190,45 @@ function parsePVGISResponse(response: any): PVGISData {
 }
 
 /**
+ * Navigateur : PVGIS ne renvoie pas d’en-têtes CORS → `fetch` direct vers JRC échoue.
+ * On passe par la route Next `/api/pvgis` (même corps que le drawer Solar Scout).
+ */
+async function getPVGISDataViaNextRoute(
+  coordinates: AddressCoordinates,
+  options?: Partial<PVGISOptions>
+): Promise<PVGISData> {
+  const body: Record<string, unknown> = {
+    lat: coordinates.lat,
+    lon: coordinates.lng,
+    peakpower: options?.peakpower ?? 1,
+    loss: options?.loss ?? 14,
+  };
+  if (options?.azimuth != null) body.azimuth = options.azimuth;
+  if (options?.slope != null) body.slope = options.slope;
+
+  const response = await fetch("/api/pvgis", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(
+      typeof err.error === "string" ? err.error : `Erreur PVGIS: ${response.status} ${response.statusText}`
+    );
+  }
+
+  const data = (await response.json()) as PVGISData;
+  if (!data || typeof data.annualProduction !== "number") {
+    throw new Error("Données PVGIS invalides reçues");
+  }
+  return data;
+}
+
+/**
  * Appelle l'API PVGIS et retourne les données formatées
- * 
+ *
  * @param coordinates Coordonnées géographiques
  * @param options Options supplémentaires pour l'appel PVGIS
  * @returns Données PVGIS formatées
@@ -201,6 +238,10 @@ export async function getPVGISData(
   coordinates: AddressCoordinates,
   options?: Partial<PVGISOptions>
 ): Promise<PVGISData> {
+  if (typeof window !== "undefined") {
+    return getPVGISDataViaNextRoute(coordinates, options);
+  }
+
   const pvgisOptions: PVGISOptions = {
     lat: coordinates.lat,
     lon: coordinates.lng,

@@ -469,6 +469,43 @@ export function getEnergyConsumptionForMonth(
   return data?.consumptionKwhPerM2PerMonth ?? 14.2;
 }
 
+/**
+ * Répartition mensuelle (kWh) pour un bâtiment : profil saisonnier du type,
+ * mise à l’échelle pour que la somme des 12 mois égale `targetAnnualKwh`.
+ * Index 0 = janvier, 11 = décembre.
+ */
+export function monthlyConsumptionKwhFromAnnualProfile(
+  googlePlaceType: string,
+  surfaceM2: number,
+  targetAnnualKwh: number
+): number[] {
+  if (!Number.isFinite(surfaceM2) || surfaceM2 <= 0 || !Number.isFinite(targetAnnualKwh) || targetAnnualKwh <= 0) {
+    return Array.from({ length: 12 }, () => 0);
+  }
+  const raw = Array.from({ length: 12 }, (_, m) =>
+    getEnergyConsumptionForMonth(googlePlaceType, m as MonthIndex) * surfaceM2
+  );
+  const sumRaw = raw.reduce((a, b) => a + b, 0);
+  if (sumRaw <= 0) {
+    const flat = targetAnnualKwh / 12;
+    return Array.from({ length: 12 }, () => Math.round(flat));
+  }
+  const exact = raw.map((v) => (v / sumRaw) * targetAnnualKwh);
+  const rounded = exact.map((v) => Math.round(v));
+  let diff = Math.round(targetAnnualKwh) - rounded.reduce((a, b) => a + b, 0);
+  let i = 11;
+  while (diff !== 0 && i >= 0) {
+    const next = rounded[i]! + diff;
+    if (next >= 0) {
+      rounded[i] = next;
+      diff = 0;
+    } else {
+      i -= 1;
+    }
+  }
+  return rounded;
+}
+
 /** Nombre de jours dans un mois (monthIndex 0 = janvier, 11 = décembre). */
 export function getDaysInMonth(monthIndex: number): number {
   return new Date(2000, monthIndex + 1, 0).getDate();

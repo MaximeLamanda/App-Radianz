@@ -1,10 +1,22 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+import { shouldClearBillMonthToBaseline } from "@/lib/prospect-share-bill-input";
+import { BRAND_MUTED } from "@/lib/brand-colors";
+import {
+  RadianzLimeDotOverlay,
+  radianzCardBorderStyle,
+  radianzDefaultCardClass,
+  radianzLimeCardRootClass,
+  radianzLimeCardStyle,
+  radianzMonoLabelClass,
+} from "@/lib/radianz-card-primitives";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -27,12 +39,12 @@ import {
 } from "@/lib/swr-hooks";
 import { getProspectImageCenter } from "@/lib/geometry";
 import { SatelliteImage } from "@/components/solar-scout/SatelliteImage";
-import { translatePlaceType } from "@/lib/place-types-translation";
 import { getCountryFlagUrl } from "@/lib/solar-settings";
 import {
   getEnergyConsumption,
   getEnergyConsumptionForMonth,
   getHourlyConsumptionProfileKwhPerM2,
+  monthlyConsumptionKwhFromAnnualProfile,
   type MonthIndex,
 } from "@/lib/building-energy-consumption";
 import {
@@ -67,6 +79,7 @@ import {
 } from "@/lib/solar-settings";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
 import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProductionChart";
+import { MonthlyConsumptionOnlyChart } from "@/components/solar-scout/MonthlyConsumptionOnlyChart";
 import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scout/EquipmentSelectCard";
 import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
 import type { Prospect, PanelReference, InverterReference, BatteryReference } from "@/types";
@@ -76,17 +89,77 @@ import { ElectricityTariffEscalationChart } from "@/components/solar-scout/Elect
 
 type FinancingMode = "capex" | "lease" | "ppa";
 
-/** Largeur mini visée d’un trait (px) — sert à choisir combien de colonnes tiennent dans la largeur. */
-const CARBON_BAR_STICK_MIN_PX = 1;
-/** Écart fixe entre deux traits (px) — identique pour toutes les paires. */
-const CARBON_BAR_GAP_PX = 1;
+const BILL_MONTH_LABELS_FR = [
+  "Janvier",
+  "Février",
+  "Mars",
+  "Avril",
+  "Mai",
+  "Juin",
+  "Juillet",
+  "Août",
+  "Septembre",
+  "Octobre",
+  "Novembre",
+  "Décembre",
+] as const;
 
-/** Nombre de traits : même écart et largeurs égales, la grille répartit le reste sur toute la largeur. */
-function carbonBarStickCountForWidth(widthPx: number): number {
-  const sMin = CARBON_BAR_STICK_MIN_PX;
-  const g = CARBON_BAR_GAP_PX;
-  if (!Number.isFinite(widthPx) || widthPx <= 0) return 1;
-  return Math.max(1, Math.floor((widthPx + g) / (sMin + g)));
+/** Abrégés 3 lettres (alignés graphique consommation). */
+const BILL_MONTH_ABBREV_FR = [
+  "JAN",
+  "FÉV",
+  "MAR",
+  "AVR",
+  "MAI",
+  "JUN",
+  "JUL",
+  "AOÛ",
+  "SEP",
+  "OCT",
+  "NOV",
+  "DÉC",
+] as const;
+
+function normalizeBillInputRaw(raw: string) {
+  return raw.trim().replace(/\s/g, "").replace(",", ".");
+}
+
+const KWH_PER_MWH = 1000;
+
+/** Affichage saisie / placeholder en MWh (données internes toujours en kWh). */
+function formatKwhAsMwhForBillInput(kwh: number) {
+  const mwh = (Number.isFinite(kwh) ? kwh : 0) / KWH_PER_MWH;
+  return mwh.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+}
+
+function SharePortalInstallationCard({
+  priceKMin,
+  priceKMax,
+  className,
+}: {
+  priceKMin: string;
+  priceKMax: string;
+  className?: string;
+}) {
+  return (
+    <Card className={cn(radianzLimeCardRootClass, "shadow-none", className)} style={radianzLimeCardStyle}>
+      <RadianzLimeDotOverlay />
+      <CardHeader className="relative space-y-1 pb-2 pt-5">
+        <div className={cn(radianzMonoLabelClass, "flex justify-between gap-2")}>
+          <span>Installation</span>
+          <span className="font-normal opacity-70">TTC est.</span>
+        </div>
+      </CardHeader>
+      <CardContent className="relative pb-5 pt-0">
+        <p className="font-sans text-3xl font-light tabular-nums tracking-tight sm:text-[2rem] sm:leading-none">
+          {priceKMin}
+          <span className="mx-1 font-light text-lg text-foreground/50">–</span>
+          {priceKMax}
+          <sup className="ml-0.5 align-top text-base font-normal">k€</sup>
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function ProspectSharePage() {
@@ -115,23 +188,6 @@ export default function ProspectSharePage() {
   const [financeChartView, setFinanceChartView] = useState<"roi" | "tariff">("roi");
 
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
-  const carbonBarTrackRef = useRef<HTMLDivElement>(null);
-  const [carbonBarSegments, setCarbonBarSegments] = useState(80);
-
-  useLayoutEffect(() => {
-    const el = carbonBarTrackRef.current;
-    if (!el) return;
-    const apply = (width: number) => {
-      setCarbonBarSegments(carbonBarStickCountForWidth(width));
-    };
-    apply(el.getBoundingClientRect().width);
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width ?? 0;
-      apply(w);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
 
   const visiblePanels = useMemo(() => {
     const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
@@ -187,17 +243,55 @@ export default function ProspectSharePage() {
     if (prospect?.batteryCount != null && prospect.batteryCount >= 1) setSelectedBatteryCount(prospect.batteryCount);
   }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride, prospect?.includeBatteryOverride, prospect?.batteryReferenceId, prospect?.batteryCount, prospect]);
 
+  const surfaceM2 =
+    prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+  const placeType = prospect?.placeType || "other";
+  const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
+
+  const baselineBillMonthlyKwh = useMemo(
+    () => monthlyConsumptionKwhFromAnnualProfile(placeType, surfaceM2, annualConsumptionOverride ?? consoFromType),
+    [placeType, surfaceM2, annualConsumptionOverride, consoFromType]
+  );
+
+  const [editedBillMonthlyKwh, setEditedBillMonthlyKwh] = useState<number[]>([]);
+  const [billChartHighlightedMonth, setBillChartHighlightedMonth] = useState<number | null>(null);
+  /** Après saisie validée au blur : chiffre en noir ; sinon reste gris (estimation). */
+  const [billMonthUserEdited, setBillMonthUserEdited] = useState<boolean[]>(() =>
+    Array.from({ length: 12 }, () => false)
+  );
+  /** Saisie contrôlée : un seul mois focalisé à la fois (brouillon vs placeholder valeur de base). */
+  const [billFocusedMonthIndex, setBillFocusedMonthIndex] = useState<number | null>(null);
+  const [billFocusedDraft, setBillFocusedDraft] = useState("");
+  const billInputsGridRef = useRef<HTMLDivElement>(null);
+  const billMonthFocusValueRef = useRef<string[]>(Array.from({ length: 12 }, () => ""));
+
+  useEffect(() => {
+    if (!prospect || surfaceM2 <= 0) return;
+    const next = monthlyConsumptionKwhFromAnnualProfile(
+      placeType,
+      surfaceM2,
+      annualConsumptionOverride ?? consoFromType
+    );
+    setEditedBillMonthlyKwh([...next]);
+    setBillMonthUserEdited(Array.from({ length: 12 }, () => false));
+    setBillFocusedMonthIndex(null);
+    setBillFocusedDraft("");
+  }, [prospect?.id, surfaceM2, placeType, annualConsumptionOverride, consoFromType]);
+
+  const liveAnnualConsumptionKwh = useMemo(() => {
+    if (editedBillMonthlyKwh.length !== 12) return annualConsumptionOverride ?? consoFromType;
+    const s = editedBillMonthlyKwh.reduce((a, b) => a + b, 0);
+    return s > 0 ? s : annualConsumptionOverride ?? consoFromType;
+  }, [editedBillMonthlyKwh, annualConsumptionOverride, consoFromType]);
+
   /** production = productionPerKwp × kWp. kWp = surfaceToKwp(surface). */
   const effectiveConfig = useMemo(() => {
-    const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
     const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
     const legacyKwp = (prospect?.solarPotential?.maxArrayAreaMeters2 ?? 0) > 0
       ? surfaceToKwp(prospect!.solarPotential!.maxArrayAreaMeters2!, undefined, undefined, panelRef)
       : undefined;
     const perKwp = getProductionPerKwpFromSolarPotential(prospect?.solarPotential, legacyKwp);
-    const placeType = prospect?.placeType || "other";
-    const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
-    const consoAnnuelleKwh = annualConsumptionOverride ?? consoFromType;
+    const consoAnnuelleKwh = liveAnnualConsumptionKwh;
 
     if (!prospect || surfaceM2 <= 0 || !panelRef || !perKwp) {
       return { scaleFactor: 1, effectiveKwp: 0, effectivePanelCount: 0, effectiveAnnualProductionKwh: 0, kwpAtFetch: 0, productionPerKwp: null };
@@ -237,17 +331,13 @@ export default function ProspectSharePage() {
       kwpAtFetch: fullKwp,
       productionPerKwp: perKwp,
     };
-  }, [prospect, configurationMode, annualConsumptionOverride, usedPanelRef]);
+  }, [prospect, configurationMode, liveAnnualConsumptionKwh, usedPanelRef, surfaceM2]);
 
   const recommendedBatteryKwh = useMemo(() => {
-    const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
-    if (!prospect || totalArea <= 0) return null;
+    if (!prospect || surfaceM2 <= 0) return null;
     const effectiveKwp = effectiveConfig.effectiveKwp;
     const hasProductionData = effectiveConfig.productionPerKwp != null;
     if (!hasProductionData || effectiveKwp <= 0) return null;
-    const placeType = prospect.placeType || "other";
-    const annualConsumptionKwh =
-      annualConsumptionOverride ?? getEnergyConsumption(placeType) * totalArea;
     const annualProductionKwh = effectiveConfig.effectiveAnnualProductionKwh;
     const monthly = effectiveConfig.productionPerKwp?.productionPerKwpMonthly;
 
@@ -255,11 +345,11 @@ export default function ProspectSharePage() {
       productionPerKwpMonthly: monthly,
       effectiveKwp,
       annualProductionKwh,
-      annualConsumptionKwh,
+      annualConsumptionKwh: liveAnnualConsumptionKwh,
       placeType,
-      surfaceM2: totalArea,
+      surfaceM2,
     });
-  }, [prospect, annualConsumptionOverride, effectiveConfig.effectiveAnnualProductionKwh, effectiveConfig.effectiveKwp, effectiveConfig.productionPerKwp]);
+  }, [prospect, surfaceM2, liveAnnualConsumptionKwh, effectiveConfig.effectiveAnnualProductionKwh, effectiveConfig.effectiveKwp, effectiveConfig.productionPerKwp, placeType]);
 
   const recommendedBatteryComposition = useMemo(() => {
     const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
@@ -319,12 +409,9 @@ export default function ProspectSharePage() {
 
   /** production = productionPerKwp × kWp. */
   const choiceCardsConfig = useMemo(() => {
-    const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
     const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
     const inverterRef = usedInverterRef ?? getRecommendedInverterReferenceSync();
-    const placeType = prospect?.placeType || "other";
-    const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
-    const consoAnnuelleKwh = annualConsumptionOverride ?? consoFromType;
+    const consoAnnuelleKwh = liveAnnualConsumptionKwh;
     const legacyKwp = (prospect?.solarPotential?.maxArrayAreaMeters2 ?? 0) > 0
       ? surfaceToKwp(prospect!.solarPotential!.maxArrayAreaMeters2!, undefined, undefined, panelRef)
       : undefined;
@@ -358,16 +445,13 @@ export default function ProspectSharePage() {
       perfectFit: { panelCount: perfectFitPanelCount, inverterCount: perfectFitInverterCount, kwp: cappedKwp },
       highestProduction: { panelCount: highestPanelCount, inverterCount: highestInverterCount, kwp: fullKwp },
     };
-  }, [prospect, annualConsumptionOverride, usedPanelRef, usedInverterRef]);
+  }, [prospect, liveAnnualConsumptionKwh, usedPanelRef, usedInverterRef, surfaceM2, placeType]);
 
   const effectiveInverterCount = configurationMode === "perfect_fit"
     ? choiceCardsConfig.perfectFit.inverterCount
     : choiceCardsConfig.highestProduction.inverterCount;
 
-  const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
-  const placeType = prospect?.placeType || "other";
-  const consoFromType = getEnergyConsumption(placeType) * surfaceM2;
-  const consoAnnuelleKwh = annualConsumptionOverride ?? consoFromType;
+  const consoAnnuelleKwh = liveAnnualConsumptionKwh;
   const energyBillEur = estimateEnergyBillEur(consoAnnuelleKwh);
   const displayEnergyBillEur = energyBillEurOverride ?? energyBillEur;
 
@@ -394,9 +478,15 @@ export default function ProspectSharePage() {
       const productionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
         buildTypicalDayForMonth(effectiveConfig.productionPerKwp!.productionPerKwpMonthly, m, totalPowerKW)
       );
-      const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
+      const consumptionTypicalDayByMonthRaw = Array.from({ length: 12 }, (_, m) =>
         buildTypicalConsumptionDayForMonth(placeType, m, surfaceM2)
       );
+      const consumptionTypicalDayByMonth = consumptionTypicalDayByMonthRaw.map((day, m) => {
+        const b = baselineBillMonthlyKwh[m] ?? 0;
+        const e = editedBillMonthlyKwh.length === 12 ? (editedBillMonthlyKwh[m] ?? 0) : b;
+        const factor = b > 0 ? e / b : 1;
+        return day.map((h) => Math.round(h * factor * 1000) / 1000);
+      });
       const scaledBattery = includeBatteryEffective && usedBatteryRef
         ? scaleBatteryForCount(usedBatteryRef, selectedBatteryCount)
         : null;
@@ -455,7 +545,21 @@ export default function ProspectSharePage() {
       annualGridDrawKwh,
       breakdownFromHourlySim,
     };
-  }, [prospect, surfaceM2, placeType, consoAnnuelleKwh, configurationMode, effectiveConfig, usedPanelRef, usedInverterRef, usedBatteryRef, selectedBatteryCount, includeBatteryEffective]);
+  }, [
+    prospect,
+    surfaceM2,
+    placeType,
+    consoAnnuelleKwh,
+    configurationMode,
+    effectiveConfig,
+    usedPanelRef,
+    usedInverterRef,
+    usedBatteryRef,
+    selectedBatteryCount,
+    includeBatteryEffective,
+    baselineBillMonthlyKwh,
+    editedBillMonthlyKwh,
+  ]);
 
   const chartData = useMemo(() => {
     if (!effectiveConfig.productionPerKwp) return [];
@@ -466,10 +570,15 @@ export default function ProspectSharePage() {
     );
     const byMonth = financialSummary?.batteryByMonth;
     return monthlyProduction.map((m) => {
+      const mi = m.month - 1;
+      const consumption =
+        editedBillMonthlyKwh.length === 12
+          ? editedBillMonthlyKwh[mi] ?? 0
+          : Math.round(getEnergyConsumptionForMonth(placeType, mi as MonthIndex) * surfaceM2);
       const base = {
         month: m.month,
         production: m.production,
-        consumption: Math.round(getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * surfaceM2),
+        consumption,
       };
       if (byMonth?.[m.month - 1]) {
         const b = byMonth[m.month - 1]!;
@@ -484,7 +593,14 @@ export default function ProspectSharePage() {
       }
       return base;
     });
-  }, [effectiveConfig.productionPerKwp, effectiveConfig.effectiveKwp, financialSummary?.batteryByMonth, placeType, surfaceM2]);
+  }, [
+    effectiveConfig.productionPerKwp,
+    effectiveConfig.effectiveKwp,
+    financialSummary?.batteryByMonth,
+    placeType,
+    surfaceM2,
+    editedBillMonthlyKwh,
+  ]);
 
   const chartDailyData = useMemo(() => {
     if (!effectiveConfig.productionPerKwp) return undefined;
@@ -493,7 +609,12 @@ export default function ProspectSharePage() {
       chartSelectedMonthIndex,
       effectiveConfig.effectiveKwp
     );
-    const consDay = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
+    const consDayRaw = buildTypicalConsumptionDayForMonth(placeType, chartSelectedMonthIndex, surfaceM2);
+    const bm = baselineBillMonthlyKwh[chartSelectedMonthIndex] ?? 0;
+    const em =
+      editedBillMonthlyKwh.length === 12 ? (editedBillMonthlyKwh[chartSelectedMonthIndex] ?? 0) : bm;
+    const dayFactor = bm > 0 ? em / bm : 1;
+    const consDay = consDayRaw.map((h) => Math.round(h * dayFactor * 1000) / 1000);
     const batteryForChart = includeBatteryEffective && usedBatteryRef
       ? scaleBatteryForCount(usedBatteryRef, selectedBatteryCount)
       : null;
@@ -517,6 +638,8 @@ export default function ProspectSharePage() {
     includeBatteryEffective,
     usedBatteryRef?.id,
     selectedBatteryCount,
+    baselineBillMonthlyKwh,
+    editedBillMonthlyKwh,
   ]);
 
   const annualSavings = financialSummary?.annualSavings ?? 0;
@@ -526,14 +649,14 @@ export default function ProspectSharePage() {
   const annualGridDrawKwh = financialSummary?.annualGridDrawKwh ?? 0;
   const breakdownFromHourlySim = financialSummary?.breakdownFromHourlySim ?? false;
   const priceRange = financialSummary?.priceRange ?? { equipmentEur: 0, totalMinEur: 0, totalMaxEur: 0 };
-  const breakEvenMin = financialSummary?.breakEvenMin ?? null;
-  const breakEvenMax = financialSummary?.breakEvenMax ?? null;
-  const breakEvenLabel =
-    breakEvenMin != null && breakEvenMax != null
-      ? breakEvenMin === breakEvenMax
-        ? `${breakEvenMin} an${breakEvenMin > 1 ? "s" : ""}`
-        : `${breakEvenMin} – ${breakEvenMax} ans`
-      : "—";
+
+  const installationBandReady =
+    Number.isFinite(priceRange.totalMinEur) &&
+    Number.isFinite(priceRange.totalMaxEur) &&
+    priceRange.totalMinEur > 0 &&
+    priceRange.totalMaxEur > 0;
+  const priceKMinPortal = installationBandReady ? (priceRange.totalMinEur / 1000).toFixed(0) : null;
+  const priceKMaxPortal = installationBandReady ? (priceRange.totalMaxEur / 1000).toFixed(0) : null;
 
   const effectiveRetailPricePerKwh = useMemo(
     () => effectiveRetailPriceEurPerKwhFromBill(consoAnnuelleKwh, displayEnergyBillEur),
@@ -546,9 +669,17 @@ export default function ProspectSharePage() {
     return `${Math.round(powerW)}W`;
   };
 
+  const resetBillEstimates = useCallback(() => {
+    setEditedBillMonthlyKwh([...baselineBillMonthlyKwh]);
+    setBillChartHighlightedMonth(null);
+    setBillMonthUserEdited(Array.from({ length: 12 }, () => false));
+    setBillFocusedMonthIndex(null);
+    setBillFocusedDraft("");
+  }, [baselineBillMonthlyKwh]);
+
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+      <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
@@ -556,8 +687,8 @@ export default function ProspectSharePage() {
 
   if (!prospect) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
-        <Card className="max-w-md w-full">
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className={cn("max-w-md w-full", radianzDefaultCardClass)} style={radianzCardBorderStyle}>
           <CardContent className="pt-6 text-center">
             <p className="text-muted-foreground">Prospect introuvable ou lien invalide.</p>
           </CardContent>
@@ -587,23 +718,9 @@ export default function ProspectSharePage() {
   const productionGwh = effectiveConfig.effectiveAnnualProductionKwh > 0
     ? effectiveConfig.effectiveAnnualProductionKwh / 1_000_000
     : 0;
-  const selfConsumptionPct = consoAnnuelleKwh > 0
-    ? Math.min(
-        100,
-        Math.max(
-          0,
-          ((selfConsumptionDirectKwhTotal + selfConsumptionViaBatteryKwhTotal) / consoAnnuelleKwh) * 100
-        )
-      )
-    : 0;
-  const carbonReductionPct = selfConsumptionPct;
-  const FR_AVG_CARBON_INTENSITY_G_PER_KWH = 55;
-  const baselineCarbonKgPerYear = (consoAnnuelleKwh * FR_AVG_CARBON_INTENSITY_G_PER_KWH) / 1000;
-  const avoidedCarbonKgPerYear = (baselineCarbonKgPerYear * carbonReductionPct) / 100;
-  const avoidedCarbonTons = avoidedCarbonKgPerYear / 1000;
 
   return (
-    <div className="min-h-screen bg-zinc-50 flex flex-col">
+    <div className="min-h-screen bg-background flex flex-col">
       <div className="max-w-5xl mx-auto p-4 sm:p-5 flex flex-col w-full gap-4">
         {/* Barre admin : visible uniquement pour le compte ayant généré la page */}
         {isOwner && (
@@ -611,7 +728,7 @@ export default function ProspectSharePage() {
             <Button
               variant="default"
               size="icon"
-              className="h-9 w-9 shrink-0 border-0 bg-zinc-100 text-zinc-700 shadow-none transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50"
+              className="h-9 w-9 shrink-0 border-0 bg-secondary text-secondary-foreground shadow-none transition-[background-color,transform] duration-150 ease-out hover:bg-muted active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               asChild
             >
               <Link href="/" title="Retour" aria-label="Retour">
@@ -621,7 +738,7 @@ export default function ProspectSharePage() {
             <Button
               variant="default"
               size="icon"
-              className="h-9 w-9 shrink-0 border-0 bg-zinc-100 text-zinc-700 shadow-none transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50"
+              className="h-9 w-9 shrink-0 border-0 bg-secondary text-secondary-foreground shadow-none transition-[background-color,transform] duration-150 ease-out hover:bg-muted active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               onClick={copyShareLink}
               title="Copier le lien"
               aria-label="Copier le lien"
@@ -633,13 +750,15 @@ export default function ProspectSharePage() {
 
         <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] md:gap-10 w-full">
           <nav className="md:sticky md:top-6 self-start">
-            <div className="rounded-xl border border-zinc-200 bg-white shadow-xs p-3">
-              <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mb-2">
-                Sommaire
-              </p>
+            <div
+              className={cn("p-3 shadow-xs", radianzDefaultCardClass)}
+              style={radianzCardBorderStyle}
+            >
+              <p className={cn(radianzMonoLabelClass, "mb-2")}>Sommaire</p>
               <div className="flex flex-row md:flex-col gap-2 md:gap-1 text-sm">
                 {[
                   { id: "recap", label: "Recap" },
+                  { id: "facture", label: "Votre facture" },
                   { id: "projet", label: "Projet" },
                   { id: "finance", label: "Finance" },
                   { id: "contact", label: "Contact" },
@@ -647,7 +766,7 @@ export default function ProspectSharePage() {
                   <a
                     key={item.id}
                     href={`#${item.id}`}
-                    className="rounded-md px-2 py-1 text-zinc-700 transition-[background-color,transform] duration-150 ease-out text-xs font-medium hover:bg-zinc-100 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+                    className="rounded-md px-2 py-1 text-foreground transition-[background-color,transform] duration-150 ease-out text-xs font-medium hover:bg-muted active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
                   >
                     {item.label}
                   </a>
@@ -660,20 +779,24 @@ export default function ProspectSharePage() {
                 href={commercialReferent.calendlyUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-2 group flex items-center gap-2 rounded-xl border border-zinc-200 bg-white shadow-xs px-3 py-2 text-xs font-medium text-zinc-800 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50"
+                className={cn(
+                  "mt-2 group flex items-center gap-2 px-3 py-2 text-xs font-medium text-foreground shadow-xs hover:bg-muted/80",
+                  radianzDefaultCardClass
+                )}
+                style={radianzCardBorderStyle}
               >
-                <span className="relative size-7 shrink-0 overflow-hidden rounded-full bg-zinc-200">
+                <span className="relative size-7 shrink-0 overflow-hidden rounded-full bg-muted">
                   {commercialReferent.photoURL ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                   ) : (
                     <span className="flex h-full w-full items-center justify-center">
-                      <User className="size-3.5 text-zinc-500" />
+                      <User className="size-3.5 text-muted-foreground" />
                     </span>
                   )}
                 </span>
                 <span className="flex-1 min-w-0 truncate">Contacter</span>
-                <ArrowUpRight className="size-3.5 text-zinc-500 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                <ArrowUpRight className="size-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
               </a>
             ) : null}
           </nav>
@@ -681,15 +804,12 @@ export default function ProspectSharePage() {
           <div className="min-w-0 flex flex-col gap-10 py-1">
             <section id="recap" className="scroll-mt-24">
               <div
-                className="relative mb-4 h-[240px] overflow-hidden rounded-xl border border-zinc-200 bg-zinc-900/5"
-                style={{
-                  backgroundImage: "url(/images/recap-hero.png)",
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                }}
+                className={cn(radianzLimeCardRootClass, "relative mb-4 h-[240px] overflow-hidden border shadow-none")}
+                style={radianzLimeCardStyle}
               >
-                <div className="absolute top-4 right-4">
-                  <div className="size-14 rounded-xl border border-zinc-200 bg-white/70 backdrop-blur-sm shadow-xs overflow-hidden">
+                <RadianzLimeDotOverlay />
+                <div className="absolute top-4 right-4 z-[1]">
+                  <div className="size-14 rounded-[12px] border border-border bg-card/90 backdrop-blur-sm shadow-xs overflow-hidden">
                     {commercialReferent?.logoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -700,7 +820,7 @@ export default function ProspectSharePage() {
                       />
                     ) : (
                       <div className="h-full w-full flex items-center justify-center">
-                        <span className="text-xs font-semibold text-zinc-700">
+                        <span className="text-xs font-semibold text-foreground">
                           {(portalCompanyName?.trim()?.[0] ?? "—").toUpperCase()}
                         </span>
                       </div>
@@ -708,11 +828,12 @@ export default function ProspectSharePage() {
                   </div>
                 </div>
 
-                <div className="relative h-full flex flex-col justify-end p-6">
-                  <div className="text-2xl sm:text-3xl font-semibold tracking-tight text-white drop-shadow-sm">
+                <div className="relative z-[1] flex h-full flex-col justify-end p-6">
+                  <p className={cn(radianzMonoLabelClass, "mb-2 opacity-90")}>{portalCompanyName}</p>
+                  <div className="font-sans text-3xl font-light tracking-tight sm:text-[2.5rem] sm:leading-[1.05]">
                     Hello <span aria-hidden>👋</span>
                   </div>
-                  <p className="mt-1 text-sm font-medium text-white/80 drop-shadow-sm">
+                  <p className="mt-2 max-w-xl font-mono text-[10px] leading-snug" style={{ color: BRAND_MUTED }}>
                     Welcome to the {portalCompanyName} Portal
                   </p>
                 </div>
@@ -720,103 +841,221 @@ export default function ProspectSharePage() {
 
               {/* Carte projet (au-dessus des KPI) */}
               <div className="">
-                <div className="grid grid-cols-[110px_1fr] sm:grid-cols-[140px_1fr] gap-4">
-                  <figure className="rounded-xl overflow-hidden w-[110px] sm:w-[140px] aspect-square max-w-full">
+                <div className="grid grid-cols-[168px_1fr] sm:grid-cols-[224px_1fr] gap-4">
+                  <figure className="rounded-[12px] border border-border aspect-square w-full max-w-full bg-card overflow-hidden">
                     {prospect.coordinates ? (
                       <SatelliteImage
                         key={`sat-recap-${imageCenter.lat}-${imageCenter.lng}`}
                         coordinates={imageCenter}
                         address={prospect.address}
                         zoom={17}
-                        width={160}
-                        height={160}
+                        width={448}
+                        height={448}
                         className="w-full h-full object-cover"
                         showOverlays={false}
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        <Building2 className="h-5 w-5 text-zinc-400" />
+                        <Building2 className="h-5 w-5 text-muted-foreground" />
                       </div>
                     )}
                   </figure>
 
                   <div className="min-w-0 flex flex-col">
-                    <p className="text-sm text-zinc-900 font-medium">
+                    <p className="text-sm text-foreground font-medium">
                       {prospect.name || prospect.address}
                     </p>
                     {prospect.address && (
-                      <p className="text-xs text-zinc-500 mt-1 truncate">{prospect.address}</p>
+                      <p className="text-xs text-muted-foreground mt-1 truncate">{prospect.address}</p>
                     )}
 
-                    <dl className="mt-3 grid gap-2">
-                      <div className="grid grid-cols-[72px_1fr] items-baseline gap-x-3 gap-y-1 min-w-0">
-                        <dt className="text-[10px] uppercase tracking-wide text-zinc-500">Type</dt>
-                        <dd className="text-[11px] text-zinc-800 min-w-0">
-                          {translatePlaceType(prospect.placeType)}
-                        </dd>
-
-                        <dt className="text-[10px] uppercase tracking-wide text-zinc-500">Surface</dt>
-                        <dd className="text-[11px] text-zinc-800 tabular-nums">
-                          {surfaceM2.toFixed(0)} m²
-                        </dd>
-
-                        <dt className="text-[10px] uppercase tracking-wide text-zinc-500" title="Année de construction (BDNB)">
-                          Année
-                        </dt>
-                        <dd className="text-[11px] text-zinc-800 tabular-nums">
-                          {prospect.anneeConstruction != null ? String(prospect.anneeConstruction) : "—"}
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="rounded-xl bg-zinc-100 py-3 px-4 min-h-[110px] flex flex-col justify-between">
-                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Économies</p>
-                  <div className="flex items-baseline gap-2">
-                    <p className="text-2xl font-semibold tabular-nums text-zinc-900 leading-none">
-                      {annualSavings.toLocaleString("fr-FR")}
-                      <span className="text-zinc-400 font-light ml-1">€</span>
-                    </p>
-                    <span className="text-[11px] text-zinc-500 leading-none">/ an</span>
-                  </div>
-                </div>
-                <div className="rounded-xl bg-zinc-100 py-3 px-4 min-h-[110px] flex flex-col justify-between">
-                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Rentabilité</p>
-                  {(() => {
-                    const label = breakEvenLabel;
-                    const match = typeof label === "string" ? label.match(/^(.*?)(?:\s*(ans?))$/i) : null;
-                    const valuePart = match?.[1]?.trim() || label;
-                    const unitPart = match?.[2] || null;
-                    return (
-                      <div className="flex items-baseline gap-2">
-                        <p className="text-2xl font-semibold tabular-nums text-zinc-900 leading-none">
-                          {valuePart}
-                        </p>
-                        {unitPart ? (
-                          <span className="text-[11px] text-zinc-500 leading-none">{unitPart}</span>
-                        ) : null}
-                      </div>
-                    );
-                  })()}
-                </div>
-                <div className="rounded-xl bg-zinc-100 py-3 px-4 min-h-[110px] flex flex-col justify-between">
-                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Autoconsommation</p>
-                  <div className="flex items-baseline gap-2">
-                    <p className="text-2xl font-semibold tabular-nums text-zinc-900 leading-none">
-                      {selfConsumptionPct.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}
-                      <span className="text-zinc-400 font-light ml-1">%</span>
-                    </p>
+                    <div className="drawer-discovery-pills mt-3">
+                      {effectiveConfig.effectiveKwp > 0 ? (
+                        <Badge
+                          variant="outline"
+                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                          title="Puissance crête estimée (kWp)"
+                        >
+                          {effectiveConfig.effectiveKwp.toFixed(2)} kWp
+                        </Badge>
+                      ) : null}
+                      <Badge
+                        variant="outline"
+                        className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
+                        title="Surface de toit prise en compte pour le dimensionnement"
+                      >
+                        <Building2 className="size-3.5 shrink-0" aria-hidden />
+                        {surfaceM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
+                      </Badge>
+                    </div>
                   </div>
                 </div>
               </div>
             </section>
 
+            {surfaceM2 > 0 && editedBillMonthlyKwh.length === 12 ? (
+              <section id="facture" className="scroll-mt-24">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between mb-3">
+                  <h2 className="text-lg font-semibold text-foreground">Votre facture</h2>
+                  <button
+                    type="button"
+                    onClick={resetBillEstimates}
+                    className="text-left text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline sm:text-right"
+                  >
+                    Réinitialiser les estimations
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground mb-4 max-w-2xl">
+                  Consommation mensuelle estimée (MWh). Saisissez un mois connu : chaque validation recalcule le même profil saisonnier sur l’année à partir de ce mois de référence.
+                </p>
+                <div
+                  className={cn("rounded-[12px] border p-4 shadow-xs", radianzDefaultCardClass)}
+                  style={radianzCardBorderStyle}
+                >
+                  <MonthlyConsumptionOnlyChart
+                    monthlyKwh={editedBillMonthlyKwh}
+                    highlightedMonthIndex={billChartHighlightedMonth}
+                    contentBelowTotal={(
+                      <div
+                        ref={billInputsGridRef}
+                        className="grid grid-cols-6 gap-x-0.5 gap-y-1 sm:grid-cols-12 sm:gap-1 min-w-0"
+                      >
+                        {BILL_MONTH_LABELS_FR.map((label, i) => {
+                          const kwhHint = Math.round(editedBillMonthlyKwh[i] ?? 0);
+                          const hintStrMwh = formatKwhAsMwhForBillInput(kwhHint);
+                          const isFocused = billFocusedMonthIndex === i;
+                          const inputValue = isFocused
+                            ? billFocusedDraft
+                            : billMonthUserEdited[i]
+                              ? formatKwhAsMwhForBillInput(kwhHint)
+                              : "";
+                          const inputPlaceholder =
+                            billMonthUserEdited[i] || isFocused ? undefined : hintStrMwh;
+                          return (
+                            <div key={label} className="flex min-w-0 flex-col items-stretch gap-0.5">
+                              <span
+                                className="text-center font-mono text-[8px] leading-none tabular-nums text-muted-foreground"
+                                title={label}
+                                aria-label={label}
+                              >
+                                {BILL_MONTH_ABBREV_FR[i]}
+                              </span>
+                              <Input
+                                type="text"
+                                inputMode="decimal"
+                                className={cn(
+                                  "h-6 min-h-6 rounded-none border-0 bg-muted/80 px-0.5 py-0 text-center font-mono text-[9px] tabular-nums leading-tight shadow-none ring-offset-0 focus-visible:border-0 focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-0 md:text-[9px] dark:bg-muted/80",
+                                  billMonthUserEdited[i]
+                                    ? "bg-foreground/20 text-foreground dark:bg-foreground/30"
+                                    : isFocused
+                                      ? "text-foreground/60"
+                                      : "text-muted-foreground"
+                                )}
+                                value={inputValue}
+                                placeholder={inputPlaceholder}
+                                onChange={(e) => {
+                                  if (billFocusedMonthIndex === i) setBillFocusedDraft(e.target.value);
+                                }}
+                                onFocus={(e) => {
+                                  billMonthFocusValueRef.current[i] = e.currentTarget.value;
+                                  setBillFocusedMonthIndex(i);
+                                  setBillFocusedDraft(
+                                    billMonthUserEdited[i]
+                                      ? formatKwhAsMwhForBillInput(Math.round(editedBillMonthlyKwh[i] ?? 0))
+                                      : ""
+                                  );
+                                  setBillChartHighlightedMonth(i);
+                                }}
+                                onBlur={(e) => {
+                                  const blurred = e.target.value;
+                                  const normalized = normalizeBillInputRaw(blurred);
+                                  const vMwh = parseFloat(normalized);
+                                  const vKwh = Number.isFinite(vMwh) ? vMwh * KWH_PER_MWH : NaN;
+                                  const valid = Number.isFinite(vKwh) && vKwh >= 1 && normalized.length > 0;
+                                  const baselineMonth = baselineBillMonthlyKwh[i] ?? 0;
+
+                                  setBillMonthUserEdited((prevEdited) => {
+                                    const nextEdited = [...prevEdited];
+                                    const monthWasEdited = prevEdited[i];
+                                    const shouldClear = shouldClearBillMonthToBaseline({
+                                      normalized,
+                                      isValid: valid,
+                                      baselineMonth,
+                                      monthWasEdited,
+                                    });
+
+                                    if (shouldClear) {
+                                      // Champ vidé/invalide: on revient à l'estimation initiale du mois.
+                                      nextEdited[i] = false;
+                                      setEditedBillMonthlyKwh((prevMonthly) => {
+                                        if (prevMonthly.length !== 12) return prevMonthly;
+                                        const nextMonthly = [...prevMonthly];
+                                        nextMonthly[i] = Math.max(0, Math.round(baselineMonth));
+                                        return nextMonthly;
+                                      });
+                                      return nextEdited;
+                                    }
+
+                                    if (normalized.length === 0 || !valid || baselineMonth <= 0) {
+                                      return nextEdited;
+                                    }
+
+                                    const targetKwh = Math.max(0, Math.round(vKwh));
+                                    nextEdited[i] = true;
+                                    setEditedBillMonthlyKwh((prevMonthly) => {
+                                      if (prevMonthly.length !== 12) return prevMonthly;
+                                      // Ratio global = moyenne des ratios de tous les mois saisis.
+                                      const editedRatios = nextEdited
+                                        .map((isEdited, monthIdx) => {
+                                          if (!isEdited) return null;
+                                          const base = baselineBillMonthlyKwh[monthIdx] ?? 0;
+                                          if (base <= 0) return null;
+                                          const value = monthIdx === i
+                                            ? targetKwh
+                                            : Math.max(0, Math.round(prevMonthly[monthIdx] ?? 0));
+                                          return value / base;
+                                        })
+                                        .filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0);
+                                      const avgRatio = editedRatios.length
+                                        ? editedRatios.reduce((sum, r) => sum + r, 0) / editedRatios.length
+                                        : 1;
+
+                                      return baselineBillMonthlyKwh.map((baseKwh, monthIdx) => {
+                                        if (monthIdx === i) return targetKwh;
+                                        // Les mois déjà saisis par l'utilisateur restent figés.
+                                        if (nextEdited[monthIdx]) return Math.max(0, Math.round(prevMonthly[monthIdx] ?? 0));
+                                        return Math.max(0, Math.round(baseKwh * avgRatio));
+                                      });
+                                    });
+
+                                    if (!monthWasEdited) {
+                                      billMonthFocusValueRef.current[i] = normalized;
+                                    }
+                                    return nextEdited;
+                                  });
+
+                                  setBillFocusedMonthIndex(null);
+                                  setBillFocusedDraft("");
+                                  const rel = e.relatedTarget as Node | null;
+                                  if (!billInputsGridRef.current?.contains(rel)) {
+                                    setBillChartHighlightedMonth(null);
+                                  }
+                                }}
+                                aria-label={`Consommation ${label} en mégawattheures. Estimation ${hintStrMwh} MWh affichée en filigrane tant que vous n’avez pas saisi de valeur.`}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  />
+                </div>
+              </section>
+            ) : null}
+
             <section id="projet" className="scroll-mt-32">
               <div className="flex items-end justify-between gap-4 mb-3">
-                <h2 className="text-lg font-semibold text-zinc-900">Projet</h2>
+                <h2 className="text-lg font-semibold text-foreground">Projet</h2>
               </div>
 
               {/* Graphique + boutons (système) */}
@@ -829,18 +1068,18 @@ export default function ProspectSharePage() {
                         pendingBatteryResyncAfterModeChangeRef.current = true;
                         setConfigurationMode("perfect_fit");
                       }}
-                      className={`cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 ${
+                      className={`cursor-pointer rounded-[12px] px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
                         configurationMode === "perfect_fit"
                           ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                          : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70"
+                          : "border border-border bg-card hover:bg-muted/60"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-zinc-500">Perfect fit</span>
+                        <span className={radianzMonoLabelClass}>Perfect fit</span>
                       </div>
-                      <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-zinc-700"}`}>
+                      <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-foreground"}`}>
                         {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
-                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-zinc-400"}`}>kWp</span>
+                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-muted-foreground"}`}>kWp</span>
                       </div>
                     </button>
                     <button
@@ -849,26 +1088,29 @@ export default function ProspectSharePage() {
                         pendingBatteryResyncAfterModeChangeRef.current = true;
                         setConfigurationMode("highest_production");
                       }}
-                      className={`cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 ${
+                      className={`cursor-pointer rounded-[12px] px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
                         configurationMode === "highest_production"
                           ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                          : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70"
+                          : "border border-border bg-card hover:bg-muted/60"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] uppercase tracking-wide text-zinc-500">Highest production</span>
+                        <span className={radianzMonoLabelClass}>Highest production</span>
                       </div>
-                      <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-zinc-700"}`}>
+                      <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-foreground"}`}>
                         {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
-                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-zinc-400"}`}>kWp</span>
+                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-muted-foreground"}`}>kWp</span>
                       </div>
                     </button>
                   </div>
 
-                  <div className="h-[360px] bg-zinc-100 rounded-xl py-3 px-4 pb-2 flex flex-col overflow-hidden">
+                  <div
+                    className={cn("h-[360px] py-3 px-4 pb-2 flex flex-col overflow-hidden", radianzDefaultCardClass)}
+                    style={radianzCardBorderStyle}
+                  >
                     <div className="flex flex-col gap-1.5 mb-2 shrink-0">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[10px] uppercase tracking-wide text-zinc-500">Production</span>
+                        <span className={radianzMonoLabelClass}>Production</span>
                         <div
                           role="tablist"
                           className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
@@ -915,10 +1157,13 @@ export default function ProspectSharePage() {
               )}
 
               {/* Sous le graphe : 2 colonnes (finance à gauche, équipement à droite) */}
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4 min-h-[280px] items-stretch">
-                <div className="bg-zinc-100 rounded-xl py-3 px-4 overflow-hidden">
+              <div className="mt-6 grid grid-cols-1 gap-4 min-h-[280px] items-stretch">
+                <div
+                  className={cn("py-3 px-4 overflow-hidden", radianzDefaultCardClass)}
+                  style={radianzCardBorderStyle}
+                >
                   <div className="flex items-center justify-between gap-2 mb-4">
-                    <span className="text-[10px] uppercase tracking-wide text-zinc-500">Réduction de facture</span>
+                    <span className={radianzMonoLabelClass}>Réduction de facture</span>
                   </div>
                   <div className="mb-4">
                     {displayEnergyBillEur > 0 ? (
@@ -940,12 +1185,12 @@ export default function ProspectSharePage() {
                         return (
                           <div className="flex flex-col gap-3">
                             <div className="flex items-end justify-between gap-3">
-                              <div className="text-3xl font-semibold tabular-nums text-zinc-900 leading-none shrink-0">
+                              <div className="text-3xl font-light tabular-nums text-foreground leading-none shrink-0">
                                 -{Math.round(savingsPct)}%
                               </div>
                             </div>
 
-                            <div className="w-full h-2.5 rounded-full bg-zinc-200 overflow-hidden flex">
+                            <div className="w-full h-2.5 rounded-full bg-muted overflow-hidden flex">
                               {savingsPct > 0 && totalParts > 0 ? (
                                 <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>
                                   <div className="h-full bg-[#0000FF] shrink-0" style={{ width: `${pctBattery}%` }} title="Autoconsommation batterie" />
@@ -953,36 +1198,36 @@ export default function ProspectSharePage() {
                                   <div className="h-full bg-[#32F490] shrink-0 flex-1" title="Injection réseau" />
                                 </div>
                               ) : savingsPct > 0 ? (
-                                <div className="h-full bg-zinc-500" style={{ width: `${savingsPct}%` }} />
+                                <div className="h-full bg-muted-foreground/50" style={{ width: `${savingsPct}%` }} />
                               ) : null}
                             </div>
                           </div>
                         );
                       })()
                     ) : (
-                      <div className="text-3xl font-semibold tabular-nums text-zinc-900 leading-none">—</div>
+                      <div className="text-3xl font-light tabular-nums text-foreground leading-none">—</div>
                     )}
                   </div>
                   <div className="flex flex-col gap-3 text-xs">
-                    <Separator className="bg-zinc-200/70" />
+                    <Separator className="bg-border/70" />
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs sm:text-sm font-normal text-zinc-600 truncate">Est. Energy bill</span>
+                      <span className="text-xs sm:text-sm font-normal text-muted-foreground truncate">Est. Energy bill</span>
                       <button
                         type="button"
                         onClick={() => setEnergyBillDialogOpen(true)}
-                        className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 text-left cursor-pointer shrink-0 tabular-nums text-xs sm:text-sm font-normal text-zinc-600 transition-[background-color,transform] duration-150 ease-out hover:bg-zinc-200/60 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-100"
+                        className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 text-left cursor-pointer shrink-0 tabular-nums text-xs sm:text-sm font-normal text-muted-foreground transition-[background-color,transform] duration-150 ease-out hover:bg-muted active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
                         aria-label="Modifier la facture annuelle"
                       >
-                        <Pencil className="h-3 w-3 text-zinc-400 shrink-0" />
+                        <Pencil className="h-3 w-3 text-muted-foreground shrink-0" />
                         {displayEnergyBillEur.toLocaleString("fr-FR")}
-                        <span className="text-zinc-400 ml-0.5 font-light">€</span>
+                        <span className="text-muted-foreground/80 ml-0.5 font-light">€</span>
                       </button>
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs sm:text-sm font-normal text-zinc-600 truncate">Savings</span>
-                      <span className="text-xs sm:text-sm font-normal text-zinc-600 shrink-0 tabular-nums">
+                      <span className="text-xs sm:text-sm font-normal text-muted-foreground truncate">Savings</span>
+                      <span className="text-xs sm:text-sm font-normal text-muted-foreground shrink-0 tabular-nums">
                         {annualSavings.toLocaleString("fr-FR")}
-                        <span className="text-zinc-400 ml-0.5 font-light">€</span>
+                        <span className="text-muted-foreground/80 ml-0.5 font-light">€</span>
                       </span>
                     </div>
                     {(() => {
@@ -992,13 +1237,13 @@ export default function ProspectSharePage() {
                       const totalParts = directEur + viaBatteryEur + injectionEur;
                       if (!Number.isFinite(totalParts) || totalParts <= 0) return null;
                       return (
-                        <div className="mt-2 flex flex-col gap-1.5 text-[11px] text-zinc-600">
+                        <div className="mt-2 flex flex-col gap-1.5 text-[11px] text-muted-foreground">
                           <div className="flex items-center justify-between gap-2">
                             <span className="flex items-center gap-2 min-w-0">
                               <span className="h-2 w-2 rounded-full shrink-0 bg-[#0000FF]" aria-hidden />
                               <span className="truncate">Autoconsommation batterie</span>
                             </span>
-                            <span className="shrink-0 tabular-nums text-zinc-700">
+                            <span className="shrink-0 tabular-nums text-foreground">
                               {Math.round(viaBatteryEur).toLocaleString("fr-FR")}€
                             </span>
                           </div>
@@ -1007,7 +1252,7 @@ export default function ProspectSharePage() {
                               <span className="h-2 w-2 rounded-full shrink-0 bg-[#4B5563]" aria-hidden />
                               <span className="truncate">Autoconsommation directe</span>
                             </span>
-                            <span className="shrink-0 tabular-nums text-zinc-700">
+                            <span className="shrink-0 tabular-nums text-foreground">
                               {Math.round(directEur).toLocaleString("fr-FR")}€
                             </span>
                           </div>
@@ -1016,7 +1261,7 @@ export default function ProspectSharePage() {
                               <span className="h-2 w-2 rounded-full shrink-0 bg-[#32F490]" aria-hidden />
                               <span className="truncate">Injection réseau</span>
                             </span>
-                            <span className="shrink-0 tabular-nums text-zinc-700">
+                            <span className="shrink-0 tabular-nums text-foreground">
                               {Math.round(injectionEur).toLocaleString("fr-FR")}€
                             </span>
                           </div>
@@ -1026,282 +1271,12 @@ export default function ProspectSharePage() {
                   </div>
                 </div>
 
-                {(panelsData !== undefined || invertersData !== undefined || batteriesData !== undefined) && (
-                  <div className="bg-zinc-100 rounded-xl py-3 px-4 overflow-auto">
-                    <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-3">Équipement</div>
-                    <div className="space-y-2">
-                      {visiblePanels.length > 0 ? (
-                        <div>
-                          <EquipmentSelectCard<PanelReference>
-                            value={usedPanelRef ?? undefined}
-                            options={visiblePanels}
-                            onChange={(p) => setSelectedPanelId(p ? p.id : null)}
-                            getItemId={(p) => p.id}
-                            showRecommendedBadge={!!usedPanelRef?.recommended}
-                            rightBadge={usedPanelRef ? String(effectiveConfig.effectivePanelCount) : undefined}
-                            placeholder={
-                              <span className="flex items-center gap-2">
-                                <Zap className="h-5 w-5" />
-                                Choisir un panneau
-                              </span>
-                            }
-                            renderTriggerContent={(p, { badges }) => (
-                              <>
-                                <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
-                                <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                                  <div className="flex w-full items-start justify-between gap-2">
-                                    <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{p.name}</div>
-                                    <div className="flex items-center gap-1.5 shrink-0">
-                                      {badges}
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{p.costEur}</span>
-                                    <span className="text-muted-foreground/40 text-[10px]">|</span>
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                                      <Zap className="h-2.5 w-2.5 text-muted-foreground/80" />
-                                      {formatPower(p.powerW)}
-                                    </span>
-                                    {p.warrantyYears != null && (
-                                      <>
-                                        <span className="text-muted-foreground/40 text-[10px]">|</span>
-                                        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                                          <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
-                                          {p.warrantyYears}y
-                                        </span>
-                                      </>
-                                    )}
-                                    {p.countryCode && (
-                                      <>
-                                        <span className="text-muted-foreground/40 text-xs">|</span>
-                                        <span className="inline-flex shrink-0" title={p.countryOfOrigin}>
-                                          <img
-                                            src={getCountryFlagUrl(p.countryCode)}
-                                            alt=""
-                                            className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                          />
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                            renderOptionContent={(p) => (
-                              <>
-                                <EquipmentThumbnail imageUrl={p.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
-                                <div className="flex-1 min-w-0 flex flex-col justify-center">
-                                  <div className="font-medium text-xs text-foreground truncate">{p.name}</div>
-                                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
-                                    <span>€{p.costEur}</span>
-                                    <span>·</span>
-                                    <span>{formatPower(p.powerW)}</span>
-                                    {p.recommended && (
-                                      <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                                    )}
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                          />
-                        </div>
-                      ) : panelsData !== undefined ? (
-                        <p className="text-xs text-muted-foreground py-2">Aucun panneau configuré</p>
-                      ) : null}
-
-                      {visibleInverters.length > 0 ? (
-                        <div>
-                          <EquipmentSelectCard<InverterReference>
-                            value={usedInverterRef ?? undefined}
-                            options={visibleInverters}
-                            onChange={(i) => setSelectedInverterId(i ? i.id : null)}
-                            getItemId={(i) => i.id}
-                            showRecommendedBadge={!!usedInverterRef?.recommended}
-                            rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
-                            placeholder={
-                              <span className="flex items-center gap-2">
-                                <Zap className="h-5 w-5" />
-                                Choisir un onduleur
-                              </span>
-                            }
-                            renderTriggerContent={(i, { badges }) => (
-                              <>
-                                <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
-                                <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                                  <div className="flex w-full items-start justify-between gap-2">
-                                    <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{i.name}</div>
-                                    <div className="flex items-center gap-1.5 shrink-0">
-                                      {badges}
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{i.costEur}</span>
-                                    <span className="text-muted-foreground/40 text-[10px]">|</span>
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                                      <Zap className="h-2.5 w-2.5 text-muted-foreground/80" />
-                                      {formatPower(i.powerW)}
-                                    </span>
-                                    {i.warrantyYears != null && (
-                                      <>
-                                        <span className="text-muted-foreground/40 text-[10px]">|</span>
-                                        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                                          <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
-                                          {i.warrantyYears}y
-                                        </span>
-                                      </>
-                                    )}
-                                    {i.countryCode && (
-                                      <>
-                                        <span className="text-muted-foreground/40 text-xs">|</span>
-                                        <span className="inline-flex shrink-0" title={i.countryOfOrigin}>
-                                          <img
-                                            src={getCountryFlagUrl(i.countryCode)}
-                                            alt=""
-                                            className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
-                                          />
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                            renderOptionContent={(i) => (
-                              <>
-                                <EquipmentThumbnail imageUrl={i.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
-                                <div className="flex-1 min-w-0 flex flex-col justify-center">
-                                  <div className="font-medium text-xs text-foreground truncate">{i.name}</div>
-                                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
-                                    <span>€{i.costEur}</span>
-                                    <span>·</span>
-                                    <span>{formatPower(i.powerW)}</span>
-                                    {i.recommended && (
-                                      <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
-                                    )}
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                          />
-                        </div>
-                      ) : invertersData !== undefined ? (
-                        <p className="text-xs text-muted-foreground py-2">Aucun onduleur configuré</p>
-                      ) : null}
-
-                      {includeBatteryEffective ? (
-                        visibleBatteries.length > 0 ? (
-                          <div>
-                            <BatterySelectCard
-                              value={usedBatteryRef ?? undefined}
-                              onChange={(b) => {
-                                setSelectedBatteryId(b ? b.id : null);
-                                if (b) {
-                                  const maxForNew = b.maxBatteriesPerRack ?? 20;
-                                  setSelectedBatteryCount((prev) => Math.min(maxForNew, Math.max(1, prev)));
-                                }
-                              }}
-                              count={selectedBatteryCount}
-                              onCountChange={setSelectedBatteryCount}
-                              maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
-                              batteries={visibleBatteries}
-                              isRecommendedForProspect={
-                                !!recommendedBatteryComposition &&
-                                usedBatteryRef?.id === recommendedBatteryComposition.model.id &&
-                                selectedBatteryCount === recommendedBatteryComposition.count
-                              }
-                              recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
-                            />
-                          </div>
-                        ) : batteriesData !== undefined ? (
-                          <p className="text-xs text-muted-foreground py-2">Aucune batterie configurée</p>
-                        ) : null
-                      ) : (
-                        <p className="text-xs text-muted-foreground py-2">Batterie non incluse</p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="relative mt-4 bg-zinc-100 rounded-xl py-3 px-4 overflow-hidden flex flex-col min-h-[134px]">
-                <div
-                  className="absolute top-3 right-4 pointer-events-none text-[#0000FF]"
-                  aria-hidden
-                >
-                  <svg
-                    width="32"
-                    height="32"
-                    viewBox="0 0 125 125"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="shrink-0"
-                  >
-                    <rect
-                      x="-2.21883"
-                      y="2.21883"
-                      width="58.6085"
-                      height="58.6085"
-                      transform="matrix(-0.116186 0.993227 -0.993227 0.116186 96.6408 31.6199)"
-                      stroke="currentColor"
-                      strokeWidth="2.75"
-                    />
-                    <path d="M64.0565 32.4581L66.2075 58.2295" stroke="currentColor" strokeWidth="2.75" />
-                    <path d="M65.6705 58.184L91.4419 60.335" stroke="currentColor" strokeWidth="2.75" />
-                    <path d="M46.8704 35.5688L50.0967 74.2236" stroke="currentColor" strokeWidth="2.75" />
-                    <path d="M49.2914 74.156L87.9463 77.3823" stroke="currentColor" strokeWidth="2.75" />
-                    <path d="M28.7041 95.6704L93.7041 30.6704" stroke="currentColor" strokeWidth="2.75" />
-                  </svg>
-                </div>
-                <div className="flex items-start justify-between gap-3 pr-12">
-                  <div className="min-w-0">
-                    <div className="text-[10px] uppercase tracking-wide text-zinc-500">
-                      Impact carbon
-                    </div>
-                  </div>
-                </div>
-
-                <div className="w-full mt-auto pt-3 flex flex-col items-start gap-0">
-                  <div className="text-lg font-semibold tabular-nums leading-none text-[#0000FF] text-left">
-                    {avoidedCarbonTons.toLocaleString("fr-FR", {
-                      maximumFractionDigits: 2,
-                      minimumFractionDigits: 0,
-                    })}{" "}
-                    t CO₂e
-                  </div>
-                  <div className="mt-1 flex h-9 w-full items-end gap-[3px]">
-                    <div
-                      ref={carbonBarTrackRef}
-                      className="relative grid h-9 w-full min-w-0 shrink-0 items-stretch"
-                      style={{
-                        gap: CARBON_BAR_GAP_PX,
-                        gridTemplateColumns: `repeat(${carbonBarSegments}, minmax(0, 1fr))`,
-                      }}
-                      aria-hidden
-                    >
-                      {Array.from({ length: carbonBarSegments }, (_, i) => {
-                        const pct = Math.min(100, Math.max(0, carbonReductionPct));
-                        const fillEnd = (pct / 100) * carbonBarSegments;
-                        const isFilled = i < fillEnd;
-                        return (
-                          <div
-                            key={i}
-                            className={
-                              isFilled
-                                ? "h-full min-w-0 w-full rounded-full bg-[#0000FF]"
-                                : "h-full min-w-0 w-full rounded-full bg-zinc-400/95"
-                            }
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
               </div>
             </section>
 
             <section id="finance" className="scroll-mt-24">
               <div className="flex items-end justify-between gap-4 mb-3">
-                <h2 className="text-lg font-semibold text-zinc-900">Finance</h2>
+                <h2 className="text-lg font-semibold text-foreground">Finance</h2>
               </div>
               {(() => {
                 const capexAvgEur =
@@ -1316,10 +1291,15 @@ export default function ProspectSharePage() {
 
                 if (!canRender) {
                   return (
-                    <div className="rounded-xl border border-zinc-200 bg-white p-4">
-                      <p className="text-sm text-zinc-600">
-                        Données ROI indisponibles pour ce projet.
-                      </p>
+                    <div className="space-y-3">
+                      <div className={cn("p-4", radianzDefaultCardClass)} style={radianzCardBorderStyle}>
+                        <p className="text-sm text-muted-foreground">
+                          Données ROI indisponibles pour ce projet.
+                        </p>
+                      </div>
+                      {installationBandReady && priceKMinPortal != null && priceKMaxPortal != null ? (
+                        <SharePortalInstallationCard priceKMin={priceKMinPortal} priceKMax={priceKMaxPortal} />
+                      ) : null}
                     </div>
                   );
                 }
@@ -1401,15 +1381,15 @@ export default function ProspectSharePage() {
                             key={item.id}
                             type="button"
                             onClick={() => setFinancingMode(item.id)}
-                            className={`cursor-pointer rounded-xl px-4 py-4 text-left h-full flex flex-col justify-center overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-50 ${
+                            className={`cursor-pointer rounded-[12px] px-4 py-4 text-left h-full flex flex-col justify-center overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
                               selected
                                 ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                                : "border border-transparent bg-zinc-100 hover:bg-zinc-200/70"
+                                : "border border-border bg-card hover:bg-muted/60"
                             }`}
                             aria-pressed={selected}
                           >
                             <div
-                              className={`text-base font-normal uppercase ${selected ? "text-[#0000FF]" : "text-zinc-700"}`}
+                              className={`text-base font-normal uppercase ${selected ? "text-[#0000FF]" : "text-foreground"}`}
                             >
                               {item.title}
                             </div>
@@ -1418,10 +1398,13 @@ export default function ProspectSharePage() {
                       })}
                     </div>
 
-                    <div className="mt-3 h-[360px] bg-zinc-100 rounded-xl py-3 px-4 pb-2 flex flex-col overflow-hidden">
+                    <div
+                      className={cn("mt-3 h-[360px] py-3 px-4 pb-2 flex flex-col overflow-hidden", radianzDefaultCardClass)}
+                      style={radianzCardBorderStyle}
+                    >
                       <div className="flex flex-col gap-1.5 mb-2 shrink-0">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] uppercase tracking-wide text-zinc-500">
+                          <span className={radianzMonoLabelClass}>
                             {financeChartView === "roi"
                               ? "ROI (cashflow net)"
                               : "Facture réseau (hausse prix)"}
@@ -1470,7 +1453,7 @@ export default function ProspectSharePage() {
                                   <TooltipTrigger asChild>
                                     <button
                                       type="button"
-                                      className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10"
+                                      className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                       aria-label="Informations sur le calcul"
                                     >
                                       <Info className="h-4 w-4" />
@@ -1492,7 +1475,7 @@ export default function ProspectSharePage() {
                                   <TooltipTrigger asChild>
                                     <button
                                       type="button"
-                                      className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/10"
+                                      className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                       aria-label="Informations sur le calcul"
                                     >
                                       <Info className="h-4 w-4" />
@@ -1532,6 +1515,220 @@ export default function ProspectSharePage() {
                         )}
                       </div>
                     </div>
+
+                    {(installationBandReady && priceKMinPortal != null && priceKMaxPortal != null) ||
+                    panelsData !== undefined ||
+                    invertersData !== undefined ||
+                    batteriesData !== undefined ? (
+                      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+                        {installationBandReady && priceKMinPortal != null && priceKMaxPortal != null ? (
+                          <SharePortalInstallationCard
+                            priceKMin={priceKMinPortal}
+                            priceKMax={priceKMaxPortal}
+                            className="h-full"
+                          />
+                        ) : null}
+
+                        {(panelsData !== undefined || invertersData !== undefined || batteriesData !== undefined) && (
+                          <div
+                            className={cn("py-3 px-4 overflow-auto", radianzDefaultCardClass)}
+                            style={radianzCardBorderStyle}
+                          >
+                            <div className={cn(radianzMonoLabelClass, "mb-3")}>Équipement</div>
+                            <div className="space-y-2">
+                              {visiblePanels.length > 0 ? (
+                                <div>
+                                  <EquipmentSelectCard<PanelReference>
+                                    value={usedPanelRef ?? undefined}
+                                    options={visiblePanels}
+                                    onChange={(p) => setSelectedPanelId(p ? p.id : null)}
+                                    getItemId={(p) => p.id}
+                                    showRecommendedBadge={!!usedPanelRef?.recommended}
+                                    rightBadge={usedPanelRef ? String(effectiveConfig.effectivePanelCount) : undefined}
+                                    placeholder={
+                                      <span className="flex items-center gap-2">
+                                        <Zap className="h-5 w-5" />
+                                        Choisir un panneau
+                                      </span>
+                                    }
+                                    renderTriggerContent={(p, { badges }) => (
+                                      <>
+                                        <EquipmentThumbnail imageUrl={p.imageUrl} alt={p.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                                        <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                                          <div className="flex w-full items-start justify-between gap-2">
+                                            <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{p.name}</div>
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                              {badges}
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
+                                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{p.costEur}</span>
+                                            <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                              <Zap className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                              {formatPower(p.powerW)}
+                                            </span>
+                                            {p.warrantyYears != null && (
+                                              <>
+                                                <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                                <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                                  <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                                  {p.warrantyYears}y
+                                                </span>
+                                              </>
+                                            )}
+                                            {p.countryCode && (
+                                              <>
+                                                <span className="text-muted-foreground/40 text-xs">|</span>
+                                                <span className="inline-flex shrink-0" title={p.countryOfOrigin}>
+                                                  <img
+                                                    src={getCountryFlagUrl(p.countryCode)}
+                                                    alt=""
+                                                    className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                                  />
+                                                </span>
+                                              </>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </>
+                                    )}
+                                    renderOptionContent={(p) => (
+                                      <>
+                                        <EquipmentThumbnail imageUrl={p.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                                        <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                          <div className="font-medium text-xs text-foreground truncate">{p.name}</div>
+                                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                                            <span>€{p.costEur}</span>
+                                            <span>·</span>
+                                            <span>{formatPower(p.powerW)}</span>
+                                            {p.recommended && (
+                                              <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </>
+                                    )}
+                                  />
+                                </div>
+                              ) : panelsData !== undefined ? (
+                                <p className="text-xs text-muted-foreground py-2">Aucun panneau configuré</p>
+                              ) : null}
+
+                              {visibleInverters.length > 0 ? (
+                                <div>
+                                  <EquipmentSelectCard<InverterReference>
+                                    value={usedInverterRef ?? undefined}
+                                    options={visibleInverters}
+                                    onChange={(i) => setSelectedInverterId(i ? i.id : null)}
+                                    getItemId={(i) => i.id}
+                                    showRecommendedBadge={!!usedInverterRef?.recommended}
+                                    rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
+                                    placeholder={
+                                      <span className="flex items-center gap-2">
+                                        <Zap className="h-5 w-5" />
+                                        Choisir un onduleur
+                                      </span>
+                                    }
+                                    renderTriggerContent={(i, { badges }) => (
+                                      <>
+                                        <EquipmentThumbnail imageUrl={i.imageUrl} alt={i.name} fallback={<span className="text-muted-foreground text-xs">—</span>} />
+                                        <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
+                                          <div className="flex w-full items-start justify-between gap-2">
+                                            <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{i.name}</div>
+                                            <div className="flex items-center gap-1.5 shrink-0">
+                                              {badges}
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
+                                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{i.costEur}</span>
+                                            <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                            <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                              <Zap className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                              {formatPower(i.powerW)}
+                                            </span>
+                                            {i.warrantyYears != null && (
+                                              <>
+                                                <span className="text-muted-foreground/40 text-[10px]">|</span>
+                                                <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                                  <FileCheck className="h-2.5 w-2.5 text-muted-foreground/80" />
+                                                  {i.warrantyYears}y
+                                                </span>
+                                              </>
+                                            )}
+                                            {i.countryCode && (
+                                              <>
+                                                <span className="text-muted-foreground/40 text-xs">|</span>
+                                                <span className="inline-flex shrink-0" title={i.countryOfOrigin}>
+                                                  <img
+                                                    src={getCountryFlagUrl(i.countryCode)}
+                                                    alt=""
+                                                    className="w-3 h-3 rounded-full object-cover ring-1 ring-border/50"
+                                                  />
+                                                </span>
+                                              </>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </>
+                                    )}
+                                    renderOptionContent={(i) => (
+                                      <>
+                                        <EquipmentThumbnail imageUrl={i.imageUrl} alt="" fallback={<span className="text-muted-foreground text-xs">—</span>} size="sm" />
+                                        <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                          <div className="font-medium text-xs text-foreground truncate">{i.name}</div>
+                                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap text-[11px] text-muted-foreground">
+                                            <span>€{i.costEur}</span>
+                                            <span>·</span>
+                                            <span>{formatPower(i.powerW)}</span>
+                                            {i.recommended && (
+                                              <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </>
+                                    )}
+                                  />
+                                </div>
+                              ) : invertersData !== undefined ? (
+                                <p className="text-xs text-muted-foreground py-2">Aucun onduleur configuré</p>
+                              ) : null}
+
+                              {includeBatteryEffective ? (
+                                visibleBatteries.length > 0 ? (
+                                  <div>
+                                    <BatterySelectCard
+                                      value={usedBatteryRef ?? undefined}
+                                      onChange={(b) => {
+                                        setSelectedBatteryId(b ? b.id : null);
+                                        if (b) {
+                                          const maxForNew = b.maxBatteriesPerRack ?? 20;
+                                          setSelectedBatteryCount((prev) => Math.min(maxForNew, Math.max(1, prev)));
+                                        }
+                                      }}
+                                      count={selectedBatteryCount}
+                                      onCountChange={setSelectedBatteryCount}
+                                      maxCount={usedBatteryRef?.maxBatteriesPerRack ?? 20}
+                                      batteries={visibleBatteries}
+                                      isRecommendedForProspect={
+                                        !!recommendedBatteryComposition &&
+                                        usedBatteryRef?.id === recommendedBatteryComposition.model.id &&
+                                        selectedBatteryCount === recommendedBatteryComposition.count
+                                      }
+                                      recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
+                                    />
+                                  </div>
+                                ) : batteriesData !== undefined ? (
+                                  <p className="text-xs text-muted-foreground py-2">Aucune batterie configurée</p>
+                                ) : null
+                              ) : (
+                                <p className="text-xs text-muted-foreground py-2">Batterie non incluse</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </>
                 );
               })()}
@@ -1539,42 +1736,43 @@ export default function ProspectSharePage() {
 
             <section id="contact" className="scroll-mt-24">
               <div className="flex items-end justify-between gap-4 mb-3">
-                <h2 className="text-lg font-semibold text-zinc-900">Contact</h2>
+                <h2 className="text-lg font-semibold text-foreground">Contact</h2>
               </div>
               {commercialReferent && (commercialReferent.name || commercialReferent.email || commercialReferent.phone) ? (
-                <div className="flex min-h-[200px] min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
+                <div
+                  className={cn("flex min-h-[200px] min-w-0 flex-col overflow-hidden p-4", radianzDefaultCardClass)}
+                  style={radianzCardBorderStyle}
+                >
                   <div className="flex w-full items-center justify-between">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
-                      Votre référent
-                    </p>
+                    <p className={radianzMonoLabelClass}>Votre référent</p>
                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400">
                       <span className="size-1.5 rounded-full bg-emerald-500" />
                       Disponible
                     </span>
                   </div>
-                  <div className="relative mx-auto mt-3 size-24 shrink-0 overflow-hidden rounded-xl bg-zinc-200 dark:bg-zinc-600">
+                  <div className="relative mx-auto mt-3 size-24 shrink-0 overflow-hidden rounded-[12px] bg-muted">
                     {commercialReferent.photoURL ? (
                       <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center">
-                        <User className="size-8 text-zinc-400" />
+                        <User className="size-8 text-muted-foreground" />
                       </div>
                     )}
                   </div>
                   <div className="mt-3 flex w-full flex-1 flex-col gap-1.5 text-center">
                     {commercialReferent.name && (
-                      <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                      <p className="truncate text-sm font-medium text-foreground">
                         {commercialReferent.name}
                       </p>
                     )}
                     {(commercialReferent.logoUrl || commercialReferent.company) && (
                       <div className="flex items-center justify-center gap-2">
                         {commercialReferent.logoUrl && (
-                          <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded border border-zinc-200 bg-white dark:border-zinc-600 dark:bg-zinc-800">
+                          <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-card">
                             <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-0.5" />
                           </div>
                         )}
-                        <p className="truncate text-xs text-zinc-600 dark:text-zinc-400">
+                        <p className="truncate text-xs text-muted-foreground">
                           {commercialReferent.company || "Entreprise"}
                         </p>
                       </div>
@@ -1583,26 +1781,26 @@ export default function ProspectSharePage() {
                       {commercialReferent.phone ? (
                         <a
                           href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
-                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-200 py-1.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300"
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-muted py-1.5 text-[11px] font-medium text-foreground"
                         >
                           <Phone className="size-3 shrink-0" />
                           <span className="truncate">{commercialReferent.phone}</span>
                         </a>
                       ) : (
-                        <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-200 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
+                        <span className="flex flex-1 items-center justify-center rounded-md bg-muted py-1.5 text-[11px] text-muted-foreground">
                           —
                         </span>
                       )}
                       {commercialReferent.email ? (
                         <a
                           href={`mailto:${commercialReferent.email}`}
-                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-zinc-900 py-1.5 text-[11px] font-medium text-white hover:bg-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-primary py-1.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
                         >
                           <Mail className="size-3 shrink-0" />
                           Email
                         </a>
                       ) : (
-                        <span className="flex flex-1 items-center justify-center rounded-md bg-zinc-300 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-600 dark:text-zinc-400">
+                        <span className="flex flex-1 items-center justify-center rounded-md bg-muted/80 py-1.5 text-[11px] text-muted-foreground">
                           —
                         </span>
                       )}
@@ -1610,8 +1808,8 @@ export default function ProspectSharePage() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-xs">
-                  <p className="text-sm text-zinc-600">Aucun contact configuré.</p>
+                <div className={cn("p-4 shadow-xs", radianzDefaultCardClass)} style={radianzCardBorderStyle}>
+                  <p className="text-sm text-muted-foreground">Aucun contact configuré.</p>
                 </div>
               )}
             </section>

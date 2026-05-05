@@ -12,6 +12,7 @@ import { getPlaceDetailsNew } from "@/lib/places-new-api";
 import { geojsonPolygonToGooglePathParts } from "@/lib/geojson-google-polygon";
 import type { ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
 import { toast } from "sonner";
+import { BRAND_LIME, BRAND_LIME_HOVER } from "@/lib/brand-colors";
 
 interface MapComponentProps {
   onProspectUpdate: (prospect: Prospect | null) => void;
@@ -562,10 +563,10 @@ export function MapComponent({
 
       const polygon = new maps.Polygon({
         paths: surface.polygon,
-        fillColor: "#E4FE55",
+        fillColor: BRAND_LIME,
         fillOpacity: 0.35,
         strokeWeight: 2,
-        strokeColor: "#d7f24f",
+        strokeColor: BRAND_LIME_HOVER,
         clickable: false,
         editable: false,
         zIndex: 1,

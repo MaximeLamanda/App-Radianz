@@ -104,7 +104,7 @@ export default function OnboardingPage() {
       <header className="border-b px-4 py-4">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <Image
-            src="/logo-radianz.png"
+            src="/logo-radianz.svg"
             alt="Radianz"
             width={120}
             height={40}

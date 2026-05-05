@@ -35,12 +35,79 @@ export type ScoutMatchingV5Row = {
   passerelleAddressesJson: string;
   parcellesJson: string;
   buildingsJson: string;
+  /** POI OSM dans la parcelle (export matching V5, `osm_pois_json`). */
+  osmPoisJson?: string;
+  osmPoiCount?: number;
+  osmPoisStatus?: string;
+  osmPoiTruncated?: number;
+  osmDataAsOf?: string;
   properties: Record<string, unknown>;
 };
 
 function strProp(v: unknown): string {
   if (v == null) return "";
   return String(v).trim();
+}
+
+/** Aligné sur `data-pipeline/matching_v5/osm_poi_v5.py` — catégories pour repli client. */
+const OSM_PRIMARY_KEY_LABEL_FR: Record<string, string> = {
+  shop: "Commerce",
+  amenity: "Équipement",
+  craft: "Artisanat",
+  office: "Bureaux",
+  healthcare: "Santé",
+  leisure: "Loisirs",
+  tourism: "Tourisme",
+  man_made: "Ouvrage",
+};
+
+/** Paires `clé:valeur` héritées → libellé métier (évite « Commerce — Yes » côté client). */
+const LEGACY_OSMTYPE_VALUE_FR: Record<string, string> = {
+  "leisure:amusement_arcade": "Salle d'arcades",
+  "shop:yes": "Magasin",
+};
+
+function legacyOsmColonPairKey(raw: string): string | null {
+  const m = String(raw ?? "")
+    .trim()
+    .match(/^([a-z][a-z0-9_]*)\s*:\s*(.+)$/);
+  if (!m?.[1] || !m[2]) return null;
+  const val = m[2]
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  return `${m[1].toLowerCase()}:${val}`;
+}
+
+/**
+ * Anciens exports utilisaient la syntaxe OSM `clé: valeur` dans `poi_type_label`.
+ * Harmonise l’affichage avec le pipeline (libellé lisible, sans `leisure:` brut).
+ */
+export function formatV5OsmPoiTypeLabelForDisplay(raw: string): string {
+  const t = String(raw ?? "").trim();
+  if (!t) return t;
+  const pairKey = legacyOsmColonPairKey(t);
+  if (pairKey && LEGACY_OSMTYPE_VALUE_FR[pairKey]) {
+    return LEGACY_OSMTYPE_VALUE_FR[pairKey]!;
+  }
+  const m = t.match(/^([a-z][a-z0-9_]*)\s*:\s*(.+)$/);
+  if (!m?.[1] || !m[2]) return t;
+  const key = m[1].toLowerCase();
+  const rest = m[2].trim();
+  const keyPretty = key.replace(/_/g, " ");
+  const cat =
+    OSM_PRIMARY_KEY_LABEL_FR[key] ??
+    keyPretty
+      .split(/\s+/)
+      .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ""))
+      .join(" ");
+  const slug = rest.replace(/_/g, " ").trim();
+  if (!slug) return cat;
+  const pretty = slug
+    .split(/\s+/)
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : ""))
+    .join(" ");
+  return `${cat} — ${pretty}`;
 }
 
 function parseGeometry(g: unknown): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
@@ -164,6 +231,82 @@ export function parseGoogleNearbyRankedJson(raw: string): V5GoogleNearbyRankedEn
   }
 }
 
+/** POI OSM normalisés (export pipeline V5, champ `osm_pois_json`). */
+export type V5OsmPoiEntry = {
+  osm_type: string;
+  osm_id: number;
+  name: string;
+  /** Adresse formatée depuis les tags OSM `addr:*` / `contact:address` (vide si absent). */
+  address: string;
+  website: string;
+  phone: string;
+  poi_primary_key?: string | null;
+  poi_primary_value?: string | null;
+  poi_type_label: string;
+  osm_url: string;
+  lat: number;
+  lng: number;
+};
+
+export function parseOsmPoisJson(raw: string): V5OsmPoiEntry[] {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s) as unknown;
+    if (!Array.isArray(v)) return [];
+    const out: V5OsmPoiEntry[] = [];
+    for (const item of v) {
+      if (!item || typeof item !== "object") continue;
+      const o = item as Record<string, unknown>;
+      const osmType = strProp(o.osm_type) || "n";
+      const idRaw = o.osm_id;
+      const osmId = typeof idRaw === "number" && Number.isFinite(idRaw) ? Math.trunc(idRaw) : Number(strProp(idRaw));
+      if (!Number.isFinite(osmId)) continue;
+      const lat = typeof o.lat === "number" && Number.isFinite(o.lat) ? o.lat : Number(strProp(o.lat));
+      const lng = typeof o.lng === "number" && Number.isFinite(o.lng) ? o.lng : Number(strProp(o.lng));
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      out.push({
+        osm_type: osmType.slice(0, 1),
+        osm_id: osmId,
+        name: strProp(o.name),
+        address: strProp(o.address),
+        website: strProp(o.website),
+        phone: strProp(o.phone),
+        poi_primary_key: o.poi_primary_key != null ? strProp(o.poi_primary_key) || null : null,
+        poi_primary_value: o.poi_primary_value != null ? strProp(o.poi_primary_value) || null : null,
+        poi_type_label: formatV5OsmPoiTypeLabelForDisplay(strProp(o.poi_type_label)),
+        osm_url: strProp(o.osm_url),
+        lat,
+        lng,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Union des POI OSM sur plusieurs lignes parcelle (dédoublonnage par type+id). */
+export function mergeOsmPoisFromParcelleRows(rows: ScoutMatchingV5Row[]): V5OsmPoiEntry[] {
+  const seen = new Set<string>();
+  const out: V5OsmPoiEntry[] = [];
+  for (const r of rows) {
+    if (r.grain !== "parcelle") continue;
+    for (const poi of parseOsmPoisJson(r.osmPoisJson ?? "")) {
+      const k = `${poi.osm_type}:${poi.osm_id}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(poi);
+    }
+  }
+  out.sort((a, b) => {
+    const an = (a.name || a.poi_type_label || "").toLowerCase();
+    const bn = (b.name || b.poi_type_label || "").toLowerCase();
+    return an.localeCompare(bn, "fr");
+  });
+  return out;
+}
+
 /** Identifiants `batiment_construction_id` avec `matching_status === "partage"` dans buildings_json. */
 export function collectPartageBatimentConstructionIds(row: ScoutMatchingV5Row): Set<string> {
   const sharedIds = new Set<string>();
@@ -196,6 +339,16 @@ export function collectBatimentIdsForMatchingV5BuildingsApi(rows: ScoutMatchingV
   const idSeen = new Set<string>();
   const ids: string[] = [];
   for (const row of rows) {
+    if (row.grain === "building") {
+      const bc = String(row.batimentConstructionId || "").trim();
+      const bg = String(row.batimentGroupeId || "").trim();
+      const id = bc || bg;
+      if (id && !idSeen.has(id)) {
+        idSeen.add(id);
+        ids.push(id);
+      }
+      continue;
+    }
     if (row.grain !== "parcelle") continue;
     const raw = row.buildingsJson?.trim() || "";
     if (!raw) continue;
@@ -216,6 +369,53 @@ export function collectBatimentIdsForMatchingV5BuildingsApi(rows: ScoutMatchingV
     }
   }
   return ids;
+}
+
+/**
+ * Ligne matching à sélectionner après clic sur l’empreinte BDNB (`batiment_construction_id` ou `batiment_groupe_id`).
+ * Priorité : `grain === "building"` dont les ids BDNB correspondent ; sinon parcelle dont `buildings_json` contient ce bâtiment.
+ */
+export function findMatchingV5RowIdForBatimentFootprint(
+  rows: ScoutMatchingV5Row[],
+  batimentId: string
+): string | null {
+  const bc = String(batimentId || "").trim();
+  if (!bc) return null;
+
+  const buildingMatches: ScoutMatchingV5Row[] = [];
+  for (const r of rows) {
+    if (r.grain !== "building") continue;
+    if (r.batimentConstructionId === bc || r.batimentGroupeId === bc) {
+      buildingMatches.push(r);
+    }
+  }
+  if (buildingMatches.length > 0) {
+    buildingMatches.sort((a, b) => a.id.localeCompare(b.id));
+    return buildingMatches[0]!.id;
+  }
+
+  const parcelleMatches: ScoutMatchingV5Row[] = [];
+  for (const r of rows) {
+    if (r.grain !== "parcelle") continue;
+    const raw = r.buildingsJson?.trim();
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as Array<{
+        batiment_construction_id?: string;
+        batiment_groupe_id?: string;
+      }>;
+      const hit = parsed.some((it) => {
+        const c = String(it?.batiment_construction_id || "").trim();
+        const g = String(it?.batiment_groupe_id || "").trim();
+        return c === bc || g === bc;
+      });
+      if (hit) parcelleMatches.push(r);
+    } catch {
+      // ignore
+    }
+  }
+  if (parcelleMatches.length === 0) return null;
+  return sortMatchingV5ParcelleRowsByCadastre(parcelleMatches)[0]!.id;
 }
 
 /**
@@ -516,6 +716,13 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     const matchingConfidence = Number.isFinite(matchingConfidenceRaw) ? Math.max(0, matchingConfidenceRaw) : 0;
     const passerelleAddress = strProp(p.passerelle_address);
     const passerelleAddressesJson = strProp(p.passerelle_addresses_json);
+    const osmPoisJson = strProp(p.osm_pois_json);
+    const osmPoiCountRaw = Number(strProp(p.osm_poi_count));
+    const osmPoiCount = Number.isFinite(osmPoiCountRaw) ? Math.max(0, Math.trunc(osmPoiCountRaw)) : 0;
+    const osmPoisStatus = strProp(p.osm_pois_status);
+    const osmPoiTruncatedRaw = Number(strProp(p.osm_poi_truncated));
+    const osmPoiTruncated = Number.isFinite(osmPoiTruncatedRaw) ? Math.max(0, Math.trunc(osmPoiTruncatedRaw)) : 0;
+    const osmDataAsOf = strProp(p.osm_data_as_of);
     let label: string;
     if (grain === "building") {
       if (batimentConstructionId) {
@@ -555,6 +762,11 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
       passerelleAddressesJson,
       parcellesJson: strProp(p.parcelles_json),
       buildingsJson: strProp(p.buildings_json),
+      osmPoisJson,
+      osmPoiCount,
+      osmPoisStatus,
+      osmPoiTruncated,
+      osmDataAsOf,
       properties: { ...p },
     });
   }

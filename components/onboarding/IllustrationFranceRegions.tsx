@@ -1,6 +1,7 @@
 "use client";
 
 import franceRegions from "@svg-maps/france.regions";
+import { BRAND_LIME } from "@/lib/brand-colors";
 
 interface IllustrationFranceRegionsProps {
   /** Noms des régions sélectionnées (ex: "Auvergne-Rhône-Alpes") — affichées en jaune */
@@ -35,7 +36,7 @@ export function IllustrationFranceRegions({
             <path
               key={loc.id}
               d={loc.path}
-              fill={isSelected ? "#E4FE55" : "currentColor"}
+              fill={isSelected ? BRAND_LIME : "currentColor"}
               fillOpacity={isSelected ? 1 : 0.35}
               stroke="currentColor"
               strokeWidth={2}

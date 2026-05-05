@@ -43,6 +43,10 @@ Flux ETL classique (optionnel) : ingestion **SIRENE** (stock établissement), li
 - Appliquer [`sql/001_scout_schema.sql`](sql/001_scout_schema.sql)
 - Option MS2 (échantillon Pipeline en table locale) : [`sql/002_scout_bdnb_poi_sample.sql`](sql/002_scout_bdnb_poi_sample.sql) — `npm run bdnb:poi-sample:schema` puis `npm run bdnb:poi-sample:import` ; côté app : `SCOUT_BDNB_POI_SAMPLE_SOURCE=postgres`.
 
+## Neon : nouveau projet + copie depuis Docker local
+
+Procédure pas à pas (console Neon, `pg_dump`, `pg_restore`, variables Vercel) : **[`docs/NEON-MIGRATION-DOCKER.md`](../docs/NEON-MIGRATION-DOCKER.md)**. Dump rapide : `npm run neon:dump-local`.
+
 ## Mode 100 % local (sans Neon)
 
 Les scripts et l’app utilisent **`DATABASE_URL`** (voir [`scripts/lib/resolve-database-url.mjs`](../scripts/lib/resolve-database-url.mjs) et [`lib/server-database-url.ts`](../lib/server-database-url.ts)). **Aucune obligation d’utiliser Neon** : il suffit de pointer vers un Postgres local.
@@ -82,6 +86,8 @@ Le script [`scripts/import-bdnb-neon.mjs`](../scripts/import-bdnb-neon.mjs) cibl
 
 Variable **`BDNB_BUILDINGS_TABLE`** (défaut `public.bdnb_buildings`) — alignée avec [`lib/bdnb-buildings-table.ts`](../lib/bdnb-buildings-table.ts), l’import [`scripts/import-bdnb-neon.mjs`](../scripts/import-bdnb-neon.mjs) et le build [`scripts/build-bdnb-poi-sample.ts`](../scripts/build-bdnb-poi-sample.ts). Les emprises « brutes » Pessac / Talence côté app sont servies par [`/api/bdnb-pessac-raw/bbox`](../app/api/bdnb-pessac-raw/bbox/route.ts) et [`/api/bdnb-talence-raw/bbox`](../app/api/bdnb-talence-raw/bbox/route.ts) (tables dédiées).  
 Migration depuis une ancienne table nommée par département : soit renommer la table en SQL (`ALTER TABLE … RENAME TO bdnb_buildings`), soit définir `BDNB_BUILDINGS_TABLE=public.nom_ancienne_table` le temps de la bascule.
+
+Supprimer les groupes **résidentiel individuel** (usage BDNB / FFO) et les lignes liées (`BDNB_CONSTRUCTIONS_TABLE`, `BDNB_FFO_TABLE` défaut `public.batiment_groupe_ffo_bat`, couches brutes Pessac/Talence) : `npm run bdnb:delete-residentiel-individuel:dry-run` puis `npm run bdnb:delete-residentiel-individuel` — voir [`scripts/delete-bdnb-residentiel-individuel.mjs`](../scripts/delete-bdnb-residentiel-individuel.mjs). Sur la table FFO, le libellé exact `Résidentiel individuel` est utilisé par défaut ; pour un `ILIKE '%résidentiel%individuel%'` (plus large), définir **`BDNB_FFO_USAGE_LOOSE=1`**.
 
 ## Variables Next.js (proxy + viz)
 
@@ -124,6 +130,23 @@ python3 -m scout_pipeline.osm_poi_extract \
 ## Matching V5 (export local)
 
 Voir [`docs/MATCHING-V5.md`](../docs/MATCHING-V5.md) et [`matching/README.md`](matching/README.md). Commande typique : `npm run pipeline:matching-v5:run`.
+
+### POI OpenStreetMap (table `public.osm_poi`)
+
+Enrichissement optionnel du matching V5 : POI dont le point (nœud ou centroïde de way fermée) est **dans la géométrie cadastrale** des parcelles retenues à l’export.
+
+1. PostGIS requis sur la base (même instance que le matching V5).
+2. Télécharger un extrait **`.osm.pbf`** (ex. [Geofabrik](https://download.geofabrik.de/)) ; une **bbox** plus petite accélère l’import (voir aussi la section « OSM PBF → Parquet » ci-dessus pour découper avec la CLI `osmium`).
+3. Import (crée la table `public.osm_poi` si besoin — pas obligatoire d’avoir `psql`) :
+
+```bash
+npm run pipeline:osm-poi:import
+# ou : python3 data-pipeline/matching_v5/import_osm_poi.py --input chemin/extrait.osm.pbf --truncate
+```
+
+`--truncate` exécute `TRUNCATE` sur la table cible avant chargement. Surcharge du nom qualifié : variable **`OSM_POI_TABLE`** (défaut `public.osm_poi`). Puis relancer le matching V5 ; options **`--no-osm-poi`** et **`--osm-poi-max N`** sur [`matching_v5/run_matching_v5.py`](matching_v5/run_matching_v5.py).
+
+La colonne **`tags`** ne stocke qu’un **sous-ensemble** des clés OSM (types POI `shop` / `amenity` / …, `name`, `brand`, `website`, `phone`, etc.) — pas `building`, `source`, `wikidata`, adresses complètes, etc. Voir `tags_stored_for_postgres` dans [`matching_v5/osm_poi_v5.py`](matching_v5/osm_poi_v5.py).
 
 ## API FastAPI (lecture locale)
 

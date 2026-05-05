@@ -1,6 +1,7 @@
 "use client";
 
 import { Share2 } from "lucide-react";
+import { BRAND_LIME } from "@/lib/brand-colors";
 
 export function IllustrationShareablePortal() {
   return (
@@ -34,10 +35,7 @@ export function IllustrationShareablePortal() {
         <div className="grid min-h-[280px] grid-cols-2 gap-2 md:grid-cols-3 md:grid-rows-2">
           <div className="relative col-span-2 row-span-1 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-100 md:col-span-1 md:row-span-2">
             <div className="size-full bg-zinc-300 object-cover dark:bg-zinc-600" />
-            <span
-              className="absolute left-2 top-2 rounded-full px-2 py-0.5 font-mono text-[10px] font-medium"
-              style={{ backgroundColor: "#E4FE55", color: "#171717" }}
-            >
+            <span className="absolute left-2 top-2 rounded-full bg-accent-lime px-2 py-0.5 font-mono text-[10px] font-medium text-accent-lime-foreground">
               2356 m²
             </span>
           </div>
@@ -92,7 +90,7 @@ export function IllustrationShareablePortal() {
                         y={48 - hProd}
                         width={w}
                         height={hProd}
-                        fill="#E4FE55"
+                        fill={BRAND_LIME}
                         rx={1}
                       />
                       {hConso > 0 && (

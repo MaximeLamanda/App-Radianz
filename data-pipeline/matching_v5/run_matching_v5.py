@@ -51,6 +51,11 @@ from google_poi_fallback_v5 import (
     empty_google_audit,
     run_google_poi_fallback_for_parcel,
 )
+from osm_poi_v5 import (
+    building_osm_export_columns,
+    fetch_osm_pois_for_parcel_keys,
+    parcel_osm_export_columns,
+)
 
 DATABASE_URL_ENV_KEYS = [
     "LOCAL_DATABASE_URL",
@@ -493,10 +498,6 @@ def is_parc_industriel_iris(nom_iris: str | None) -> bool:
     return n.casefold() == "parc industriel".casefold()
 
 
-def parcel_wants_google_fallback(ppm_d: dict[str, Any]) -> bool:
-    return int(ppm_d.get("siret_count") or 0) == 0 and str(ppm_d.get("status_technique") or "") != "source_missing"
-
-
 def _select_building_ids_for_parcel(
     pk: tuple[str, str, str],
     bids: set[str] | frozenset[str],
@@ -687,6 +688,26 @@ def stable_google_fallback_group_id(gid: tuple[tuple[str, str, str], ...]) -> st
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def count_osm_pois_with_website_in_group(
+    members: list[tuple[str, str, str]],
+    osm_by_pk: dict[tuple[str, str, str], tuple[list[dict[str, Any]], int, int]],
+) -> int:
+    seen: set[tuple[str, int]] = set()
+    for pk in members:
+        pois, _n, _trunc = osm_by_pk.get(pk, ([], 0, 0))
+        for poi in pois:
+            website = str(poi.get("website") or "").strip()
+            if not website:
+                continue
+            osm_type = str(poi.get("osm_type") or "").strip().lower()[:1]
+            try:
+                osm_id = int(poi.get("osm_id"))
+            except Exception:
+                continue
+            seen.add((osm_type, osm_id))
+    return len(seen)
+
+
 def precompute_google_group_fallback_cache(
     *,
     google_fb: bool,
@@ -699,6 +720,7 @@ def precompute_google_group_fallback_cache(
     ppm_payload: Any,
     voie_index: dict[str, list[tuple[Any, ...]]],
     etab_rows: list[tuple[Any, ...]],
+    osm_by_pk: dict[tuple[str, str, str], tuple[list[dict[str, Any]], int, int]],
     google_stats: dict[str, int],
     pk_to_gid: dict[tuple[str, str, str], tuple[tuple[str, str, str], ...]],
     log: Callable[[str], None] | None = None,
@@ -715,6 +737,7 @@ def precompute_google_group_fallback_cache(
     emit = log if log is not None else (lambda _m: None)
     seen_gid: set[tuple[tuple[str, str, str], ...]] = set()
     pending: list[tuple[tuple[tuple[str, str, str], ...], list[tuple[str, str, str]]]] = []
+    skipped_by_osm_link = 0
 
     for pk in sorted(exported_pks):
         gid = pk_to_gid.get(pk)
@@ -723,12 +746,17 @@ def precompute_google_group_fallback_cache(
         seen_gid.add(gid)
         members = list(gid)
         has_pi = any(is_parc_industriel_iris(nom_iris_by_pk.get(m)) for m in members)
-        wants_any = any(parcel_wants_google_fallback(ppm_payload(m)) for m in members)
-        if not has_pi or not wants_any:
+        if not has_pi:
+            continue
+        if count_osm_pois_with_website_in_group(members, osm_by_pk) >= 1:
+            skipped_by_osm_link += 1
             continue
         pending.append((gid, members))
 
-    emit(f"[v5] Fallback Google (IRIS Parc Industriel) : {len(pending)} groupe(s) éligible(s).")
+    emit(
+        f"[v5] Fallback Google (IRIS Parc Industriel) : {len(pending)} groupe(s) éligible(s) "
+        f"({skipped_by_osm_link} filtré(s) car POI OSM avec lien)."
+    )
 
     for gi, (gid, members) in enumerate(pending, 1):
         group_id_str = stable_google_fallback_group_id(gid)
@@ -1459,6 +1487,11 @@ def main() -> int:
         help="Rayon Nearby Search en mètres (max 500).",
     )
     ap.add_argument(
+        "--no-osm-poi",
+        action="store_true",
+        help="Désactive la jointure OSM POI et l'export des colonnes associées.",
+    )
+    ap.add_argument(
         "--quiet",
         action="store_true",
         help="Désactive les messages de progression (stderr).",
@@ -1710,6 +1743,7 @@ def main() -> int:
                     "buildings_json": "",
                     "geometry_geojson": geom_by_bat.get(bid, ""),
                     **empty_google_audit(),
+                    **building_osm_export_columns(),
                 }
             )
 
@@ -1746,6 +1780,27 @@ def main() -> int:
 
     exported_pks = {pk for pk, ctx in row_ctx.items() if ctx is not None}
     v5_log(f"[v5] Parcelles retenues (lignes CSV parcelle) : {len(exported_pks)}")
+    osm_global_status = "disabled" if args.no_osm_poi else "ok"
+    osm_data_as_of = ""
+    osm_by_pk: dict[tuple[str, str, str], tuple[list[dict[str, Any]], int, int]] = {}
+    if not args.no_osm_poi and exported_pks:
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                osm_by_pk, osm_global_status, osm_data_as_of = fetch_osm_pois_for_parcel_keys(
+                    cur,
+                    code_insee,
+                    exported_pks,
+                )
+        except Exception as e:
+            osm_global_status = "error"
+            v5_log(f"[v5] OSM POI: erreur de jointure ({e}).")
+        finally:
+            conn.close()
+    if exported_pks:
+        v5_log(
+            f"[v5] OSM POI: status={osm_global_status} sur {len(exported_pks)} parcelle(s) exportées."
+        )
     nom_iris_by_pk: dict[tuple[str, str, str], str | None] = {
         pk: (row_ctx[pk] or {}).get("ni") for pk in exported_pks
     }
@@ -1765,6 +1820,7 @@ def main() -> int:
         ppm_payload=ppm_payload,
         voie_index=voie_index,
         etab_rows=etab_rows,
+        osm_by_pk=osm_by_pk,
         google_stats=google_stats,
         pk_to_gid=pk_to_gid,
         log=v5_log,
@@ -1792,7 +1848,6 @@ def main() -> int:
             and gid in google_group_cache
             and google_fb
             and etab_available
-            and parcel_wants_google_fallback(ppm_d)
         ):
             gr = google_group_cache[gid]
             google_row = dict(gr["google_row"])
@@ -1846,6 +1901,13 @@ def main() -> int:
                 "buildings_json": json.dumps(bdetails, ensure_ascii=False),
                 "geometry_geojson": gj,
                 **google_row,
+                **parcel_osm_export_columns(
+                    pk,
+                    osm_by_pk=osm_by_pk,
+                    global_status=osm_global_status,
+                    osm_data_as_of=osm_data_as_of,
+                    disabled=bool(args.no_osm_poi),
+                ),
             }
         )
 
@@ -1895,6 +1957,11 @@ def main() -> int:
         "google_api_gouv_query",
         "google_api_gouv_etablissements_count",
         "google_reject_reason",
+        "osm_pois_json",
+        "osm_poi_count",
+        "osm_pois_status",
+        "osm_poi_truncated",
+        "osm_data_as_of",
         "geometry_geojson",
     ]
     with args.out_csv.open("w", newline="", encoding="utf-8") as fh:

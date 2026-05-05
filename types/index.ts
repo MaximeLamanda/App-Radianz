@@ -154,6 +154,10 @@ export interface Prospect {
   batteryReferenceId?: string;
   /** Nombre de batteries (1 à maxBatteriesPerRack du modèle). Défaut 1 si absent. */
   batteryCount?: number;
+  /** Prospect créé depuis la carte Discovery (matching V5) — seule source pipeline canonique. */
+  pipelineEntrySource?: "discovery_v5";
+  /** Identifiant de la ligne / cluster matching V5 à l’origine du prospect. */
+  matchingV5RowId?: string;
 }
 
 export interface Lead {

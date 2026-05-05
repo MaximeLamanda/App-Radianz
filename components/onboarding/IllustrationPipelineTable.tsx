@@ -1,7 +1,6 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 
 const mockLeads = [
   {
@@ -53,13 +52,8 @@ export function IllustrationPipelineTable() {
                 <td className="px-2 py-2 font-mono">{lead.kwp}</td>
                 <td className="w-16 px-2 py-2">
                   <Badge
-                    variant="secondary"
-                    className={cn("text-[10px]", lead.status === "add" && "")}
-                    style={
-                      lead.status === "add"
-                        ? { backgroundColor: "#E4FE55", color: "#171717" }
-                        : undefined
-                    }
+                    variant={lead.status === "add" ? "lime" : "secondary"}
+                    className="text-[10px]"
                   >
                     {lead.status}
                   </Badge>

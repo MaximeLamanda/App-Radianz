@@ -75,6 +75,9 @@ export default function DesignPage() {
               <WithTooltip name="Button (link)">
                 <Button variant="link">Link</Button>
               </WithTooltip>
+              <WithTooltip name="Button (lime)">
+                <Button variant="lime">Lime</Button>
+              </WithTooltip>
               <WithTooltip name="Button (sm)">
                 <Button size="sm">Small</Button>
               </WithTooltip>
@@ -168,16 +171,25 @@ export default function DesignPage() {
           <section className="space-y-4">
             <h2 className="text-lg font-semibold border-b border-border pb-2">Badges</h2>
             <div className="flex flex-wrap gap-2">
-              <WithTooltip name="Badge (default)">
+              <WithTooltip name="Badge default (canvas Radianz)">
                 <Badge>Default</Badge>
               </WithTooltip>
-              <WithTooltip name="Badge (secondary)">
+              <WithTooltip name="Badge secondary (neutre)">
                 <Badge variant="secondary">Secondary</Badge>
               </WithTooltip>
-              <WithTooltip name="Badge (destructive)">
+              <WithTooltip name="Badge lime">
+                <Badge variant="lime">Lime</Badge>
+              </WithTooltip>
+              <WithTooltip name="Badge solid (encre)">
+                <Badge variant="solid">Solid</Badge>
+              </WithTooltip>
+              <WithTooltip name="Badge muted">
+                <Badge variant="muted">Muted</Badge>
+              </WithTooltip>
+              <WithTooltip name="Badge destructive">
                 <Badge variant="destructive">Destructive</Badge>
               </WithTooltip>
-              <WithTooltip name="Badge (outline)">
+              <WithTooltip name="Badge outline">
                 <Badge variant="outline">Outline</Badge>
               </WithTooltip>
             </div>

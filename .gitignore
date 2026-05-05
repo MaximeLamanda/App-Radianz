@@ -69,6 +69,8 @@ data-pipeline/out/matching/**/*.csv
 # Dumps PostgreSQL / téléchargements partiels (très lourds)
 open_data_millesime_*/
 *.crdownload
+/var/
+
 
 # datasource/ : binaires et CSV lourds — chemins documentés dans datasource/README.md
 datasource/**/*.osm.pbf

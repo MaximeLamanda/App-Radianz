@@ -2,6 +2,14 @@
 
 import { useState, useEffect, useRef, useMemo, type RefObject } from "react";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -28,11 +36,14 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronDown,
+  ExternalLink,
 } from "lucide-react";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "@/lib/firebase";
 import {
   collectSirensFromMatchingV5Row,
+  mergeOsmPoisFromParcelleRows,
+  parseGoogleNearbyRankedJson,
   parsePasserelleAddressesJson,
   parseSiretsMatchJson,
   type ScoutMatchingV5Row,
@@ -48,14 +59,6 @@ import type {
   InverterReference,
   BatteryReference,
 } from "@/types";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { getPanelReferences, savePanelReferences, getInverterReferences, saveInverterReferences, PANEL_TYPE_CHARACTERISTICS, getCountryFlagUrl } from "@/lib/solar-settings";
 import {
   savePanelReferenceToFirebase,
@@ -77,6 +80,18 @@ import { fetchWithAuth } from "@/lib/api-client";
 import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
 
 type MatchingV5ApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
+type DiscoveryPoiTableRow = {
+  id: string;
+  name: string;
+  address: string;
+  typeLabel: string;
+  phone: string;
+  website: string;
+  externalUrl: string;
+  source: "osm" | "google";
+  lat: number | null;
+  lng: number | null;
+};
 
 function MatchingV5ScrollArrows({
   targetRef,
@@ -1004,22 +1019,125 @@ export function Sidebar({
   onRefreshDiscovery,
   discoveryState,
 }: SidebarProps) {
+  const [v5GoogleFbLoading, setV5GoogleFbLoading] = useState(false);
+  const [v5GoogleFbErr, setV5GoogleFbErr] = useState<string | null>(null);
+  const [v5GoogleFbData, setV5GoogleFbData] = useState<Record<string, unknown> | null>(null);
+  const [v5GoogleFbJsonOpen, setV5GoogleFbJsonOpen] = useState(false);
+
   const selectedMatchingV5Row = useMemo(
     () => discoveryState?.rows?.find((r) => r.id === discoveryState?.selectedId) ?? null,
     [discoveryState?.rows, discoveryState?.selectedId]
   );
 
-  /** Adresse PPM absente ou aucun établissement issu du matching adresse → proposer le test Google. */
-  const matchingV5ShowGooglePoiTest = useMemo(() => {
-    if (!selectedMatchingV5Row) return false;
-    if (!selectedMatchingV5Row.passerelleAddress?.trim()) return true;
-    return parseSiretsMatchJson(selectedMatchingV5Row.siretsJson).length === 0;
-  }, [selectedMatchingV5Row]);
-
   const matchingV5PasserelleSirenSet = useMemo(() => {
     if (!selectedMatchingV5Row) return new Set<string>();
     return new Set(collectSirensFromMatchingV5Row(selectedMatchingV5Row));
   }, [selectedMatchingV5Row]);
+
+  const matchingV5OsmParcelleRows = useMemo(() => {
+    const g = discoveryState?.selectedGroupRows;
+    if (g && g.length > 0) return g.filter((r) => r.grain === "parcelle");
+    if (selectedMatchingV5Row?.grain === "parcelle") return [selectedMatchingV5Row];
+    return [];
+  }, [discoveryState?.selectedGroupRows, selectedMatchingV5Row]);
+
+  const matchingV5OsmPois = useMemo(
+    () => mergeOsmPoisFromParcelleRows(matchingV5OsmParcelleRows),
+    [matchingV5OsmParcelleRows]
+  );
+
+  const matchingV5GooglePois = useMemo(() => {
+    const seen = new Set<string>();
+    const out: DiscoveryPoiTableRow[] = [];
+    for (const row of matchingV5OsmParcelleRows) {
+      const raw = String(row.properties?.google_nearby_ranked_json ?? "").trim();
+      if (!raw) continue;
+      for (const p of parseGoogleNearbyRankedJson(raw)) {
+        const placeId = String(p.place_id ?? "").trim();
+        const name = String(p.name ?? "").trim();
+        const vicinity = String(p.vicinity ?? "").trim();
+        const firstType = String((p.types ?? [])[0] ?? "").trim().replace(/_/g, " ");
+        const latRaw = typeof p.lat === "number" && Number.isFinite(p.lat) ? p.lat : null;
+        const lngRaw = typeof p.lng === "number" && Number.isFinite(p.lng) ? p.lng : null;
+        const id = `google:${placeId || name || `${latRaw ?? "x"}:${lngRaw ?? "y"}`}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          name: name || "—",
+          address: vicinity || "—",
+          typeLabel: firstType || "—",
+          phone: "—",
+          website: "—",
+          externalUrl: placeId
+            ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(placeId)}`
+            : "",
+          source: "google",
+          lat: latRaw,
+          lng: lngRaw,
+        });
+      }
+    }
+    return out;
+  }, [matchingV5OsmParcelleRows]);
+
+  const matchingV5UnifiedPois = useMemo(() => {
+    const out: DiscoveryPoiTableRow[] = matchingV5OsmPois.map((poi) => ({
+      id: `osm:${poi.osm_type}:${poi.osm_id}`,
+      name: poi.name?.trim() || "—",
+      address: poi.address?.trim() || "—",
+      typeLabel: poi.poi_type_label?.trim() || "—",
+      phone: poi.phone?.trim() || "—",
+      website: poi.website?.trim() || "—",
+      externalUrl: poi.osm_url?.trim() || "",
+      source: "osm",
+      lat: Number.isFinite(poi.lat) ? poi.lat : null,
+      lng: Number.isFinite(poi.lng) ? poi.lng : null,
+    }));
+    // fallback Google : n'est affiché que si OSM est vide pour garder un seul tableau "source de secours"
+    if (out.length === 0) {
+      return matchingV5GooglePois;
+    }
+    return out;
+  }, [matchingV5GooglePois, matchingV5OsmPois]);
+
+  /** Adresse PPM absente ou aucun établissement issu du matching adresse → proposer le test Google.
+   *  Alignement pipeline: n'afficher le test que sur périmètre IRIS Parc Industriel sans POI OSM avec lien.
+   */
+  const matchingV5ShowGooglePoiTest = useMemo(() => {
+    if (!selectedMatchingV5Row) return false;
+    const hasParcIndustriel = matchingV5OsmParcelleRows.some(
+      (r) => (r.nomIris || "").trim().toLowerCase() === "parc industriel"
+    );
+    if (!hasParcIndustriel) return false;
+    const hasOsmWebsite = matchingV5OsmPois.some((poi) => String(poi.website || "").trim().length > 0);
+    if (hasOsmWebsite) return false;
+    if (!selectedMatchingV5Row.passerelleAddress?.trim()) return true;
+    return parseSiretsMatchJson(selectedMatchingV5Row.siretsJson).length === 0;
+  }, [matchingV5OsmParcelleRows, matchingV5OsmPois, selectedMatchingV5Row]);
+
+  const matchingV5OsmMeta = useMemo(() => {
+    const rows = matchingV5OsmParcelleRows;
+    let truncated = 0;
+    let dataAsOf = "";
+    for (const r of rows) {
+      truncated = Math.max(truncated, r.osmPoiTruncated ?? 0);
+      if (!dataAsOf && r.osmDataAsOf?.trim()) dataAsOf = r.osmDataAsOf.trim();
+    }
+    const st = new Set(rows.map((r) => r.osmPoisStatus?.trim()).filter(Boolean));
+    let status = "";
+    if (st.has("ok")) status = "ok";
+    else if (st.has("error")) status = "error";
+    else if (st.has("skipped_no_table")) status = "skipped_no_table";
+    else if (st.has("disabled")) status = "disabled";
+    if (status === "" && rows.length === 0 && selectedMatchingV5Row?.grain === "building") {
+      status = "not_applicable";
+    }
+    const exportHasOsmKeys = rows.some((r) =>
+      Object.prototype.hasOwnProperty.call(r.properties ?? {}, "osm_pois_status")
+    );
+    return { truncated, dataAsOf, status, exportHasOsmKeys };
+  }, [matchingV5OsmParcelleRows, selectedMatchingV5Row?.grain]);
 
   const matchingV5MainListRef = useRef<HTMLDivElement>(null);
   const matchingV5PpmListRef = useRef<HTMLDivElement>(null);
@@ -1028,11 +1146,6 @@ export function Sidebar({
   const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
     Record<string, MatchingV5ApiNomEntry>
   >({});
-
-  const [v5GoogleFbLoading, setV5GoogleFbLoading] = useState(false);
-  const [v5GoogleFbErr, setV5GoogleFbErr] = useState<string | null>(null);
-  const [v5GoogleFbData, setV5GoogleFbData] = useState<Record<string, unknown> | null>(null);
-  const [v5GoogleFbJsonOpen, setV5GoogleFbJsonOpen] = useState(false);
 
   useEffect(() => {
     setV5GoogleFbErr(null);
@@ -1774,6 +1887,128 @@ export function Sidebar({
                             }
                           })()}
                         </pre>
+                      ) : null}
+                      {matchingV5OsmParcelleRows.length > 0 || matchingV5OsmMeta.status === "not_applicable" ? (
+                        <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                          <div className="text-xs font-semibold text-foreground">Points d’intérêt (OSM / Google)</div>
+                          {matchingV5OsmMeta.status === "skipped_no_table" ? (
+                            <p className="text-[10px] text-muted-foreground">
+                              Table <span className="font-mono">osm_poi</span> absente ou non créée. Appliquer{" "}
+                              <span className="font-mono">data-pipeline/sql/004_osm_poi.sql</span> puis{" "}
+                              <span className="font-mono">import_osm_poi.py</span>.
+                            </p>
+                          ) : null}
+                          {matchingV5OsmMeta.status === "error" ? (
+                            <p className="text-[10px] text-destructive">Erreur lors du chargement des POI OSM.</p>
+                          ) : null}
+                          {matchingV5OsmMeta.status === "disabled" ? (
+                            <p className="text-[10px] text-muted-foreground">Enrichissement OSM désactivé pour ce run.</p>
+                          ) : null}
+                          {matchingV5OsmMeta.status === "not_applicable" ? (
+                            <p className="text-[10px] text-muted-foreground">
+                              POI OSM rattachés aux parcelles cadastrales ; sélectionnez une parcelle pour les afficher.
+                            </p>
+                          ) : null}
+                          {matchingV5OsmParcelleRows.length > 0 && !matchingV5OsmMeta.exportHasOsmKeys ? (
+                            <p className="text-[10px] text-muted-foreground">
+                              Cet export ne contient pas encore les champs OSM. Régénérez le matching V5 avec une base
+                              où <span className="font-mono">osm_poi</span> est chargée.
+                            </p>
+                          ) : null}
+                          {matchingV5OsmMeta.dataAsOf ? (
+                            <p className="text-[10px] text-muted-foreground">
+                              Données OSM importées : <span className="font-mono">{matchingV5OsmMeta.dataAsOf}</span>
+                            </p>
+                          ) : null}
+                          {matchingV5OsmMeta.truncated > 0 ? (
+                            <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                              +{matchingV5OsmMeta.truncated} POI non affiché(s) (plafond par parcelle).
+                            </p>
+                          ) : null}
+                          {matchingV5UnifiedPois.length > 0 ? (
+                            <div className="max-h-56 overflow-auto rounded-md border border-border/60">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow className="hover:bg-transparent">
+                                    <TableHead className="h-8 text-[10px] py-1">Nom</TableHead>
+                                    <TableHead className="h-8 text-[10px] py-1">Adresse</TableHead>
+                                    <TableHead className="h-8 text-[10px] py-1">Type</TableHead>
+                                    <TableHead className="h-8 text-[10px] py-1">Tél.</TableHead>
+                                    <TableHead className="h-8 text-[10px] py-1">Site</TableHead>
+                                    <TableHead className="h-8 text-[10px] py-1">Position</TableHead>
+                                    <TableHead className="h-8 w-8 p-1 text-[10px]" />
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {matchingV5UnifiedPois.map((poi) => (
+                                    <TableRow key={poi.id} className="text-[10px] text-muted-foreground">
+                                      <TableCell className="py-1 align-top break-words max-w-[120px]">
+                                        {poi.name || "—"}
+                                        <span className="ml-1 text-[9px] text-muted-foreground">
+                                          {poi.source === "osm" ? "OSM" : "Google"}
+                                        </span>
+                                      </TableCell>
+                                      <TableCell className="py-1 align-top break-words text-muted-foreground max-w-[140px]">
+                                        {poi.address || "—"}
+                                      </TableCell>
+                                      <TableCell className="py-1 align-top break-words text-muted-foreground max-w-[100px]">
+                                        {poi.typeLabel || "—"}
+                                      </TableCell>
+                                      <TableCell className="py-1 align-top font-mono text-[9px] break-all max-w-[88px]">
+                                        {poi.phone || "—"}
+                                      </TableCell>
+                                      <TableCell className="py-1 align-top max-w-[72px]">
+                                        {poi.website && poi.website !== "—" ? (
+                                          <a
+                                            href={
+                                              poi.website.startsWith("http")
+                                                ? poi.website
+                                                : `https://${poi.website}`
+                                            }
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-primary underline-offset-2 hover:underline break-all"
+                                          >
+                                            lien
+                                          </a>
+                                        ) : (
+                                          "—"
+                                        )}
+                                      </TableCell>
+                                      <TableCell className="py-1 align-top font-mono text-[9px] text-muted-foreground">
+                                        {poi.lat != null && poi.lng != null
+                                          ? `${poi.lat.toFixed(5)}, ${poi.lng.toFixed(5)}`
+                                          : "—"}
+                                      </TableCell>
+                                      <TableCell className="py-1 p-1 w-8">
+                                        {poi.externalUrl ? (
+                                          <a
+                                            href={poi.externalUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex text-muted-foreground hover:text-foreground"
+                                            title={
+                                              poi.source === "osm"
+                                                ? "Voir sur OpenStreetMap"
+                                                : "Voir sur Google Maps"
+                                            }
+                                          >
+                                            <ExternalLink className="h-3.5 w-3.5" />
+                                          </a>
+                                        ) : null}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          ) : matchingV5OsmMeta.status === "ok" && matchingV5OsmParcelleRows.length > 0 ? (
+                            <p className="text-[10px] text-muted-foreground">Aucun POI dans la (les) parcelle(s).</p>
+                          ) : null}
+                          <p className="text-[9px] text-muted-foreground leading-tight">
+                            © OpenStreetMap contributors — données sous licence ODbL.
+                          </p>
+                        </div>
                       ) : null}
                     </div>
                   ) : null}

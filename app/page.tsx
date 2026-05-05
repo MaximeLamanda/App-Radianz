@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, Suspense } from "react";
+import { useState, useEffect, useMemo, useCallback, Suspense } from "react";
 import Link from "next/link";
-import { useSearchParams, usePathname } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import Image from "next/image";
-import { MapPin, Phone, Globe, Sun, Zap, Battery, Info, Filter, X, MoreVertical, Link2, ExternalLink, Eye, Map as MapIcon } from "lucide-react";
+import { MapPin, Phone, Globe, Sun, Zap, Battery, Info, X, MoreVertical, Link2, Eye, ScanSearch } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
@@ -32,14 +32,11 @@ import {
   useBatteryReferences,
   useProspectsForPipeline,
 } from "@/lib/swr-hooks";
-import { translatePlaceType } from "@/lib/place-types-translation";
 import { getEnergyConsumption } from "@/lib/building-energy-consumption";
-import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
-import { updateProspectInPipeline, updateProspect } from "@/lib/firestore";
+import { updateProspect } from "@/lib/firestore";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import { getSolarEquipmentSettings } from "@/lib/solar-settings";
-import { useDrawer } from "@/lib/drawer-context";
 import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell, PieChart, Pie, Cell as PieCell } from "recharts";
 import {
@@ -54,6 +51,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useDrawer } from "@/lib/drawer-context";
+import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
+import { loadMatchingV5DrawerContextForProspect } from "@/lib/pipeline-matching-v5-drawer-context";
+
+const PIPELINE_DEFAULT_CODE_INSEE =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_SCOUT_MATCHING_V5_CODE_INSEE?.trim()) || "33318";
 
 function EquipmentThumbnail({
   equipment,
@@ -137,8 +140,8 @@ const chartConfig = {
 
 function HomePage() {
   const router = useRouter();
-  const pathname = usePathname();
   const { user, loading: authLoading } = useAuth();
+  const { setIsDrawerOpen, setDrawerContent } = useDrawer();
   const { data: panelsData } = usePanelReferences(user?.uid ?? null);
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
   const { data: batteriesData } = useBatteryReferences(user?.uid ?? null);
@@ -154,25 +157,110 @@ function HomePage() {
   const inverterRef = invertersData?.find((i) => i.recommended) ?? invertersData?.[0] ?? null;
   const batteryRef = batteriesData?.find((b) => b.recommended) ?? batteriesData?.[0] ?? null;
 
-  const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null);
-  const { isDrawerOpen, setIsDrawerOpen, setDrawerContent } = useDrawer();
   const searchParams = useSearchParams();
 
-  // À la fermeture du drawer : retirer prospectId de l'URL (sans recharger) et revenir à la vue table "classique"
-  const handleDrawerOpenChange = useCallback(
-    (open: boolean) => {
-      setIsDrawerOpen(open);
-      if (!open && searchParams.get("prospectId")) {
-        setSelectedProspect(null);
-        router.replace(pathname ?? "/");
-      }
-    },
-    [pathname, router, searchParams, setIsDrawerOpen]
-  );
+  /** Anciens liens `?prospectId=` : ne plus ouvrir de drawer — nettoyer l’URL. */
+  useEffect(() => {
+    if (!searchParams.get("prospectId")) return;
+    router.replace("/");
+  }, [router, searchParams]);
+
   const error = prospectsError ? (prospectsError.message || "Erreur lors du chargement") : null;
   const [filterStatus, setFilterStatus] = useState<string>("all");
+  /** Filtre source pipeline : `all` | `discovery_v5` | `legacy` (hors matching V5). */
   const [filterPlaceType, setFilterPlaceType] = useState<string>("all");
   const [leadPeriod, setLeadPeriod] = useState<"daily" | "weekly" | "yearly" | "all">("weekly");
+  const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
+
+  const handlePipelineDrawerOpenChange = useCallback(
+    (open: boolean) => {
+      setIsDrawerOpen(open);
+      if (!open) {
+        setSelectedProspectId(null);
+        setDrawerContent(null);
+      }
+    },
+    [setDrawerContent, setIsDrawerOpen]
+  );
+
+  useEffect(() => {
+    return () => {
+      setDrawerContent(null);
+      setIsDrawerOpen(false);
+    };
+  }, [setDrawerContent, setIsDrawerOpen]);
+
+  const selectedProspect = useMemo(
+    () => (selectedProspectId ? prospects.find((p) => p.id === selectedProspectId) ?? null : null),
+    [prospects, selectedProspectId]
+  );
+
+  const onDiscoveryPipelineAddedFromHome = useCallback(() => {
+    void mutateProspects();
+  }, [mutateProspects]);
+
+  useEffect(() => {
+    if (!selectedProspect?.id) {
+      setIsDrawerOpen(false);
+      setDrawerContent(null);
+      return;
+    }
+    if (
+      selectedProspect.pipelineEntrySource !== "discovery_v5" ||
+      !String(selectedProspect.matchingV5RowId ?? "").trim()
+    ) {
+      toast.info("Cette fiche n’est pas au format Découverte.", {
+        description: "Seuls les leads ajoutés depuis la Découverte (matching V5) s’ouvrent ici.",
+      });
+      setSelectedProspectId(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsDrawerOpen(true);
+    setDrawerContent(
+      <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-2 bg-white p-6 text-center text-sm text-muted-foreground">
+        Chargement de l’emprise…
+      </div>
+    );
+
+    void (async () => {
+      const ctx = await loadMatchingV5DrawerContextForProspect(selectedProspect, PIPELINE_DEFAULT_CODE_INSEE);
+      if (cancelled) return;
+      if (!ctx.ok) {
+        toast.error(ctx.message);
+        setSelectedProspectId(null);
+        setIsDrawerOpen(false);
+        setDrawerContent(null);
+        return;
+      }
+      const pid = selectedProspect.id!;
+      setDrawerContent(
+        <ProspectDrawer
+          key={pid}
+          prospect={null}
+          discoveryRow={ctx.anchor}
+          discoveryLinkedParcelleRows={ctx.discoveryLinkedParcelleRowsForDrawer}
+          discoveryExistingPipelineProspect={selectedProspect}
+          bdnbLoading={false}
+          isOpen
+          onOpenChange={handlePipelineDrawerOpenChange}
+          voirHref={(_prospectId) => "/discovery"}
+          onDiscoveryPipelineAdded={onDiscoveryPipelineAddedFromHome}
+        />
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedProspect,
+    setDrawerContent,
+    setIsDrawerOpen,
+    handlePipelineDrawerOpenChange,
+    onDiscoveryPipelineAddedFromHome,
+  ]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -180,23 +268,17 @@ function HomePage() {
     }
   }, [authLoading, user, router]);
 
-  // Ouvrir automatiquement le drawer d'un prospect via ?prospectId= dans l'URL
-  useEffect(() => {
-    const prospectId = searchParams.get("prospectId");
-    if (!prospectId || prospects.length === 0) return;
-    const found = prospects.find((p) => p.id === prospectId);
-    if (found && selectedProspect?.id !== prospectId) {
-      setSelectedProspect(found);
-    }
-  }, [searchParams, prospects]);
-
   // Calcul des prospects filtrés
   const filteredProspects = useMemo(() => {
     return prospects.filter((prospect) => {
       const status = prospect.pipelineStatus ?? "nouveau";
       const matchesStatus = filterStatus === "all" || status === filterStatus;
-      const matchesPlaceType = filterPlaceType === "all" || prospect.placeType === filterPlaceType;
-      return matchesStatus && matchesPlaceType;
+      const isDiscovery = prospect.pipelineEntrySource === "discovery_v5";
+      const matchesSource =
+        filterPlaceType === "all" ||
+        (filterPlaceType === "discovery_v5" && isDiscovery) ||
+        (filterPlaceType === "legacy" && !isDiscovery);
+      return matchesStatus && matchesSource;
     });
   }, [prospects, filterStatus, filterPlaceType]);
 
@@ -285,49 +367,39 @@ function HomePage() {
     return prospects.length;
   }, [prospects]);
 
-  // Calcul des KPIs par type de prospect pour le graphique pie
+  // KPIs pipeline : Découverte (V5) vs hors découverte (données non canoniques pour ce produit)
   const kpisByPlaceType = useMemo(() => {
-    const counts: Record<string, number> = {};
+    let discovery = 0;
+    let legacy = 0;
     prospects.forEach((prospect) => {
-      const type = prospect.placeType || "other";
-      counts[type] = (counts[type] || 0) + 1;
+      if (prospect.pipelineEntrySource === "discovery_v5") discovery += 1;
+      else legacy += 1;
     });
-    return counts;
+    return { discovery_v5: discovery, legacy } as Record<string, number>;
   }, [prospects]);
 
-  // Données pour le graphique pie/donut par type de prospect
   const chartDataByPlaceType = useMemo(() => {
-    // Générer des couleurs pour chaque type
-    const colors = [
-      "hsl(217, 91%, 60%)",
-      "hsl(38, 92%, 50%)",
-      "hsl(142, 76%, 36%)",
-      "hsl(142, 71%, 45%)",
-      "hsl(0, 84%, 60%)",
-      "hsl(262, 83%, 58%)",
-      "hsl(280, 78%, 60%)",
-      "hsl(346, 77%, 50%)",
+    const colors = ["hsl(217, 91%, 60%)", "hsl(38, 92%, 50%)"];
+    const raw: Array<[string, number]> = [
+      ["discovery_v5", kpisByPlaceType.discovery_v5 ?? 0],
+      ["legacy", kpisByPlaceType.legacy ?? 0],
     ];
-    
-    return Object.entries(kpisByPlaceType)
-      .filter(([, count]) => count > 0)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 8) // Limiter à 8 types max
-      .map(([type, count], index) => ({
-        name: translatePlaceType(type),
-        value: count,
-        typeKey: type,
-        color: colors[index % colors.length],
-      }));
+    const entries = raw.filter(([, c]) => c > 0);
+    return entries.map(([type, count], index) => ({
+      name: type === "discovery_v5" ? "Découverte (V5)" : "Hors découverte",
+      value: count,
+      typeKey: type,
+      color: colors[index % colors.length],
+    }));
   }, [kpisByPlaceType]);
 
-  // Obtenir les types de customer uniques pour le filtre
-  const uniquePlaceTypes = useMemo(() => {
-    const types = new Set<string>();
-    prospects.forEach((prospect) => {
-      types.add(prospect.placeType);
-    });
-    return Array.from(types).sort();
+  const sourceFilterOptions = useMemo(() => {
+    const hasD = prospects.some((p) => p.pipelineEntrySource === "discovery_v5");
+    const hasL = prospects.some((p) => p.pipelineEntrySource !== "discovery_v5");
+    const opts: { value: string; label: string }[] = [];
+    if (hasD) opts.push({ value: "discovery_v5", label: "Découverte (V5)" });
+    if (hasL) opts.push({ value: "legacy", label: "Hors découverte" });
+    return opts;
   }, [prospects]);
 
   // Index Maps pour lookups O(1) du matériel par prospect (règle 7.2 Vercel React Best Practices)
@@ -365,7 +437,6 @@ function HomePage() {
         : getCommercialReferent();
       await updateProspect(prospect.id, { shareToken, commercialReferent });
       const updated = { ...prospect, shareToken, commercialReferent };
-      setSelectedProspect((prev) => (prev?.id === prospect.id ? updated : prev));
       mutateProspects((prev) =>
         prev ? prev.map((x) => (x.id === prospect.id ? updated : x)) : prev
       );
@@ -390,7 +461,6 @@ function HomePage() {
         : getCommercialReferent();
       await updateProspect(prospect.id, { shareToken, commercialReferent });
       const updated = { ...prospect, shareToken, commercialReferent };
-      setSelectedProspect((prev) => (prev?.id === prospect.id ? updated : prev));
       mutateProspects((prev) =>
         prev ? prev.map((x) => (x.id === prospect.id ? updated : x)) : prev
       );
@@ -402,56 +472,6 @@ function HomePage() {
       setViewingPageId(null);
     }
   };
-
-  function calculateQualityScore(area: number, placeType: string): number {
-    let score = 0;
-    if (area > 1000) score += 40;
-    else if (area > 500) score += 35;
-    else if (area > 200) score += 30;
-    else if (area > 100) score += 20;
-    else if (area > 0) score += 10;
-    const energyIntensive = ["warehouse", "supermarket", "industrial"];
-    if (energyIntensive.includes(placeType)) score += 30;
-    else if (placeType === "retail" || placeType === "office") score += 20;
-    else score += 10;
-    return Math.min(100, score);
-  }
-
-  // Mettre à jour le drawer quand selectedProspect change
-  useEffect(() => {
-    if (selectedProspect) {
-      setIsDrawerOpen(true);
-      setDrawerContent(
-        <ProspectDrawer
-          prospect={selectedProspect}
-          isOpen={true}
-          onOpenChange={handleDrawerOpenChange}
-          onProspectUpdate={(patch) => {
-            setSelectedProspect((prev) => {
-              if (!prev) return prev;
-              const merged: Prospect = {
-                ...prev,
-                ...patch,
-                roofSurfaces: patch.roofSurfaces ?? prev.roofSurfaces,
-                roofSurface: patch.roofSurface ?? prev.roofSurface,
-              };
-              if (merged.id) {
-                mutateProspects((list) =>
-                  list ? list.map((x) => (x.id === merged.id ? merged : x)) : list
-                );
-              }
-              return merged;
-            });
-          }}
-          onSaveSuccess={() => mutateProspects()}
-          voirHref={(id) => `/solar-scout?prospectId=${id}`}
-        />
-      );
-    } else {
-      setIsDrawerOpen(false);
-      setDrawerContent(null);
-    }
-  }, [selectedProspect, setIsDrawerOpen, setDrawerContent, mutateProspects, handleDrawerOpenChange]);
 
   if (authLoading || (user && prospectsLoading)) {
     return (
@@ -471,8 +491,8 @@ function HomePage() {
         <div className="flex items-center justify-between mb-4 sm:mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold truncate">Prospects Pipeline</h1>
           <Button asChild variant="default" size="sm" className="shrink-0">
-            <Link href="/solar-scout" className="gap-2">
-              <MapIcon className="h-4 w-4" />
+            <Link href="/discovery" className="gap-2">
+              <ScanSearch className="h-4 w-4" />
               Ajouter
             </Link>
           </Button>
@@ -510,7 +530,7 @@ function HomePage() {
                   <div className="text-2xl font-normal text-gray-700">{leadsCount}</div>
                   {periodProgress !== null ? (
                     <Badge 
-                      variant={periodProgress.diff >= 0 ? "default" : "destructive"}
+                      variant={periodProgress.diff >= 0 ? "lime" : "destructive"}
                       className="text-xs"
                     >
                       {periodProgress.diff >= 0 ? '+' : ''}{periodProgress.diff} ({periodProgress.percent >= 0 ? '+' : ''}{periodProgress.percent}%)
@@ -560,16 +580,16 @@ function HomePage() {
                   </Select>
                 </div>
                 <div className="flex-1 min-w-0 sm:min-w-[200px]">
-                  <label className="text-sm font-medium mb-2 block">Type de customer</label>
+                  <label className="text-sm font-medium mb-2 block">Source</label>
                   <Select value={filterPlaceType} onValueChange={setFilterPlaceType}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Tous les types" />
+                      <SelectValue placeholder="Toutes les sources" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">Tous les types</SelectItem>
-                      {uniquePlaceTypes.map((type) => (
-                        <SelectItem key={type} value={type}>
-                          {translatePlaceType(type)}
+                      <SelectItem value="all">Toutes les sources</SelectItem>
+                      {sourceFilterOptions.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -601,9 +621,9 @@ function HomePage() {
               <MapPin className="h-12 w-12 mx-auto mb-4 opacity-50" />
               <p className="mb-4">Aucun prospect dans le pipeline</p>
               <Button asChild>
-                <Link href="/solar-scout">
-                  <MapPin className="h-4 w-4 mr-2" />
-                  Accéder à la carte
+                <Link href="/discovery">
+                  <ScanSearch className="h-4 w-4 mr-2" />
+                  Ouvrir la découverte
                 </Link>
               </Button>
             </CardContent>
@@ -641,25 +661,28 @@ function HomePage() {
               </TableHeader>
               <TableBody>
                 {filteredProspects.map((prospect) => {
+                  const isDiscovery = prospect.pipelineEntrySource === "discovery_v5";
                   const totalArea =
                     prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
                     prospect.solarPotential?.maxArrayAreaMeters2 ??
                     0;
-                  const kwp = prospect.solarPotential?.estimatedKwp ?? 0;
-                  const prodPerKwp = prospect.solarPotential?.productionPerKwpAnnual;
-                  const productionKwh =
-                    prospect.solarPotential?.maxKwhPerYear ??
-                    (prodPerKwp != null && kwp > 0 ? Math.round(prodPerKwp * kwp) : 0);
-                  const consumptionKwh =
-                    prospect.annualConsumptionKwhOverride ??
-                    (totalArea > 0 ? getEnergyConsumption(prospect.placeType) * totalArea : 0);
+                  const kwp = isDiscovery ? (prospect.solarPotential?.estimatedKwp ?? 0) : 0;
+                  const prodPerKwp = isDiscovery ? prospect.solarPotential?.productionPerKwpAnnual : undefined;
+                  const productionKwh = isDiscovery
+                    ? prospect.solarPotential?.maxKwhPerYear ??
+                      (prodPerKwp != null && kwp > 0 ? Math.round(prodPerKwp * kwp) : 0)
+                    : 0;
+                  const consumptionKwh = isDiscovery
+                    ? prospect.annualConsumptionKwhOverride ??
+                      (totalArea > 0 ? getEnergyConsumption(prospect.placeType) * totalArea : 0)
+                    : 0;
                   const status = prospect.pipelineStatus ?? "nouveau";
-                  const priceMin = prospect.priceRangeMinEur;
-                  const priceMax = prospect.priceRangeMaxEur;
-                  const breakEvenMin = prospect.breakEvenMinYears;
-                  const breakEvenMax = prospect.breakEvenMaxYears;
+                  const priceMin = isDiscovery ? prospect.priceRangeMinEur : undefined;
+                  const priceMax = isDiscovery ? prospect.priceRangeMaxEur : undefined;
+                  const breakEvenMin = isDiscovery ? prospect.breakEvenMinYears : undefined;
+                  const breakEvenMax = isDiscovery ? prospect.breakEvenMaxYears : undefined;
                   const breakEvenLabel =
-                    breakEvenMin != null && breakEvenMax != null
+                    isDiscovery && breakEvenMin != null && breakEvenMax != null
                       ? breakEvenMin === breakEvenMax
                         ? `${breakEvenMin} an${breakEvenMin > 1 ? "s" : ""}`
                         : `${breakEvenMin} – ${breakEvenMax} ans`
@@ -668,7 +691,12 @@ function HomePage() {
                     prospect.contact?.nationalPhoneNumber ||
                     prospect.contact?.internationalPhoneNumber;
                   const contactWeb = prospect.contact?.websiteUri;
-                  const contactDisplay = contactPhone || contactWeb;
+                  const contactLabel =
+                    (contactPhone ||
+                      contactWeb ||
+                      (prospect.companyLegalName ? String(prospect.companyLegalName) : "") ||
+                      (prospect.siret ? String(prospect.siret) : "")) || "";
+                  const hasContactRow = isDiscovery && contactLabel.length > 0;
                   const createdAt = prospect.createdAt
                     ? new Date(prospect.createdAt).toLocaleDateString("fr-FR", {
                         day: "numeric",
@@ -676,23 +704,21 @@ function HomePage() {
                         year: "2-digit",
                       })
                     : "—";
-                  // Matériel propre au prospect (sauvegardé dans le drawer) ou repli sur le recommandé global (lookups O(1) via Map)
                   const prospectPanelRef =
                     (prospect.panelReferenceId && panelById.get(prospect.panelReferenceId)) ?? panelRef;
                   const prospectInverterRef =
                     (prospect.inverterReferenceId && inverterById.get(prospect.inverterReferenceId)) ?? inverterRef;
                   const prospectBatteryRef =
                     (prospect.batteryReferenceId && batteryById.get(prospect.batteryReferenceId)) ?? batteryRef;
-                  // Afficher la vignette batterie seulement si le prospect a la batterie activée (switch)
                   const includeBatteryForProspect =
                     prospect.includeBatteryOverride ?? includeBatteryDefault;
 
                   return (
                     <TableRow
                       key={prospect.id}
-                      className="cursor-pointer h-12 border-b border-border/50 hover:bg-muted/30 transition-colors"
+                      className="h-12 cursor-pointer border-b border-border/50 hover:bg-muted/30 transition-colors"
                       onClick={() => {
-                        setSelectedProspect(prospect);
+                        if (prospect.id) setSelectedProspectId(prospect.id);
                       }}
                     >
                       <TableCell className="w-12 p-2.5 align-middle">
@@ -721,8 +747,11 @@ function HomePage() {
                         </span>
                       </TableCell>
                       <TableCell className="p-2.5 max-w-[80px]">
-                        <span className="truncate block" title={translatePlaceType(prospect.placeType)}>
-                          {translatePlaceType(prospect.placeType)}
+                        <span
+                          className="truncate block text-muted-foreground"
+                          title={isDiscovery ? "Découverte (matching V5)" : "Donnée non Discovery"}
+                        >
+                          {isDiscovery ? "Découverte" : "—"}
                         </span>
                       </TableCell>
                       <TableCell className="p-2.5 min-w-[95px]">
@@ -734,37 +763,53 @@ function HomePage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
-                        {kwp > 0 ? `${kwp.toFixed(1)}` : "—"}
+                        {isDiscovery && kwp > 0 ? `${kwp.toFixed(1)}` : "—"}
                       </TableCell>
                       <TableCell className="p-2.5">
-                        <ScoreGauge score={prospect.qualityScore} />
-                      </TableCell>
-                      <TableCell className="p-2.5 align-middle">
-                        <EquipmentThumbnail equipment={prospectPanelRef || null} fallbackIcon={Sun} alt="Panneau" />
-                      </TableCell>
-                      <TableCell className="p-2.5 align-middle">
-                        <EquipmentThumbnail equipment={prospectInverterRef || null} fallbackIcon={Zap} alt="Onduleur" />
-                      </TableCell>
-                      <TableCell className="p-2.5 align-middle">
-                        {includeBatteryForProspect && prospectBatteryRef ? (
-                          <EquipmentThumbnail equipment={prospectBatteryRef} fallbackIcon={Battery} alt="Batterie" />
+                        {isDiscovery ? (
+                          <ScoreGauge score={prospect.qualityScore} />
                         ) : (
-                          <div className="w-8 h-8 rounded-md bg-muted/50 shrink-0 flex items-center justify-center" title={includeBatteryForProspect ? "Aucune batterie configurée" : "Batterie désactivée pour ce prospect"}>
-                            <Info className="h-4 w-4 text-muted-foreground" />
-                          </div>
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="p-2.5 align-middle">
+                        {isDiscovery ? (
+                          <EquipmentThumbnail equipment={prospectPanelRef || null} fallbackIcon={Sun} alt="Panneau" />
+                        ) : (
+                          <div className="w-8 h-8 rounded-md bg-muted/50 shrink-0" title="Non applicable" />
+                        )}
+                      </TableCell>
+                      <TableCell className="p-2.5 align-middle">
+                        {isDiscovery ? (
+                          <EquipmentThumbnail equipment={prospectInverterRef || null} fallbackIcon={Zap} alt="Onduleur" />
+                        ) : (
+                          <div className="w-8 h-8 rounded-md bg-muted/50 shrink-0" />
+                        )}
+                      </TableCell>
+                      <TableCell className="p-2.5 align-middle">
+                        {isDiscovery ? (
+                          includeBatteryForProspect && prospectBatteryRef ? (
+                            <EquipmentThumbnail equipment={prospectBatteryRef} fallbackIcon={Battery} alt="Batterie" />
+                          ) : (
+                            <div className="w-8 h-8 rounded-md bg-muted/50 shrink-0 flex items-center justify-center" title={includeBatteryForProspect ? "Aucune batterie configurée" : "Batterie désactivée pour ce prospect"}>
+                              <Info className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                          )
+                        ) : (
+                          <div className="w-8 h-8 rounded-md bg-muted/50 shrink-0" />
                         )}
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
-                        {totalArea > 0 ? `${totalArea.toFixed(0)} m²` : "—"}
+                        {isDiscovery && totalArea > 0 ? `${totalArea.toFixed(0)} m²` : "—"}
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-[#0000FF] font-medium">
-                        {productionKwh > 0 ? `${(productionKwh / 1000).toFixed(1)} MWh` : "—"}
+                        {isDiscovery && productionKwh > 0 ? `${(productionKwh / 1000).toFixed(1)} MWh` : "—"}
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-gray-600 font-medium" title="Consommation annuelle estimée (kWh/m² × surface)">
-                        {consumptionKwh > 0 ? `${(consumptionKwh / 1000).toFixed(1)} MWh` : "—"}
+                        {isDiscovery && consumptionKwh > 0 ? `${(consumptionKwh / 1000).toFixed(1)} MWh` : "—"}
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
-                        {priceMin != null && priceMax != null
+                        {isDiscovery && priceMin != null && priceMax != null
                           ? `${(priceMin / 1000).toFixed(0)}–${(priceMax / 1000).toFixed(0)} k€`
                           : "—"}
                       </TableCell>
@@ -772,10 +817,10 @@ function HomePage() {
                         {breakEvenLabel}
                       </TableCell>
                       <TableCell className="p-2.5 max-w-[110px]">
-                        {contactDisplay ? (
-                          <span className="truncate flex items-center gap-1.5" title={String(contactDisplay)}>
+                        {hasContactRow ? (
+                          <span className="truncate flex items-center gap-1.5" title={contactLabel}>
                             {contactPhone ? <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-                            <span className="truncate">{contactPhone || contactWeb}</span>
+                            <span className="truncate">{contactLabel}</span>
                           </span>
                         ) : (
                           <span className="text-muted-foreground">—</span>
@@ -793,9 +838,9 @@ function HomePage() {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem asChild>
-                              <Link href={`/solar-scout?prospectId=${prospect.id}`} className="flex items-center cursor-pointer">
-                                <ExternalLink className="h-4 w-4 mr-2 shrink-0" />
-                                Voir sur la carte
+                              <Link href="/discovery" className="flex items-center cursor-pointer">
+                                <ScanSearch className="h-4 w-4 mr-2 shrink-0" />
+                                Ouvrir la découverte
                               </Link>
                             </DropdownMenuItem>
                             <DropdownMenuItem

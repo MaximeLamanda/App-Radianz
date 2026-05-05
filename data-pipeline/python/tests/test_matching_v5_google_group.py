@@ -130,6 +130,7 @@ def test_precompute_google_single_api_call_for_two_parcels_parc_industriel():
             ppm_payload=ppm_payload,
             voie_index={},
             etab_rows=[],
+            osm_by_pk={},
             google_stats=stats,
             pk_to_gid=pk_to_gid,
         )
@@ -200,6 +201,7 @@ def test_precompute_google_propagates_nearby_ranked_json():
             ppm_payload=ppm_payload,
             voie_index={},
             etab_rows=[],
+            osm_by_pk={},
             google_stats=stats,
             pk_to_gid=pk_to_gid,
         )
@@ -241,6 +243,107 @@ def test_precompute_google_skips_when_no_parc_industriel():
             ppm_payload=ppm_payload,
             voie_index={},
             etab_rows=[],
+            osm_by_pk={},
+            google_stats=stats,
+            pk_to_gid=pk_to_gid,
+        )
+        assert m.call_count == 0
+    assert stats["attempted"] == 0
+
+
+def test_precompute_google_skips_when_osm_poi_has_website():
+    mod = _load_matching_v5_module()
+    exported = {("33318", "HC", "0001"), ("33318", "HC", "0002")}
+    by_building = {
+        "b1": [
+            {"code_insee": "33318", "section": "HC", "numero_norm": "0001"},
+            {"code_insee": "33318", "section": "HC", "numero_norm": "0002"},
+        ],
+    }
+    poly = {"type": "Polygon", "coordinates": [[[-0.61, 44.78], [-0.61, 44.781], [-0.609, 44.781], [-0.609, 44.78], [-0.61, 44.78]]]}
+    parcel_geom = {
+        ("33318", "HC", "0001"): json.dumps(poly),
+        ("33318", "HC", "0002"): json.dumps(poly),
+    }
+    nom_iris = {
+        ("33318", "HC", "0001"): "Parc Industriel",
+        ("33318", "HC", "0002"): "Autre",
+    }
+    osm_by_pk = {
+        ("33318", "HC", "0001"): ([{"osm_type": "n", "osm_id": 123, "website": "https://example.org"}], 1, 0),
+        ("33318", "HC", "0002"): ([], 0, 0),
+    }
+
+    def ppm_payload(pk):
+        _ = pk
+        return _ppm_no_siret()
+
+    pk_to_gid = mod.parcel_pk_to_group_id(exported, by_building)
+    stats = {"attempted": 0, "success": 0, "nearby_calls": 0, "details_calls": 0, "api_gouv_calls": 0}
+    with patch.object(mod, "run_google_poi_fallback_for_parcel", return_value=_minimal_gout()) as m:
+        cache = mod.precompute_google_group_fallback_cache(
+            google_fb=True,
+            etab_available=True,
+            google_key="test-key",
+            google_radius_m=100.0,
+            exported_pks=exported,
+            parcel_geom=parcel_geom,
+            nom_iris_by_pk=nom_iris,
+            ppm_payload=ppm_payload,
+            voie_index={},
+            etab_rows=[],
+            osm_by_pk=osm_by_pk,
+            google_stats=stats,
+            pk_to_gid=pk_to_gid,
+        )
+        assert m.call_count == 0
+    assert stats["attempted"] == 0
+    assert cache == {}
+
+
+def test_precompute_google_skips_when_same_osm_link_duplicated_on_group():
+    mod = _load_matching_v5_module()
+    exported = {("33318", "HC", "0001"), ("33318", "HC", "0002")}
+    by_building = {
+        "b1": [
+            {"code_insee": "33318", "section": "HC", "numero_norm": "0001"},
+            {"code_insee": "33318", "section": "HC", "numero_norm": "0002"},
+        ],
+    }
+    poly = {"type": "Polygon", "coordinates": [[[-0.61, 44.78], [-0.61, 44.781], [-0.609, 44.781], [-0.609, 44.78], [-0.61, 44.78]]]}
+    parcel_geom = {
+        ("33318", "HC", "0001"): json.dumps(poly),
+        ("33318", "HC", "0002"): json.dumps(poly),
+    }
+    nom_iris = {
+        ("33318", "HC", "0001"): "Parc Industriel",
+        ("33318", "HC", "0002"): "Autre",
+    }
+    shared_poi = {"osm_type": "n", "osm_id": 999, "website": "https://dup.example.org"}
+    osm_by_pk = {
+        ("33318", "HC", "0001"): ([shared_poi], 1, 0),
+        ("33318", "HC", "0002"): ([shared_poi], 1, 0),
+    }
+
+    def ppm_payload(pk):
+        _ = pk
+        return _ppm_no_siret()
+
+    pk_to_gid = mod.parcel_pk_to_group_id(exported, by_building)
+    stats = {"attempted": 0, "success": 0, "nearby_calls": 0, "details_calls": 0, "api_gouv_calls": 0}
+    with patch.object(mod, "run_google_poi_fallback_for_parcel", return_value=_minimal_gout()) as m:
+        mod.precompute_google_group_fallback_cache(
+            google_fb=True,
+            etab_available=True,
+            google_key="test-key",
+            google_radius_m=100.0,
+            exported_pks=exported,
+            parcel_geom=parcel_geom,
+            nom_iris_by_pk=nom_iris,
+            ppm_payload=ppm_payload,
+            voie_index={},
+            etab_rows=[],
+            osm_by_pk=osm_by_pk,
             google_stats=stats,
             pk_to_gid=pk_to_gid,
         )

@@ -34,7 +34,6 @@ import {
   AlertCircle,
   Zap,
   FileCheck,
-  Info,
   Link2,
   Eye,
   Map as MapIcon,
@@ -42,15 +41,33 @@ import {
   Battery,
   ChevronLeft,
   ChevronRight,
+  Building2,
 } from "lucide-react";
 import { PieChart, Pie, Cell } from "recharts";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
+import {
+  computeDiscoveryDrawerFinancialSummary,
+  type DiscoveryDrawerFinancialInputs,
+  type DiscoveryDrawerFinancialSummary,
+} from "@/lib/discovery-drawer-financial-summary";
+import { buildDiscoveryFocusHref } from "@/lib/discovery-focus-href";
+import {
+  DISCOVERY_PVGIS_ROOF_SLOPE_DEG,
+  pvgisAzimuthFromFootprintGeometry,
+} from "@/lib/footprint-orientation-pvgis";
+import {
+  discoveryCentroidFromV5,
+  footprintSumTotalFromV5,
+  getParcelleClusterForV5,
+  matchingV5RowsToProspectDraft,
+} from "@/lib/matching-v5-to-prospect";
 import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 
 /** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
 const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { MonthlyProductionChart } from "./MonthlyProductionChart";
+import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
 import { BatterySelectCard } from "./BatterySelectCard";
 import { EquipmentSelectCard, EquipmentThumbnail } from "./EquipmentSelectCard";
 import { surfaceToKwp, getUsableRoofAreaM2 } from "@/lib/surface-to-kwp";
@@ -104,13 +121,18 @@ import {
   centroidWeightedFromParcelleRowGeometries,
   collectSirensFromMatchingV5Row,
   collectSirensFromMatchingV5Rows,
+  mergeOsmPoisFromParcelleRows,
+  parseGoogleNearbyRankedJson,
   parseMatchingV5BuildingsJson,
   parsePasserelleAddressesJson,
   parseSiretsMatchJson,
+  type V5GoogleNearbyRankedEntry,
   type ScoutMatchingV5Row,
   type V5BuildingsJsonEntry,
+  type V5OsmPoiEntry,
   type V5PasserellePpmEntry,
 } from "@/lib/scout-matching-v5-map";
+import { DiscoverySolaireProjectCards } from "@/components/discovery/DiscoverySolaireProjectCards";
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
 import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
 import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
@@ -122,6 +144,131 @@ function websiteHref(raw: string): string {
   if (!t) return "#";
   if (/^https?:\/\//i.test(t)) return t;
   return `https://${t}`;
+}
+
+/** Bloc OSM (Découverte) : réutilisé dans l’onglet Entreprises, avant les établissements SIRET. */
+type DiscoveryDrawerMergedPoiEntry = {
+  key: string;
+  source: "osm" | "google";
+  name: string;
+  typeLabel: string;
+  phone: string;
+  website: string;
+  externalUrl: string;
+};
+
+function googlePlaceHref(placeId: string): string {
+  const id = placeId.trim();
+  if (!id) return "";
+  return `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(id)}`;
+}
+
+function googlePoiTypeLabel(types: V5GoogleNearbyRankedEntry["types"]): string {
+  const first = Array.isArray(types) && types.length > 0 ? String(types[0] || "").trim() : "";
+  if (!first) return "—";
+  return first
+    .replace(/_/g, " ")
+    .split(/\s+/)
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : ""))
+    .join(" ");
+}
+
+function DiscoveryDrawerMergedPoiBlock({
+  pois,
+  showTitle = true,
+}: {
+  pois: DiscoveryDrawerMergedPoiEntry[];
+  showTitle?: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      {showTitle ? <p className="drawer-discovery-subpanel-title">Lieux à proximité</p> : null}
+      {pois.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+          Aucun lieu avec nom n’est disponible pour ce site. Cette liste peut se compléter lors des prochaines mises à jour des données.
+        </div>
+      ) : (
+        <div className="drawer-discovery-table-wrap">
+          <Table className="text-[11px]">
+            <TableHeader>
+              <TableRow className="border-0 hover:bg-transparent">
+                <TableHead className="min-w-[11rem]">Nom</TableHead>
+                <TableHead className="whitespace-nowrap">Source</TableHead>
+                <TableHead className="min-w-[6rem]">Type</TableHead>
+                <TableHead className="whitespace-nowrap">Tel</TableHead>
+                <TableHead className="min-w-[4rem]">Web</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {pois.map((poi) => {
+                const typeLabel = (poi.typeLabel || "").trim() || "—";
+                const phone = (poi.phone || "").trim() || "—";
+                const websiteRaw = (poi.website || "").trim();
+                const externalRaw = (poi.externalUrl || "").trim();
+                const sourceBadgeLabel = poi.source === "google" ? "Google" : "OSM";
+                return (
+                  <TableRow key={poi.key} className="border-0">
+                    <TableCell className="min-w-0 align-top">
+                      <span className="line-clamp-2 break-words text-xs leading-relaxed" title={poi.name.trim()}>
+                        {poi.name.trim()}
+                      </span>
+                    </TableCell>
+                    <TableCell className="min-w-0 align-top whitespace-nowrap font-mono">
+                      {externalRaw ? (
+                        <a href={externalRaw} target="_blank" rel="noopener noreferrer" title="Voir la fiche">
+                          <Badge
+                            variant="solid"
+                            className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
+                          >
+                            {sourceBadgeLabel}
+                            <ChevronRight className="h-2.5 w-2.5 opacity-90" />
+                          </Badge>
+                        </a>
+                      ) : (
+                        <Badge
+                          variant="solid"
+                          className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)]"
+                        >
+                          {sourceBadgeLabel}
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="min-w-0 align-top text-muted-foreground">
+                      <span
+                        className="block truncate text-xs leading-relaxed"
+                        title={typeLabel !== "—" ? typeLabel : undefined}
+                      >
+                        {typeLabel}
+                      </span>
+                    </TableCell>
+                    <TableCell className="min-w-0 align-top font-mono text-xs tabular-nums">
+                      <span className="block max-w-[7.5rem] truncate" title={phone !== "—" ? phone : undefined}>
+                        {phone}
+                      </span>
+                    </TableCell>
+                    <TableCell className="min-w-0 align-top text-xs">
+                      {websiteRaw ? (
+                        <a
+                          href={websiteHref(websiteRaw)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline-offset-2 hover:underline"
+                        >
+                          lien
+                        </a>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const PROSPECT_DATA_ROWS: {
@@ -201,14 +348,6 @@ function getConfidenceBadgeProps(level: "high" | "medium" | "low") {
   }
 }
 
-/** Dernier bloc de chiffres contigu dans l’identifiant BDNB construction (affichage court au lieu de l’id complet). */
-function bdnbConstructionShortNumber(constructionId: string): string {
-  const s = constructionId.trim();
-  if (!s || s === "—") return "—";
-  const runs = s.match(/\d+/g);
-  return runs?.length ? runs[runs.length - 1]! : "—";
-}
-
 type DiscoveryApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
 
 /** Contenu du drawer en mode découverte PostgreSQL (matching V5), même tiroir que Solar Scout. */
@@ -216,11 +355,17 @@ function ProspectDrawerDiscoverySection({
   row,
   linkedParcelleRows,
   isOpen,
+  onPipelineFinanceInputsChange,
+  pipelineProject,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
   linkedParcelleRows: ScoutMatchingV5Row[];
   isOpen: boolean;
+  /** Données PV + surface pour estimer prix / B-E dans le pied du drawer (pipeline). */
+  onPipelineFinanceInputsChange?: (payload: DiscoveryDrawerFinancialInputs | null) => void;
+  /** Résumé projet (onglet Solaire, sous le graphe) + surface pour la facture ref. */
+  pipelineProject?: { summary: DiscoveryDrawerFinancialSummary; surfaceM2: number } | null;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -228,6 +373,58 @@ function ProspectDrawerDiscoverySection({
     if (row.grain === "parcelle") return [row];
     return [];
   }, [linkedParcelleRows, row]);
+
+  const discoveryOsmPoisNamed = useMemo(
+    () => mergeOsmPoisFromParcelleRows(parcelleCluster).filter((p) => p.name.trim() !== ""),
+    [parcelleCluster]
+  );
+  const discoveryGooglePoisNamed = useMemo(() => {
+    const out: V5GoogleNearbyRankedEntry[] = [];
+    const seen = new Set<string>();
+    const addFromRow = (r: ScoutMatchingV5Row) => {
+      const rawFromProps = String((r.properties?.google_nearby_ranked_json as string | undefined) || "").trim();
+      if (!rawFromProps) return;
+      for (const entry of parseGoogleNearbyRankedJson(rawFromProps)) {
+        const name = String(entry.name || "").trim();
+        if (!name) continue;
+        const placeId = String(entry.place_id || "").trim();
+        const dedupeKey = placeId ? `pid:${placeId}` : `name:${name.toLowerCase()}:${entry.rank ?? -1}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        out.push(entry);
+      }
+    };
+    for (const pr of parcelleCluster) addFromRow(pr);
+    if (row.grain === "building") addFromRow(row);
+    if (out.length === 0 && row.grain === "parcelle" && parcelleCluster.length === 0) addFromRow(row);
+    return out;
+  }, [parcelleCluster, row]);
+  const discoveryMergedPois = useMemo<DiscoveryDrawerMergedPoiEntry[]>(() => {
+    const osmRows: DiscoveryDrawerMergedPoiEntry[] = discoveryOsmPoisNamed.map((poi) => ({
+      key: `osm:${poi.osm_type}:${poi.osm_id}`,
+      source: "osm",
+      name: poi.name.trim(),
+      typeLabel: (poi.poi_type_label || "").trim() || "—",
+      phone: (poi.phone || "").trim(),
+      website: (poi.website || "").trim(),
+      externalUrl: (poi.osm_url || "").trim(),
+    }));
+    const googleRows: DiscoveryDrawerMergedPoiEntry[] = discoveryGooglePoisNamed.map((poi) => ({
+      key: `google:${String(poi.place_id || "").trim() || poi.rank}`,
+      source: "google",
+      name: String(poi.name || "").trim(),
+      typeLabel: googlePoiTypeLabel(poi.types),
+      phone: "",
+      website: "",
+      externalUrl: googlePlaceHref(String(poi.place_id || "")),
+    }));
+    return [...osmRows, ...googleRows].sort((a, b) => {
+      const byName = a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
+      if (byName !== 0) return byName;
+      if (a.source !== b.source) return a.source === "google" ? -1 : 1;
+      return a.key.localeCompare(b.key, "fr");
+    });
+  }, [discoveryOsmPoisNamed, discoveryGooglePoisNamed]);
 
   const discoveryClusterKey = useMemo(
     () => `${row.id}|${parcelleCluster.map((p) => p.id).sort().join(",")}`,
@@ -238,12 +435,15 @@ function ProspectDrawerDiscoverySection({
   const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
     Record<string, DiscoveryApiNomEntry>
   >({});
-  const [discoveryMainTab, setDiscoveryMainTab] = useState("terrain");
+  const [discoveryMainTab, setDiscoveryMainTab] = useState("batiments");
+  const [showAllEstablishments, setShowAllEstablishments] = useState(false);
+  const initialDiscoveryEstablishmentsVisible = 5;
 
   useEffect(() => {
     matchingV5ApiNomFetchedRef.current.clear();
     setMatchingV5ApiNomBySiren({});
-    setDiscoveryMainTab("terrain");
+    setDiscoveryMainTab("batiments");
+    setShowAllEstablishments(false);
   }, [discoveryClusterKey]);
 
   const sirensForApiNom = useMemo(() => {
@@ -253,8 +453,8 @@ function ProspectDrawerDiscoverySection({
 
   useEffect(() => {
     if (!isOpen) return;
-    if (discoveryMainTab !== "entreprises" && discoveryMainTab !== "terrain") return;
-    const sirens = sirensForApiNom;
+    if (discoveryMainTab !== "terrain") return;
+    const sirens = sirensForApiNom.slice(0, 10);
     for (const siren of sirens) {
       if (matchingV5ApiNomFetchedRef.current.has(siren)) continue;
       matchingV5ApiNomFetchedRef.current.add(siren);
@@ -337,7 +537,7 @@ function ProspectDrawerDiscoverySection({
     return anyShared || uniqueSirenPasserelle.size > 1;
   }, [parcelleCluster, row.statusMetier, sirets.length, uniqueSirenPasserelle.size]);
 
-  /** Lignes `buildings_json` ; pour une ligne `building` sans JSON, une ligne synthétique à partir de la row. */
+  /** Lignes `buildings_json` ; pour une ligne `building` sans JSON, une ligne synthétique à partir de la row. Tri décroissant par empreinte (sans empreinte en fin de liste). */
   const buildingDetailRows = useMemo((): V5BuildingsJsonEntry[] => {
     const byBc = new Map<string, V5BuildingsJsonEntry>();
     for (const pr of parcelleCluster.length > 0 ? parcelleCluster : []) {
@@ -345,47 +545,68 @@ function ProspectDrawerDiscoverySection({
         if (!byBc.has(b.batimentConstructionId)) byBc.set(b.batimentConstructionId, b);
       }
     }
-    if (byBc.size > 0) return Array.from(byBc.values());
-
-    const parsed = parseMatchingV5BuildingsJson(row.buildingsJson);
-    if (parsed.length > 0) return parsed;
-    if (row.grain !== "building") return [];
-    const bc = row.batimentConstructionId?.trim() || "";
-    const bg = row.batimentGroupeId?.trim() || null;
-    if (!bc && !bg) return [];
-    const props = row.properties ?? {};
-    const annRaw = props.annee_construction;
-    const ann =
-      typeof annRaw === "number" && Number.isFinite(annRaw)
-        ? annRaw
-        : (() => {
-            const n = Number(String(annRaw ?? "").trim());
-            return Number.isFinite(n) ? n : null;
-          })();
-    const fpRaw = props.footprint_m2;
-    const fpFromProps =
-      typeof fpRaw === "number" && Number.isFinite(fpRaw)
-        ? fpRaw
-        : (() => {
-            const n = Number(String(fpRaw ?? "").trim());
-            return Number.isFinite(n) ? n : null;
-          })();
-    const footprintM2 = fpFromProps ?? (row.footprintSumM2 > 0 ? row.footprintSumM2 : null);
-    const ms = String(props.matching_status ?? "").trim();
-    const md = String(props.matching_decision ?? "").trim();
-    const mss = String(props.matching_siren_selected ?? "").trim();
-    return [
-      {
-        batimentConstructionId: bc || "—",
-        batimentGroupeId: bg,
-        anneeConstruction: ann,
-        footprintM2,
-        intersectionAreaM2: null,
-        matchingStatus: ms || "—",
-        matchingDecision: md,
-        matchingSirenSelected: mss,
-      },
-    ];
+    let raw: V5BuildingsJsonEntry[];
+    if (byBc.size > 0) {
+      raw = Array.from(byBc.values());
+    } else {
+      const parsed = parseMatchingV5BuildingsJson(row.buildingsJson);
+      if (parsed.length > 0) {
+        raw = parsed;
+      } else if (row.grain !== "building") {
+        raw = [];
+      } else {
+        const bc = row.batimentConstructionId?.trim() || "";
+        const bg = row.batimentGroupeId?.trim() || null;
+        if (!bc && !bg) {
+          raw = [];
+        } else {
+          const props = row.properties ?? {};
+          const annRaw = props.annee_construction;
+          const ann =
+            typeof annRaw === "number" && Number.isFinite(annRaw)
+              ? annRaw
+              : (() => {
+                  const n = Number(String(annRaw ?? "").trim());
+                  return Number.isFinite(n) ? n : null;
+                })();
+          const fpRaw = props.footprint_m2;
+          const fpFromProps =
+            typeof fpRaw === "number" && Number.isFinite(fpRaw)
+              ? fpRaw
+              : (() => {
+                  const n = Number(String(fpRaw ?? "").trim());
+                  return Number.isFinite(n) ? n : null;
+                })();
+          const footprintM2 = fpFromProps ?? (row.footprintSumM2 > 0 ? row.footprintSumM2 : null);
+          const ms = String(props.matching_status ?? "").trim();
+          const md = String(props.matching_decision ?? "").trim();
+          const mss = String(props.matching_siren_selected ?? "").trim();
+          raw = [
+            {
+              batimentConstructionId: bc || "—",
+              batimentGroupeId: bg,
+              anneeConstruction: ann,
+              footprintM2,
+              intersectionAreaM2: null,
+              matchingStatus: ms || "—",
+              matchingDecision: md,
+              matchingSirenSelected: mss,
+            },
+          ];
+        }
+      }
+    }
+    return [...raw].sort((a, b) => {
+      const fa = a.footprintM2;
+      const fb = b.footprintM2;
+      if (fa == null && fb == null) {
+        return a.batimentConstructionId.localeCompare(b.batimentConstructionId, "fr");
+      }
+      if (fa == null) return 1;
+      if (fb == null) return -1;
+      if (fb !== fa) return fb - fa;
+      return a.batimentConstructionId.localeCompare(b.batimentConstructionId, "fr");
+    });
   }, [row, parcelleCluster]);
 
   /** Uniquement les établissements issus du matching adresse (SIRET), pas la liste PPM brute. */
@@ -422,6 +643,11 @@ function ProspectDrawerDiscoverySection({
     return centroidFromGeoJsonPolygonLike(row.geometry);
   }, [parcelleCluster, row.geometry]);
 
+  const discoveryFootprintAzimuth = useMemo(
+    () => pvgisAzimuthFromFootprintGeometry(row.geometry),
+    [row.geometry]
+  );
+
   /** Découverte : pas de type Google lieu — profil conso « other » (kWh/m²/an typique). */
   const discoveryPlaceType = "other";
   const [discoveryChartViewMode, setDiscoveryChartViewMode] = useState<"monthly" | "daily">("monthly");
@@ -431,18 +657,35 @@ function ProspectDrawerDiscoverySection({
   const [discoveryPvgisError, setDiscoveryPvgisError] = useState<string | null>(null);
   /** Complète NAF / effectifs via `/api/recherche-entreprises` (api.gouv) quand absents de sirets_json. */
   const [discoveryGouvEtabBySiret, setDiscoveryGouvEtabBySiret] = useState<
-    Record<string, { status: "loading" | "ok" | "err"; naf?: string; tranche?: string; annee?: string }>
+    Record<
+      string,
+      {
+        status: "loading" | "ok" | "err";
+        naf?: string;
+        tranche?: string;
+        annee?: string;
+        manager?: string;
+      }
+    >
   >({});
 
   useEffect(() => {
     setDiscoveryGouvEtabBySiret({});
   }, [discoveryClusterKey]);
 
+  const discoverySiretRowsToEnrich = useMemo(
+    () =>
+      showAllEstablishments
+        ? discoverySiretRows
+        : discoverySiretRows.slice(0, initialDiscoveryEstablishmentsVisible),
+    [showAllEstablishments, discoverySiretRows, initialDiscoveryEstablishmentsVisible]
+  );
+
   useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "entreprises") return;
+    if (!isOpen || discoveryMainTab !== "terrain") return;
     let cancelled = false;
     const siretsToResetOnCleanup: string[] = [];
-    for (const e of sirets) {
+    for (const { e } of discoverySiretRowsToEnrich) {
       const siret = e.siret?.trim();
       if (!siret || !/^\d{14}$/.test(siret)) continue;
       const needNaf = !(e.activite_principale || "").trim();
@@ -470,6 +713,7 @@ function ProspectDrawerDiscoverySection({
               companyNaf?: string;
               companyTrancheEffectif?: string;
               companyAnneeTrancheEffectif?: string;
+              companyManagerName?: string;
             } | null;
           };
           if (cancelled) return;
@@ -481,6 +725,7 @@ function ProspectDrawerDiscoverySection({
               naf: r?.companyNaf?.trim() || undefined,
               tranche: r?.companyTrancheEffectif?.trim() || undefined,
               annee: r?.companyAnneeTrancheEffectif?.trim() || undefined,
+              manager: r?.companyManagerName?.trim() || undefined,
             },
           }));
         } catch {
@@ -502,7 +747,7 @@ function ProspectDrawerDiscoverySection({
         });
       }
     };
-  }, [isOpen, discoveryMainTab, sirets]);
+  }, [isOpen, discoveryMainTab, discoverySiretRowsToEnrich]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -515,7 +760,11 @@ function ProspectDrawerDiscoverySection({
     let cancelled = false;
     setDiscoveryPvgisLoading(true);
     setDiscoveryPvgisError(null);
-    void getPVGISData({ lat: centroid.lat, lng: centroid.lng })
+    const pvgisOpts =
+      discoveryFootprintAzimuth != null
+        ? { azimuth: discoveryFootprintAzimuth, slope: DISCOVERY_PVGIS_ROOF_SLOPE_DEG }
+        : undefined;
+    void getPVGISData({ lat: centroid.lat, lng: centroid.lng }, pvgisOpts)
       .then((d) => {
         if (!cancelled) setDiscoveryPvgis(d);
       })
@@ -531,7 +780,27 @@ function ProspectDrawerDiscoverySection({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, discoveryClusterKey, centroid]);
+  }, [isOpen, discoveryClusterKey, centroid, discoveryFootprintAzimuth]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      onPipelineFinanceInputsChange?.(null);
+      return;
+    }
+    if (!discoveryPvgis || kwpEst <= 0 || footprintSumTotal <= 0) {
+      onPipelineFinanceInputsChange?.(null);
+      return;
+    }
+    onPipelineFinanceInputsChange?.({
+      footprintM2: footprintSumTotal,
+      kwp: kwpEst,
+      annualPerKwp: discoveryPvgis.annualProduction,
+      monthlyPerKwp: discoveryPvgis.monthlyProduction.map((m) => ({
+        month: m.month,
+        production: m.production,
+      })),
+    });
+  }, [isOpen, discoveryPvgis, kwpEst, footprintSumTotal, onPipelineFinanceInputsChange]);
 
   const discoveryChartMonthlyData = useMemo(() => {
     if (!discoveryPvgis || kwpEst <= 0 || footprintSumTotal <= 0) return [];
@@ -569,6 +838,13 @@ function ProspectDrawerDiscoverySection({
 
   const discoveryBatimentsCount = buildingDetailRows.length;
   const discoveryEntreprisesCount = discoverySiretRows.length;
+  const discoveryDisplayedSiretRows = useMemo(
+    () =>
+      showAllEstablishments
+        ? discoverySiretRows
+        : discoverySiretRows.slice(0, initialDiscoveryEstablishmentsVisible),
+    [showAllEstablishments, discoverySiretRows, initialDiscoveryEstablishmentsVisible]
+  );
 
   /** Nom INSEE (API) si dispo, sinon dénomination JSON ; une seule ligne + `title` pour le texte complet. */
   const discoveryRaisonSocialeDisplay = (
@@ -597,12 +873,9 @@ function ProspectDrawerDiscoverySection({
           </span>
         );
       }
-        return (
-        <span
-          className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-muted-foreground"
-          title="Chargement du nom officiel…"
-        >
-          <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
+      return (
+        <span className="inline-block min-w-0 max-w-full" title="Chargement du nom officiel…">
+          <Skeleton className="h-4 w-full max-w-[14rem]" aria-hidden />
           <span className="sr-only">Chargement du nom officiel</span>
         </span>
       );
@@ -632,7 +905,7 @@ function ProspectDrawerDiscoverySection({
     const singleLine = opts.singleLine ?? false;
     const v = value.trim() || "—";
     return (
-      <TableCell className={cn("min-w-[10rem] max-w-xl text-xs leading-relaxed", mono && "font-mono")}>
+      <TableCell className={cn("min-w-0 text-xs leading-relaxed", mono && "font-mono")}>
         <span
           className={cn("block min-w-0", singleLine ? "truncate whitespace-nowrap" : "break-words")}
           title={v !== "—" ? v : undefined}
@@ -648,6 +921,17 @@ function ProspectDrawerDiscoverySection({
     if (row.grain === "parcelle") return [row];
     return [];
   }, [parcelleCluster, row]);
+  const informationParcellesRows = useMemo(
+    () =>
+      [...terrainDetailParcelles].sort((a, b) => {
+        const sectionCmp = (a.section || "").localeCompare(b.section || "");
+        if (sectionCmp !== 0) return sectionCmp;
+        const numeroCmp = (a.numeroNorm || "").localeCompare(b.numeroNorm || "");
+        if (numeroCmp !== 0) return numeroCmp;
+        return (a.label || "").localeCompare(b.label || "");
+      }),
+    [terrainDetailParcelles]
+  );
 
   const opConfidenceForLetter = useMemo(() => {
     if (parcelleCluster.length === 0) return row.matchingConfidence;
@@ -682,7 +966,7 @@ function ProspectDrawerDiscoverySection({
     if (ci.length >= 2) return `DEPT. ${ci.slice(0, 2)}`;
     return "ZONE";
   })();
-  const empreinteM2Formatted = `${footprintSumTotal.toLocaleString("fr-FR")} m²`;
+  const empreinteM2Formatted = `${footprintSumTotal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
   const contourM2Formatted = `${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
   const kwcRounded = `${Math.round(kwpEst)} kWc`;
 
@@ -702,21 +986,30 @@ function ProspectDrawerDiscoverySection({
         </p>
         <p className="drawer-discovery-subtitle">{heroTypeLine}</p>
         <div className="drawer-discovery-pills">
-          <span
-            className="drawer-discovery-pill drawer-discovery-pill-score"
+          <Badge
+            variant="lime"
+            className="h-6 min-h-6 rounded-md border-0 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide ring-1 ring-ring/32 shadow-[0_1px_0_rgb(0_0_0/0.06)] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
             title={`Score opérationnel (matching V5) : ${scoreDisplay}`}
           >
             Score {opScoreLetter}
-          </span>
-          <span className="drawer-discovery-pill drawer-discovery-pill-inverse">{kwcRounded}</span>
-          <span
-            className="drawer-discovery-pill drawer-discovery-pill-muted"
+          </Badge>
+          <Badge
+            variant="outline"
+            className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+          >
+            {kwcRounded}
+          </Badge>
+          <Badge
+            variant="outline"
+            className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
             title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
           >
-            Empreinte {empreinteM2Formatted}
-          </span>
-          <span
-            className="drawer-discovery-pill drawer-discovery-pill-muted"
+            <Building2 className="size-3.5 shrink-0" aria-hidden />
+            {empreinteM2Formatted}
+          </Badge>
+          <Badge
+            variant="outline"
+            className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
             title={
               row.grain === "parcelle"
                 ? parcelleCluster.length > 1
@@ -725,39 +1018,46 @@ function ProspectDrawerDiscoverySection({
                 : "Aire du polygone affiché (bâtiment) sur la carte"
             }
           >
-            {row.grain === "parcelle"
-              ? parcelleCluster.length > 1
-                ? "Contours parcelles"
-                : "Contour parcelle"
-              : "Contour carte"}{" "}
+            <Image
+              src="/Topoicon.svg"
+              alt=""
+              width={26}
+              height={26}
+              className="size-6 shrink-0"
+              aria-hidden
+            />
             {contourM2Formatted}
-          </span>
-          <span
-            className="drawer-discovery-pill drawer-discovery-pill-muted"
+          </Badge>
+          <Badge
+            variant="outline"
+            className="h-6 min-h-6 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
             title={row.nomIris || row.codeInsee}
           >
             {geoPillLabel}
-          </span>
-          <span className="drawer-discovery-pill drawer-discovery-pill-muted">Ombrage non estimé</span>
+          </Badge>
           {multiEntreprises ? (
-            <span className="drawer-discovery-pill drawer-discovery-pill-secondary">Multi-entreprises</span>
+            <Badge
+              variant="secondary"
+              className="h-6 min-h-6 rounded-md border border-primary/40 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
+            >
+              Multi-entreprises
+            </Badge>
           ) : null}
           {parcelleCluster.length > 1 ? (
-            <span
-              className="drawer-discovery-pill drawer-discovery-pill-secondary"
+            <Badge
+              variant="secondary"
+              className="h-6 min-h-6 rounded-md border border-primary/40 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
               title="Même composante connexe via bâtiments en statut « partage » (matching V5)"
             >
               {parcelleCluster.length} cadastres liés
-            </span>
+            </Badge>
           ) : null}
         </div>
       </div>
 
-      <TabsList className="w-full">
-        <TabsTrigger value="terrain">Terrain</TabsTrigger>
-        <TabsTrigger value="solaire">Solaire</TabsTrigger>
+      <TabsList className="w-full min-w-0">
         <TabsTrigger value="batiments" className="inline-flex items-center gap-1.5">
-          <span>Bâtiments</span>
+          <span>Informations</span>
           <span
             className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
             aria-label={`${discoveryBatimentsCount} bâtiment${discoveryBatimentsCount !== 1 ? "s" : ""}`}
@@ -765,64 +1065,125 @@ function ProspectDrawerDiscoverySection({
             {discoveryBatimentsCount}
           </span>
         </TabsTrigger>
-        <TabsTrigger value="entreprises" className="inline-flex items-center gap-1.5">
-          <span>Entreprises</span>
+        <TabsTrigger value="solaire">Solaire</TabsTrigger>
+        <TabsTrigger value="terrain" className="inline-flex items-center gap-1.5">
+          <span>Contact</span>
           <span
             className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
-            aria-label={`${discoveryEntreprisesCount} établissement${discoveryEntreprisesCount !== 1 ? "s" : ""}`}
+            aria-label={`${terrainDetailParcelles.length} parcelle${terrainDetailParcelles.length !== 1 ? "s" : ""} cadastrale${terrainDetailParcelles.length !== 1 ? "s" : ""}`}
           >
-            {discoveryEntreprisesCount}
+            {terrainDetailParcelles.length}
           </span>
         </TabsTrigger>
       </TabsList>
 
       <TabsContent value="terrain" className="drawer-discovery-panel space-y-4">
-        <section aria-labelledby="discovery-terrain-ppm">
-          <h4 id="discovery-terrain-ppm" className="drawer-discovery-section-title">
-            SIREN propriétaires (passerelle PPM)
+        <section aria-labelledby="discovery-terrain-poi">
+          <h4
+            id="discovery-terrain-poi"
+            className="drawer-discovery-section-title flex items-center justify-between gap-3"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Image
+                src="/layericon.svg"
+                alt=""
+                width={44}
+                height={44}
+                className="size-11 shrink-0"
+                aria-hidden
+              />
+              <span className="truncate text-base uppercase tracking-tight text-black">POI à proximité</span>
+            </span>
+            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {discoveryMergedPois.length}
+            </span>
+          </h4>
+          <DiscoveryDrawerMergedPoiBlock pois={discoveryMergedPois} showTitle={false} />
+        </section>
+
+        <section aria-labelledby="discovery-terrain-ppm" className="space-y-3 border-t border-border pt-5">
+          <h4
+            id="discovery-terrain-ppm"
+            className="drawer-discovery-section-title flex items-center justify-between gap-3"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Image
+                src="/Topoicon.svg"
+                alt=""
+                width={44}
+                height={44}
+                className="size-11 shrink-0"
+                aria-hidden
+              />
+              <span className="truncate text-base uppercase tracking-tight text-black">Passerelle</span>
+            </span>
+            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {passerelleFlat.length}
+            </span>
           </h4>
           {passerelleFlat.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-[0.6875rem] text-muted-foreground">
-              Aucune ligne PPM pour {parcelleCluster.length > 1 ? "ces parcelles" : "cette parcelle"} (
-              <span className="font-mono text-foreground/80">passerelle_addresses_json</span> vide).
+              Aucune information Passerelle disponible pour{" "}
+              {parcelleCluster.length > 1 ? "ces parcelles" : "cette parcelle"} pour le moment.
             </div>
           ) : (
             <div className="drawer-discovery-table-wrap">
-              <Table>
+              <Table className="text-[11px]">
                 <TableHeader>
                   <TableRow className="border-0 hover:bg-transparent">
-                    <TableHead className="min-w-[9rem]">Parcelle</TableHead>
-                    <TableHead className="min-w-[7rem]">SIREN</TableHead>
-                    <TableHead className="min-w-[12rem]">Raison sociale (PPM)</TableHead>
-                    <TableHead className="min-w-[13rem]">Adresse (PPM)</TableHead>
-                    <TableHead className="min-w-[4rem]">Lignes</TableHead>
+                    <TableHead className="min-w-[11rem]">Nom</TableHead>
+                    <TableHead className="whitespace-nowrap">SIREN</TableHead>
+                    <TableHead className="whitespace-nowrap">Parcelle</TableHead>
+                    <TableHead className="min-w-[10rem]">Adresse</TableHead>
+                    <TableHead className="whitespace-nowrap text-right">N</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {passerelleFlat.map(({ parcelleLabel, ppm: p }, i) => {
                     const siren = String(p.siren || "").trim() || "—";
+                    const sirenHref =
+                      /^\d{9}$/.test(siren) ? `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}` : null;
                     const key = `${parcelleLabel}-${siren}-${i}`;
                     const addrPpm = (p.address || "").trim() || "—";
                     return (
                       <TableRow key={key} className="border-0">
-                        <TableCell className="min-w-[9rem] whitespace-nowrap font-mono text-[0.65rem] align-top text-muted-foreground">
+                        <TableCell className="min-w-0 align-top">
+                          <span className="line-clamp-2 break-words" title={String(p.denomination || "").trim() || undefined}>
+                            {discoveryRaisonSocialeDisplay(p.siren, p.denomination)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
+                          {sirenHref ? (
+                            <a
+                              href={sirenHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`Voir la fiche État (${siren})`}
+                            >
+                              <Badge
+                                variant="solid"
+                                className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
+                              >
+                                {siren}
+                                <ChevronRight className="h-2.5 w-2.5 opacity-90" />
+                              </Badge>
+                            </a>
+                          ) : (
+                            <span title={siren !== "—" ? siren : undefined}>{siren}</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top text-muted-foreground">
                           {parcelleLabel}
                         </TableCell>
-                        <TableCell className="min-w-[7rem] whitespace-nowrap font-mono text-xs align-top">
-                          <span title={siren !== "—" ? siren : undefined}>{siren}</span>
-                        </TableCell>
-                        <TableCell className="min-w-[12rem] max-w-[20rem] align-top text-xs">
-                          {discoveryRaisonSocialeDisplay(p.siren, p.denomination)}
-                        </TableCell>
-                        <TableCell className="min-w-[13rem] max-w-[22rem] align-top text-xs leading-relaxed text-muted-foreground">
+                        <TableCell className="min-w-0 align-top text-muted-foreground">
                           <span
-                            className="block min-w-0 max-w-full truncate whitespace-nowrap"
+                            className="block truncate"
                             title={addrPpm !== "—" ? addrPpm : undefined}
                           >
                             {addrPpm}
                           </span>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
+                        <TableCell className="min-w-0 whitespace-nowrap text-right font-mono tabular-nums">
                           {p.rows != null && Number.isFinite(Number(p.rows)) ? String(p.rows) : "—"}
                         </TableCell>
                       </TableRow>
@@ -834,99 +1195,168 @@ function ProspectDrawerDiscoverySection({
           )}
         </section>
 
-        <section aria-labelledby="discovery-terrain-parcelle">
-          <h4 id="discovery-terrain-parcelle" className="drawer-discovery-section-title">
-            Détail parcelle & adresse
+        <section aria-labelledby="discovery-terrain-entreprises" className="space-y-3 border-t border-border pt-5">
+          <h4
+            id="discovery-terrain-entreprises"
+            className="drawer-discovery-section-title flex items-center justify-between gap-3"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Image
+                src="/houseicon.svg"
+                alt=""
+                width={44}
+                height={44}
+                className="size-11 shrink-0"
+                aria-hidden
+              />
+              <span className="truncate text-base uppercase tracking-tight text-black">Établissements</span>
+            </span>
+            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {discoverySiretRows.length}
+            </span>
           </h4>
-          {terrainDetailParcelles.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-[0.6875rem] text-muted-foreground">
-              Aucune parcelle cadastrale liée à cette entité pour le détail terrain.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {terrainDetailParcelles.map((pr) => (
-                <div key={pr.id} className="space-y-2">
-                  {terrainDetailParcelles.length > 1 ? (
-                    <p className="text-[0.65rem] font-semibold leading-tight text-muted-foreground font-mono">
-                      {pr.section && pr.numeroNorm ? `${pr.section} ${pr.numeroNorm}` : pr.id} · INSEE{" "}
-                      {pr.codeInsee || "—"}
-                    </p>
-                  ) : null}
-                  <div className="drawer-discovery-table-wrap">
-                    <Table>
+          <div className="drawer-discovery-table-wrap">
+            <div className="drawer-entity-list">
+              {discoverySiretRows.length === 0 ? (
+                <div className="drawer-entity-list-empty">
+                  Aucun établissement trouvé pour cette adresse pour le moment.
+                </div>
+              ) : (
+                <>
+                  <div className="drawer-entity-plain-table-wrap">
+                    <Table className="drawer-entity-plain-table text-[11px]">
                       <TableHeader>
                         <TableRow className="border-0 hover:bg-transparent">
-                          <TableHead className="min-w-[11rem] whitespace-nowrap">Champ</TableHead>
-                          <TableHead className="min-w-[14rem]">Valeur</TableHead>
+                          <TableHead className="min-w-[11rem]">Nom</TableHead>
+                          <TableHead className="whitespace-nowrap">SIREN</TableHead>
+                          <TableHead className="min-w-[6.5rem]">Gérant</TableHead>
+                          <TableHead className="whitespace-nowrap">SIRET</TableHead>
+                          <TableHead className="whitespace-nowrap">NAF</TableHead>
+                          <TableHead className="whitespace-nowrap">Effectifs</TableHead>
+                          <TableHead className="min-w-[8rem]">Adresse</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        <TableRow className="border-0">
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">Parcelle</TableCell>
-                          {discoveryValueTd(
-                            pr.section && pr.numeroNorm ? `${pr.section} ${pr.numeroNorm}` : "—",
-                            true
-                          )}
-                        </TableRow>
-                        <TableRow className="border-0">
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                            Commune (INSEE)
-                          </TableCell>
-                          {discoveryValueTd(pr.codeInsee || "—", true)}
-                        </TableRow>
-                        <TableRow className="border-0">
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">IRIS</TableCell>
-                          {discoveryValueTd(
-                            (pr.codeIris || "").trim()
-                              ? `${pr.codeIris}${pr.nomIris ? ` (${pr.nomIris})` : ""}`
-                              : "—"
-                          )}
-                        </TableRow>
-                        <TableRow className="border-0">
-                          <TableCell className="max-w-[11rem] whitespace-normal text-xs leading-snug text-muted-foreground">
-                            Adresse passerelle (PPM)
-                          </TableCell>
-                          {discoveryValueTd(pr.passerelleAddress?.trim() || "—", { singleLine: true })}
-                        </TableRow>
-                        <TableRow className="border-0">
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                            Statut SIREN parcelle
-                          </TableCell>
-                          {discoveryValueTd(pr.sirenStatus || "—", true)}
-                        </TableRow>
+                        {discoveryDisplayedSiretRows.map((r) => {
+                          const e = r.e;
+                          const gouv = discoveryGouvEtabBySiret[e.siret];
+                          const nafFromJson = (e.activite_principale || "").trim();
+                          const nafFromApi = gouv?.status === "ok" ? (gouv.naf || "").trim() : "";
+                          const naf = nafFromJson || nafFromApi;
+                          const trancheCode =
+                            (e.tranche_effectifs || "").trim() ||
+                            (gouv?.status === "ok" ? gouv.tranche || "" : "");
+                          const effYearJson = (e.annee_effectifs || "").trim();
+                          const effYearApi = gouv?.status === "ok" ? (gouv.annee || "").trim() : "";
+                          const effYear = effYearJson || effYearApi;
+                          const effLib = labelTrancheEffectifs(trancheCode || undefined);
+                          const effectifsCell =
+                            gouv?.status === "loading" && !trancheCode ? (
+                              <Skeleton className="h-3.5 w-[min(100%,7.5rem)] max-w-full" aria-hidden />
+                            ) : effLib === "—" && !effYear ? (
+                              "—"
+                            ) : effYear ? (
+                              `${effLib} (${effYear})`
+                            ) : (
+                              effLib
+                            );
+                          const nafCell =
+                            gouv?.status === "loading" && !naf ? (
+                              <Skeleton className="h-3.5 w-[min(100%,6rem)] max-w-full" aria-hidden />
+                            ) : (
+                              naf || "—"
+                            );
+                          const manager =
+                            (gouv?.status === "ok" ? gouv.manager || "" : "").trim() || "—";
+                          const siren = (e.siren || "").trim();
+                          const sirenHref =
+                            /^\d{9}$/.test(siren)
+                              ? `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}`
+                              : null;
+                          const addr = (e.adresse_etablissement || "").trim() || "—";
+                          return (
+                            <TableRow key={r.key} className="border-0">
+                              <TableCell className="min-w-[11rem] align-top">
+                                <span
+                                  className="block truncate"
+                                  title={String(e.denomination || "").trim() || undefined}
+                                >
+                                  {discoveryRaisonSocialeDisplay(e.siren, e.denomination)}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
+                                {sirenHref ? (
+                                  <a
+                                    href={sirenHref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title={`Voir la fiche État (${siren})`}
+                                  >
+                                    <Badge
+                                      variant="solid"
+                                      className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
+                                    >
+                                      {siren}
+                                      <ChevronRight className="h-3 w-3 opacity-90" />
+                                    </Badge>
+                                  </a>
+                                ) : (
+                                  <span title={siren || undefined}>{siren || "—"}</span>
+                                )}
+                              </TableCell>
+                              <TableCell className="min-w-[6.5rem] align-top text-muted-foreground">
+                                <span className="block truncate" title={manager !== "—" ? manager : undefined}>
+                                  {manager}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
+                                <span title={e.siret}>{e.siret}</span>
+                              </TableCell>
+                              <TableCell className="min-w-0 align-top font-mono">
+                                <span className="block truncate" title={typeof nafCell === "string" ? nafCell : undefined}>
+                                  {nafCell}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-0 align-top">
+                                <span
+                                  className="block truncate"
+                                  title={typeof effectifsCell === "string" ? effectifsCell : undefined}
+                                >
+                                  {effectifsCell}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-[8rem] align-top text-muted-foreground">
+                                <span className="block truncate" title={addr !== "—" ? addr : undefined}>
+                                  {addr}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>
-                </div>
-              ))}
+                  {discoverySiretRows.length > initialDiscoveryEstablishmentsVisible ? (
+                    <div className="px-3 pb-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 rounded-md px-2.5 font-mono text-[10px] uppercase tracking-[0.08em]"
+                        onClick={() => setShowAllEstablishments((prev) => !prev)}
+                      >
+                        {showAllEstablishments ? "View less" : `View all (${discoverySiretRows.length})`}
+                      </Button>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
-          )}
+          </div>
         </section>
       </TabsContent>
 
       <TabsContent value="solaire" className="drawer-discovery-panel space-y-3">
-        <div className="drawer-discovery-callout">
-          <p className="font-semibold text-foreground">Écart par rapport à une fiche prospect</p>
-          <ul className="mt-2 list-inside list-disc space-y-1.5 text-muted-foreground">
-            <li>
-              <span className="text-foreground">Type de lieu Google</span> (commerce, bureaux, etc.) : profil de
-              consommation <span className="font-mono text-foreground">« other »</span> — estimation générique kWh/m²/an
-              × empreinte BDNB.
-            </li>
-            <li>
-              <span className="text-foreground">Consommation réelle</span> : pas de données énergie du site, ni
-              simulation batterie / autoconsommation détaillée.
-            </li>
-            <li>
-              <span className="text-foreground">Toit / orientation</span> : PVGIS au centroïde
-              {parcelleCluster.length > 1
-                ? " (moyenne pondérée par la surface de chaque polygone parcelle du groupe)"
-                : " du polygone carte"}{" "}
-              avec inclinaison et azimuth optimaux, pas le modèle 3D du toit prospect.
-            </li>
-          </ul>
-        </div>
-
         {footprintSumTotal <= 0 || kwpEst <= 0 ? (
           <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
             Empreinte ou kWc nul : graphique production / consommation non affiché.
@@ -945,254 +1375,199 @@ function ProspectDrawerDiscoverySection({
             {discoveryPvgisError}
           </div>
         ) : discoveryChartMonthlyData.length > 0 ? (
-          <div className="drawer-discovery-chart-shell">
-            <div className="mb-1 flex shrink-0 items-start justify-between gap-3">
-              <div className="flex min-w-0 flex-col gap-1">
-                <span className="drawer-discovery-subpanel-title">Production / consommation</span>
-                <span className="text-[0.65rem] leading-snug text-muted-foreground">
-                  Mensuel kWh — conso estimée profil « other » ×{" "}
-                  {footprintSumTotal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
-                </span>
+          <div className="space-y-4">
+            <div className="drawer-discovery-chart-shell">
+              <div className="mb-1 flex shrink-0 items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="drawer-discovery-subpanel-title">Production / consommation</span>
+                  <span className="text-[0.65rem] leading-snug text-muted-foreground">
+                    Mensuel kWh — conso estimée profil « other » ×{" "}
+                    {footprintSumTotal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
+                  </span>
+                </div>
+                <div
+                  role="tablist"
+                  className="drawer-discovery-segmented"
+                  aria-label="Vue du graphique"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={discoveryChartViewMode === "monthly"}
+                    onClick={() => setDiscoveryChartViewMode("monthly")}
+                    className={cn(
+                      discoveryChartViewMode === "monthly"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Mensuel
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={discoveryChartViewMode === "daily"}
+                    onClick={() => setDiscoveryChartViewMode("daily")}
+                    className={cn(
+                      discoveryChartViewMode === "daily"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Journalier
+                  </button>
+                </div>
               </div>
-              <div
-                role="tablist"
-                className="drawer-discovery-segmented"
-                aria-label="Vue du graphique"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={discoveryChartViewMode === "monthly"}
-                  onClick={() => setDiscoveryChartViewMode("monthly")}
-                  className={cn(
-                    discoveryChartViewMode === "monthly"
-                      ? "bg-background text-foreground shadow-xs"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  Mensuel
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={discoveryChartViewMode === "daily"}
-                  onClick={() => setDiscoveryChartViewMode("daily")}
-                  className={cn(
-                    discoveryChartViewMode === "daily"
-                      ? "bg-background text-foreground shadow-xs"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  Journalier
-                </button>
+              <div className="h-[240px] min-w-0 w-full">
+                <MonthlyProductionChart
+                  viewMode={discoveryChartViewMode}
+                  onViewModeChange={setDiscoveryChartViewMode}
+                  selectedMonthIndex={discoveryChartMonthIndex}
+                  onSelectedMonthIndexChange={setDiscoveryChartMonthIndex}
+                  data={discoveryChartMonthlyData}
+                  dailyData={discoveryChartDailyData}
+                />
               </div>
             </div>
-            <div className="h-[240px] min-w-0 w-full">
-              <MonthlyProductionChart
-                viewMode={discoveryChartViewMode}
-                onViewModeChange={setDiscoveryChartViewMode}
-                selectedMonthIndex={discoveryChartMonthIndex}
-                onSelectedMonthIndexChange={setDiscoveryChartMonthIndex}
-                data={discoveryChartMonthlyData}
-                dailyData={discoveryChartDailyData}
+            {pipelineProject ? (
+              <DiscoverySolaireProjectCards
+                summary={pipelineProject.summary}
+                surfaceM2={pipelineProject.surfaceM2}
               />
-            </div>
+            ) : null}
           </div>
         ) : null}
       </TabsContent>
 
       <TabsContent value="batiments" className="drawer-discovery-panel space-y-3">
-        <div>
-          <p className="drawer-discovery-subpanel-title">Constructions BDNB (export matching)</p>
-          <p className="mt-1 max-w-prose text-[0.7rem] leading-relaxed text-muted-foreground">
-            Colonne « N° » : dernier bloc de chiffres de l’id construction BDNB. Survol pour l’id complet et le groupe.{" "}
-            <span className="font-mono text-foreground/90">buildings_json</span>.
-          </p>
-        </div>
-        {buildingDetailRows.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
-            Aucun détail bâtiment dans l’export pour cette entité (parcelle sans{" "}
-            <span className="font-mono text-foreground/80">buildings_json</span> ou bâtiment non renseigné).
-          </div>
-        ) : (
-          <div className="drawer-discovery-table-wrap">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-0 hover:bg-transparent">
-                  <TableHead className="min-w-[4rem]">N°</TableHead>
-                  <TableHead className="min-w-[4.5rem]">Année</TableHead>
-                  <TableHead className="min-w-[6rem]">Empreinte</TableHead>
-                  <TableHead className="min-w-[6rem]">Intersect.</TableHead>
-                  <TableHead className="min-w-[14rem]">Statut</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {buildingDetailRows.map((b, i) => (
-                  <TableRow key={`${b.batimentConstructionId}-${i}`} className="border-0">
-                    <TableCell
-                      className="whitespace-nowrap font-mono text-xs tabular-nums"
-                      title={
-                        b.batimentConstructionId && b.batimentConstructionId !== "—"
-                          ? `Construction BDNB : ${b.batimentConstructionId}${
-                              b.batimentGroupeId ? ` · groupe : ${b.batimentGroupeId}` : ""
-                            }`
-                          : undefined
-                      }
-                    >
-                      {bdnbConstructionShortNumber(b.batimentConstructionId)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
-                      {b.anneeConstruction != null ? b.anneeConstruction : "—"}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
-                      {b.footprintM2 != null
-                        ? `${b.footprintM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap font-mono text-xs tabular-nums">
-                      {b.intersectionAreaM2 != null
-                        ? `${b.intersectionAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="min-w-[12rem] max-w-[24rem] text-xs leading-relaxed text-muted-foreground">
-                      {(() => {
-                        const parts = [
-                          b.matchingStatus || "—",
-                          b.matchingDecision?.trim(),
-                          b.matchingSirenSelected
-                            ? `SIREN retenu : ${b.matchingSirenSelected}`
-                            : "",
-                        ].filter(Boolean);
-                        const line = parts.join(" · ");
-                        return (
-                          <span
-                            className="block min-w-0 break-words font-mono text-foreground"
-                            title={line}
-                          >
-                            {line}
-                          </span>
-                        );
-                      })()}
-                    </TableCell>
+        <section aria-labelledby="discovery-info-building">
+          <h4
+            id="discovery-info-building"
+            className="drawer-discovery-section-title flex items-center justify-between gap-3"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Image
+                src="/Buildingicon.svg"
+                alt=""
+                width={44}
+                height={44}
+                className="size-11 shrink-0"
+                aria-hidden
+              />
+              <span className="truncate text-base uppercase tracking-tight text-black">Building</span>
+            </span>
+            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {buildingDetailRows.length}
+            </span>
+          </h4>
+          {buildingDetailRows.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+              Aucun détail bâtiment dans l’export pour cette entité (parcelle sans{" "}
+              <span className="font-mono text-foreground/80">buildings_json</span> ou bâtiment non renseigné).
+            </div>
+          ) : (
+            <div className="drawer-discovery-table-wrap">
+              <Table className="text-xs">
+                <TableHeader>
+                  <TableRow className="border-0 hover:bg-transparent">
+                    <TableHead className="whitespace-nowrap">N°</TableHead>
+                    <TableHead className="whitespace-nowrap">Année</TableHead>
+                    <TableHead className="whitespace-nowrap">Empreinte</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
+                </TableHeader>
+                <TableBody>
+                  {buildingDetailRows.map((b, i) => (
+                    <TableRow key={`${b.batimentConstructionId}-${i}`} className="border-0">
+                      <TableCell
+                        className="min-w-0 whitespace-nowrap font-mono tabular-nums"
+                        title={
+                          b.batimentConstructionId && b.batimentConstructionId !== "—"
+                            ? `Rang ${i + 1} · construction BDNB : ${b.batimentConstructionId}${
+                                b.batimentGroupeId ? ` · groupe : ${b.batimentGroupeId}` : ""
+                              }`
+                            : `Rang ${i + 1}`
+                        }
+                      >
+                        {i + 1}
+                      </TableCell>
+                      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
+                        {b.anneeConstruction != null ? b.anneeConstruction : "—"}
+                      </TableCell>
+                      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
+                        {b.footprintM2 != null
+                          ? `${b.footprintM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </section>
+
+        <section aria-labelledby="discovery-info-parcelles" className="space-y-3 border-t border-border pt-5">
+          <h4
+            id="discovery-info-parcelles"
+            className="drawer-discovery-section-title flex items-center justify-between gap-3"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Image
+                src="/Topoicon.svg"
+                alt=""
+                width={44}
+                height={44}
+                className="size-11 shrink-0"
+                aria-hidden
+              />
+              <span className="truncate text-base uppercase tracking-tight text-black">Parcelle</span>
+            </span>
+            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {informationParcellesRows.length}
+            </span>
+          </h4>
+          {informationParcellesRows.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+              Aucune parcelle liée.
+            </div>
+          ) : (
+            <div className="drawer-discovery-table-wrap">
+              <Table className="text-xs">
+                <TableHeader>
+                  <TableRow className="border-0 hover:bg-transparent">
+                    <TableHead className="whitespace-nowrap">N°</TableHead>
+                    <TableHead className="whitespace-nowrap">Numéro</TableHead>
+                    <TableHead className="whitespace-nowrap">Surface</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {informationParcellesRows.map((parcelle, i) => {
+                    const numero = `${parcelle.section || "—"} ${parcelle.numeroNorm || "—"}`.trim();
+                    const surfaceM2 = polygonAreaM2ApproxWgs84(parcelle.geometry);
+                    const surfaceLabel = `${surfaceM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
+                    return (
+                      <TableRow key={`${parcelle.id}-${i}`} className="border-0">
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
+                          {i + 1}
+                        </TableCell>
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono">
+                          {numero}
+                        </TableCell>
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums text-muted-foreground">
+                          <span className="block min-w-0 text-foreground" title={surfaceLabel}>
+                            {surfaceLabel}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </section>
       </TabsContent>
 
-      <TabsContent value="entreprises" className="drawer-discovery-panel-last space-y-3">
-        <div>
-          <p className="drawer-discovery-subpanel-title">Établissements (matching adresse)</p>
-          <p className="mt-1 max-w-prose text-[0.7rem] leading-relaxed text-muted-foreground">
-            SIRET issus de <span className="font-mono text-foreground/90">sirets_json</span> ; NAF et effectifs
-            complétés via api.gouv si absents du JSON.
-          </p>
-        </div>
-        <div className="drawer-discovery-table-wrap">
-          <Table>
-            <TableHeader>
-              <TableRow className="border-0 hover:bg-transparent">
-                <TableHead className="min-w-[12rem]">Raison sociale</TableHead>
-                <TableHead className="min-w-[6.5rem]">SIREN</TableHead>
-                <TableHead className="min-w-[8.5rem]">SIRET</TableHead>
-                <TableHead className="min-w-[7rem]">Code NAF (APE)</TableHead>
-                <TableHead className="min-w-[9rem]">Effectifs</TableHead>
-                <TableHead className="min-w-[13rem]">Adresse</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-            {discoverySiretRows.length === 0 ? (
-              <TableRow className="border-0">
-                <TableCell colSpan={6} className="py-10 text-center text-xs leading-relaxed text-muted-foreground">
-                  Aucun établissement matché sur l’adresse passerelle (
-                  <span className="font-mono text-foreground/80">sirets_json</span> vide ou matching non abouti).
-                </TableCell>
-              </TableRow>
-            ) : (
-              discoverySiretRows.map((r) => {
-                const e = r.e;
-                const gouv = discoveryGouvEtabBySiret[e.siret];
-                const nafFromJson = (e.activite_principale || "").trim();
-                const nafFromApi = gouv?.status === "ok" ? (gouv.naf || "").trim() : "";
-                const naf = nafFromJson || nafFromApi;
-                const trancheCode = (e.tranche_effectifs || "").trim() || (gouv?.status === "ok" ? gouv.tranche || "" : "");
-                const effYearJson = (e.annee_effectifs || "").trim();
-                const effYearApi = gouv?.status === "ok" ? (gouv.annee || "").trim() : "";
-                const effYear = effYearJson || effYearApi;
-                const effLib = labelTrancheEffectifs(trancheCode || undefined);
-                const effectifsCell =
-                  gouv?.status === "loading" && !trancheCode ? (
-                    <span className="inline-flex items-center gap-1 text-muted-foreground">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      api.gouv…
-                    </span>
-                  ) : effLib === "—" && !effYear ? (
-                    "—"
-                  ) : effYear ? (
-                    `${effLib} (${effYear})`
-                  ) : (
-                    effLib
-                  );
-                const nafCell =
-                  gouv?.status === "loading" && !naf ? (
-                    <span className="inline-flex max-w-full items-center gap-1 truncate text-muted-foreground">
-                      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-                      …
-                    </span>
-                  ) : (
-                    naf || "—"
-                  );
-                const nafTitle = typeof nafCell === "string" ? nafCell : undefined;
-                const effTitle =
-                  typeof effectifsCell === "string" ? effectifsCell : undefined;
-                const addr = (e.adresse_etablissement || "").trim() || "—";
-                return (
-                  <TableRow key={r.key} className="border-0">
-                    <TableCell className="min-w-[12rem] max-w-[20rem] align-top">
-                      {discoveryRaisonSocialeDisplay(e.siren, e.denomination)}
-                    </TableCell>
-                    <TableCell className="min-w-[6.5rem] whitespace-nowrap font-mono text-xs align-top">
-                      <span title={e.siren || undefined}>{e.siren || "—"}</span>
-                    </TableCell>
-                    <TableCell className="min-w-[8.5rem] whitespace-nowrap font-mono text-xs align-top">
-                      <span title={e.siret}>{e.siret}</span>
-                    </TableCell>
-                    <TableCell className="min-w-[7rem] max-w-[13rem] align-top text-xs">
-                      {typeof nafCell === "string" ? (
-                        <span className="block min-w-0 break-words font-mono leading-relaxed" title={nafTitle}>
-                          {nafCell}
-                        </span>
-                      ) : (
-                        nafCell
-                      )}
-                    </TableCell>
-                    <TableCell className="min-w-[9rem] max-w-[15rem] align-top text-xs">
-                      {typeof effectifsCell === "string" ? (
-                        <span className="block min-w-0 break-words leading-relaxed" title={effTitle}>
-                          {effectifsCell}
-                        </span>
-                      ) : (
-                        effectifsCell
-                      )}
-                    </TableCell>
-                    <TableCell className="min-w-[13rem] max-w-[22rem] align-top text-xs leading-relaxed text-muted-foreground">
-                      <span
-                        className="block min-w-0 max-w-full truncate whitespace-nowrap"
-                        title={addr !== "—" ? addr : undefined}
-                      >
-                        {addr}
-                      </span>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-        </div>
-      </TabsContent>
     </Tabs>
   );
 }
@@ -1212,6 +1587,10 @@ interface ProspectDrawerProps {
   discoveryRow?: ScoutMatchingV5Row | null;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). Défaut : parcelle seule. */
   discoveryLinkedParcelleRows?: ScoutMatchingV5Row[] | null;
+  /** Prospect déjà en pipeline pour cette sélection (Découverte) — désactive l’ajout et affiche l’état. */
+  discoveryExistingPipelineProspect?: Prospect | null;
+  /** Après ajout pipeline depuis Discovery : invalider la liste (ex. `mutate` SWR côté page). */
+  onDiscoveryPipelineAdded?: () => void;
 }
 
 export function ProspectDrawer({
@@ -1222,13 +1601,16 @@ export function ProspectDrawer({
   onAddToPipeline,
   onSaveSuccess,
   onProspectUpdate,
-  voirHref = (id) => `/solar-scout?prospectId=${id}`,
+  voirHref = (_id) => "/discovery",
   discoveryRow = null,
   discoveryLinkedParcelleRows = null,
+  discoveryExistingPipelineProspect = null,
+  onDiscoveryPipelineAdded,
 }: ProspectDrawerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const isOnMap = pathname?.includes("/solar-scout") ?? false;
+  const isOnDiscovery = pathname?.includes("/discovery") ?? false;
   const [isAdding, setIsAdding] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [address, setAddress] = useState(prospect?.address || "");
@@ -1248,6 +1630,9 @@ export function ProspectDrawer({
   const [phase2Scoring, setPhase2Scoring] = useState<ScoredCandidate[] | null>(null);
   const [phase2ScoringLoading, setPhase2ScoringLoading] = useState(false);
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+  /** PVGIS + kWp + surface (mode Découverte) pour fourchette prix / B-E pipeline. */
+  const [discoveryPipelineFinanceInputs, setDiscoveryPipelineFinanceInputs] =
+    useState<DiscoveryDrawerFinancialInputs | null>(null);
   const { user } = useAuth();
 
   /** Mis à true uniquement au clic sur Perfect fit / Highest production — resync batterie quand la cible kWh change. */
@@ -1457,6 +1842,27 @@ export function ProspectDrawer({
     setUsedInverterRef(byId ?? recommended ?? visibleInverters[0] ?? null);
   }, [invertersData, prospect?.inverterReferenceId]);
 
+  /** Mode Découverte sans prospect : batterie par défaut (recommandée / première) pour le calcul projet. */
+  useEffect(() => {
+    if (!isOpen || prospect || !discoveryRow || !batteriesData?.length) return;
+    const visibleBatteries = batteriesData.filter((b) => b.visible !== false);
+    if (!visibleBatteries.length) {
+      setUsedBatteryRef(null);
+      setBatteryCount(1);
+      return;
+    }
+    setUsedBatteryRef((prev) =>
+      prev && visibleBatteries.some((b) => b.id === prev.id)
+        ? prev
+        : visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null
+    );
+    setBatteryCount(1);
+  }, [isOpen, prospect, discoveryRow, batteriesData]);
+
+  useEffect(() => {
+    if (!isOpen || !discoveryRow) setDiscoveryPipelineFinanceInputs(null);
+  }, [isOpen, discoveryRow]);
+
   // Adresse : suivre le prospect courant
   useEffect(() => {
     if (prospect?.address) {
@@ -1589,6 +1995,89 @@ export function ProspectDrawer({
     fetchPVGISData();
   }, [pvgisFetchKey]); // prospect et onProspectUpdate lus dans la closure, pas en deps pour éviter re-jeux infinis
 
+  const discoveryFootprintSumM2 = useMemo(() => {
+    if (!discoveryRow) return 0;
+    const cluster = getParcelleClusterForV5(discoveryRow, discoveryLinkedParcelleRows);
+    return footprintSumTotalFromV5(discoveryRow, cluster);
+  }, [discoveryRow, discoveryLinkedParcelleRows]);
+
+  const discoveryPipelineMapHref = useMemo(() => {
+    if (!discoveryExistingPipelineProspect) return null;
+    return buildDiscoveryFocusHref(discoveryExistingPipelineProspect);
+  }, [discoveryExistingPipelineProspect]);
+
+  const handleDiscoveryAddToPipeline = async () => {
+    if (!discoveryRow) return;
+    setIsAdding(true);
+    try {
+      const panelRef = getRecommendedPanelReferenceSync();
+      const cluster = getParcelleClusterForV5(discoveryRow, discoveryLinkedParcelleRows);
+      const centroid = discoveryCentroidFromV5(discoveryRow, cluster);
+      let pvgis: PVGISData | null = null;
+      if (centroid && validateCoordinates(centroid)) {
+        try {
+          const footprintAz = pvgisAzimuthFromFootprintGeometry(discoveryRow.geometry);
+          pvgis = await getPVGISData(
+            centroid,
+            footprintAz != null
+              ? { azimuth: footprintAz, slope: DISCOVERY_PVGIS_ROOF_SLOPE_DEG }
+              : undefined
+          );
+        } catch {
+          pvgis = null;
+        }
+      }
+      const draft = matchingV5RowsToProspectDraft(discoveryRow, discoveryLinkedParcelleRows, {
+        panelRef,
+        pvgisData: pvgis,
+      });
+      const draftForPipeline =
+        discoveryFinancialSummary != null
+          ? {
+              ...draft,
+              priceRangeMinEur: discoveryFinancialSummary.priceRange.totalMinEur,
+              priceRangeMaxEur: discoveryFinancialSummary.priceRange.totalMaxEur,
+              breakEvenMinYears: discoveryFinancialSummary.breakEvenMin,
+              breakEvenMaxYears: discoveryFinancialSummary.breakEvenMax,
+            }
+          : draft;
+      const kwp = draftForPipeline.solarPotential?.estimatedKwp ?? 0;
+      const basePipeline =
+        kwp > 0 && discoveryFootprintSumM2 > 0 ? ({ estimatedKwp: kwp } as const) : null;
+      const pipelineOptions =
+        basePipeline && discoveryFinancialSummary
+          ? {
+              ...basePipeline,
+              priceRangeMinEur: discoveryFinancialSummary.priceRange.totalMinEur,
+              priceRangeMaxEur: discoveryFinancialSummary.priceRange.totalMaxEur,
+              breakEvenMinYears: discoveryFinancialSummary.breakEvenMin,
+              breakEvenMaxYears: discoveryFinancialSummary.breakEvenMax,
+            }
+          : basePipeline ?? undefined;
+      const prospectId = await addProspectToPipeline(draftForPipeline, pipelineOptions, user?.uid);
+      await createLeadFromProspect(
+        prospectId,
+        draftForPipeline.name || draftForPipeline.address,
+        draftForPipeline.contact?.websiteUri
+      );
+      onDiscoveryPipelineAdded?.();
+      onOpenChange(false);
+      toast.success("Lead ajouté au pipeline", {
+        description: draftForPipeline.name || draftForPipeline.address,
+        action: {
+          label: "Ouvrir le pipeline",
+          onClick: () => router.push("/"),
+        },
+      });
+    } catch {
+      toast.error("Erreur lors de l'ajout au pipeline", {
+        description: "Veuillez réessayer.",
+      });
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
   const handleAddToPipeline = async () => {
     if (!prospect || !onAddToPipeline) return;
 
@@ -1717,48 +2206,57 @@ export function ProspectDrawer({
     }
   };
 
-  const handleOpenSharePage = async () => {
-    if (!prospect?.id) return;
+  const openProspectClientPortal = useCallback(
+    async (target: Prospect) => {
+      if (!target.id) return;
 
-    const open = (shareToken: string) => {
-      if (typeof window === "undefined") return;
-      const w = window.open(`/p/${shareToken}`, "_blank", "noopener,noreferrer");
-      if (w) w.opener = null;
-    };
+      const openTab = (shareToken: string) => {
+        if (typeof window === "undefined") return;
+        const w = window.open(`/p/${shareToken}`, "_blank", "noopener,noreferrer");
+        if (w) w.opener = null;
+      };
 
-    // Si déjà généré, on ouvre directement (pas de loading inutile)
-    if (prospect.shareToken) {
-      open(prospect.shareToken);
-      return;
-    }
-
-    setIsGeneratingLink(true);
-    try {
-      const shareToken = crypto.randomUUID();
-      let commercialReferent: CommercialReferent;
-      if (user) {
-        const userProfile = await getUserProfile(user.uid);
-        const fromUser = buildCommercialReferentFromUser(user, userProfile);
-        const fromSettings = getCommercialReferent();
-        commercialReferent = {
-          ...fromUser,
-          calendlyUrl: fromSettings.calendlyUrl || fromUser.calendlyUrl,
-        };
-      } else {
-        commercialReferent = getCommercialReferent();
+      if (target.shareToken) {
+        openTab(target.shareToken);
+        return;
       }
 
-      await updateProspect(prospect.id, { shareToken, commercialReferent });
-      onProspectUpdate?.({ shareToken, commercialReferent });
+      setIsGeneratingLink(true);
+      try {
+        const shareToken = crypto.randomUUID();
+        let commercialReferent: CommercialReferent;
+        if (user) {
+          const userProfile = await getUserProfile(user.uid);
+          const fromUser = buildCommercialReferentFromUser(user, userProfile);
+          const fromSettings = getCommercialReferent();
+          commercialReferent = {
+            ...fromUser,
+            calendlyUrl: fromSettings.calendlyUrl || fromUser.calendlyUrl,
+          };
+        } else {
+          commercialReferent = getCommercialReferent();
+        }
 
-      open(shareToken);
-    } catch {
-      toast.error("Erreur lors de l’ouverture de la page partagée", {
-        description: "Veuillez réessayer.",
-      });
-    } finally {
-      setIsGeneratingLink(false);
-    }
+        await updateProspect(target.id, { shareToken, commercialReferent });
+        if (prospect?.id === target.id) {
+          onProspectUpdate?.({ shareToken, commercialReferent });
+        }
+        onDiscoveryPipelineAdded?.();
+        openTab(shareToken);
+      } catch {
+        toast.error("Erreur lors de l’ouverture de la page partagée", {
+          description: "Veuillez réessayer.",
+        });
+      } finally {
+        setIsGeneratingLink(false);
+      }
+    },
+    [user, prospect?.id, onProspectUpdate, onDiscoveryPipelineAdded]
+  );
+
+  const handleOpenSharePage = () => {
+    if (!prospect?.id) return;
+    void openProspectClientPortal(prospect);
   };
 
   /** Valeurs effectives selon le mode (Perfect fit vs Highest production).
@@ -2003,6 +2501,37 @@ export function ProspectDrawer({
 
   const includeBatteryEffective = prospect?.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true;
 
+  const discoveryFinancialSummary = useMemo(() => {
+    if (!discoveryRow || !discoveryPipelineFinanceInputs) return null;
+    const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
+    const inverterRef = usedInverterRef ?? getRecommendedInverterReferenceSync();
+    if (!panelRef || !inverterRef) return null;
+    const includeBattery = getSolarEquipmentSettings().includeBattery ?? true;
+    const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
+    const batteryRef = includeBattery
+      ? (usedBatteryRef && visibleBatteries.some((b) => b.id === usedBatteryRef.id)
+          ? usedBatteryRef
+          : visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null)
+      : null;
+    return computeDiscoveryDrawerFinancialSummary({
+      inputs: discoveryPipelineFinanceInputs,
+      placeType: "other",
+      panelRef,
+      inverterRef,
+      batteryRef,
+      batteryCount: Math.max(1, batteryCount),
+      includeBattery,
+    });
+  }, [
+    discoveryRow,
+    discoveryPipelineFinanceInputs,
+    usedPanelRef,
+    usedInverterRef,
+    usedBatteryRef,
+    batteriesData,
+    batteryCount,
+  ]);
+
   /** Résumé financier (équipement, fourchette prix, économies, break-even) avec ou sans batterie */
   const financialSummary = useMemo(() => {
     const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
@@ -2230,6 +2759,15 @@ export function ProspectDrawer({
                 (discoveryRow.grain === "parcelle" ? [discoveryRow] : [])
               }
               isOpen={isOpen}
+              onPipelineFinanceInputsChange={setDiscoveryPipelineFinanceInputs}
+              pipelineProject={
+                discoveryFinancialSummary && discoveryPipelineFinanceInputs
+                  ? {
+                      summary: discoveryFinancialSummary,
+                      surfaceM2: discoveryPipelineFinanceInputs.footprintM2,
+                    }
+                  : null
+              }
             />
           ) : prospect ? (
             <>
@@ -2605,106 +3143,66 @@ export function ProspectDrawer({
                !isLoadingPVGIS &&
                ((prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0) && (
                 <>
-                  <div className="flex flex-col bg-gray-100 rounded-xl py-3 px-4 pb-2">
-                    <div className="flex shrink-0 items-start justify-between gap-2 mb-3">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-[10px] uppercase tracking-wide text-gray-500">Production</span>
-                        {(() => {
-                          const surfaceM2 =
-                            prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
-                            prospect.roofSurface?.area ??
-                            0;
-                          const placeType = prospect.placeType || "other";
+                  <ProspectEnergyChartsPanel
+                    configurationModeKey={configurationMode}
+                    chartViewMode={chartViewMode}
+                    onChartViewModeChange={setChartViewMode}
+                    chartSelectedMonthIndex={chartSelectedMonthIndex}
+                    onChartSelectedMonthIndexChange={setChartSelectedMonthIndex}
+                    data={chartData}
+                    dailyData={chartDailyData}
+                  >
+                    {(() => {
+                      const surfaceM2 =
+                        prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
+                        prospect.roofSurface?.area ??
+                        0;
+                      const placeType = prospect.placeType || "other";
 
-                          if (chartViewMode === "daily" && effectiveConfig.productionPerKwp) {
-                            const { dailyTypical } = getProductionFromPerKwp(
-                              effectiveConfig.productionPerKwp.productionPerKwpAnnual,
-                              effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                              effectiveConfig.effectiveKwp
-                            );
-                            const dailyProductionKwh = dailyTypical.reduce((s, v) => s + (v ?? 0), 0);
-                            const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
-                            const dailyConsumptionKwh =
-                              surfaceM2 * (hourlyConsumptionPerM2?.reduce((s, v) => s + (v ?? 0), 0) ?? 0);
-                            const fmt = (kwh: number) =>
-                              kwh >= 1000 ? `${(kwh / 1000).toFixed(2)} MWh` : `${Math.round(kwh)} kWh`;
-                            return (
-                              <>
-                                <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
-                                  {fmt(dailyProductionKwh)} /j
-                                </span>
-                                <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                  <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
-                                  {fmt(dailyConsumptionKwh)} /j
-                                </span>
-                              </>
-                            );
-                          }
+                      if (chartViewMode === "daily" && effectiveConfig.productionPerKwp) {
+                        const { dailyTypical } = getProductionFromPerKwp(
+                          effectiveConfig.productionPerKwp.productionPerKwpAnnual,
+                          effectiveConfig.productionPerKwp.productionPerKwpMonthly,
+                          effectiveConfig.effectiveKwp
+                        );
+                        const dailyProductionKwh = dailyTypical.reduce((s, v) => s + (v ?? 0), 0);
+                        const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
+                        const dailyConsumptionKwh =
+                          surfaceM2 * (hourlyConsumptionPerM2?.reduce((s, v) => s + (v ?? 0), 0) ?? 0);
+                        const fmt = (kwh: number) =>
+                          kwh >= 1000 ? `${(kwh / 1000).toFixed(2)} MWh` : `${Math.round(kwh)} kWh`;
+                        return (
+                          <>
+                            <span className="text-xs text-gray-600 flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
+                              {fmt(dailyProductionKwh)} /j
+                            </span>
+                            <span className="text-xs text-gray-600 flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
+                              {fmt(dailyConsumptionKwh)} /j
+                            </span>
+                          </>
+                        );
+                      }
 
-                          const totalConsumptionKwh = getEnergyConsumption(placeType) * surfaceM2;
-                          const consumptionGwh = totalConsumptionKwh / 1_000_000;
-                          const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
-                          const productionGwh = productionKwh / 1_000_000;
-                          return (
-                            <>
-                              <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
-                                {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
-                              </span>
-                              <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
-                                {consumptionGwh >= 0.001 ? consumptionGwh.toFixed(3) : consumptionGwh.toFixed(6)} GWh
-                              </span>
-                            </>
-                          );
-                        })()}
-                      </div>
-                      <div
-                        role="tablist"
-                        className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
-                        aria-label="Vue du graphique"
-                      >
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-selected={chartViewMode === "monthly"}
-                          onClick={() => setChartViewMode("monthly")}
-                          className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                            chartViewMode === "monthly"
-                              ? "bg-background text-foreground shadow-xs"
-                              : "text-muted-foreground hover:text-foreground"
-                          }`}
-                        >
-                          Mensuel
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-selected={chartViewMode === "daily"}
-                          onClick={() => setChartViewMode("daily")}
-                          className={`rounded px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                            chartViewMode === "daily"
-                              ? "bg-background text-foreground shadow-xs"
-                              : "text-muted-foreground hover:text-foreground"
-                          }`}
-                        >
-                          Journalier
-                        </button>
-                      </div>
-                    </div>
-                    <div className="h-[260px] min-w-0 w-full">
-                      <MonthlyProductionChart
-                        key={configurationMode}
-                        viewMode={chartViewMode}
-                        onViewModeChange={setChartViewMode}
-                        selectedMonthIndex={chartSelectedMonthIndex}
-                        onSelectedMonthIndexChange={setChartSelectedMonthIndex}
-                        data={chartData}
-                        dailyData={chartDailyData}
-                      />
-                    </div>
-                  </div>
+                      const totalConsumptionKwh = getEnergyConsumption(placeType) * surfaceM2;
+                      const consumptionGwh = totalConsumptionKwh / 1_000_000;
+                      const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
+                      const productionGwh = productionKwh / 1_000_000;
+                      return (
+                        <>
+                          <span className="text-xs text-gray-600 flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
+                            {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
+                          </span>
+                          <span className="text-xs text-gray-600 flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
+                            {consumptionGwh >= 0.001 ? consumptionGwh.toFixed(3) : consumptionGwh.toFixed(6)} GWh
+                          </span>
+                        </>
+                      );
+                    })()}
+                  </ProspectEnergyChartsPanel>
 
                   {/* Switch batterie : valeur effective = prospect.includeBatteryOverride ?? settings.includeBattery (défaut true) */}
                   {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 && (
@@ -3071,29 +3569,31 @@ export function ProspectDrawer({
           <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl">
             {prospect?.id && (
               <div className="flex flex-wrap gap-2">
-                <Link href={voirHref(prospect.id)}>
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
-                    title={isOnMap ? "Voir" : "Voir sur la carte"}
-                    aria-label={isOnMap ? "Voir" : "Voir sur la carte"}
-                  >
-                    {isOnMap ? (
-                      <Eye className="h-4 w-4" />
-                    ) : (
-                      <MapIcon className="h-4 w-4" />
-                    )}
-                  </Button>
-                </Link>
+                {!isOnDiscovery && !voirHref(prospect.id).includes("/solar-scout") && (
+                  <Link href={voirHref(prospect.id)}>
+                    <Button
+                      variant="default"
+                      size="icon"
+                      className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
+                      title={isOnMap ? "Voir" : "Voir sur la carte"}
+                      aria-label={isOnMap ? "Voir" : "Voir sur la carte"}
+                    >
+                      {isOnMap ? (
+                        <Eye className="h-4 w-4" />
+                      ) : (
+                        <MapIcon className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </Link>
+                )}
                 <Button
                   variant="default"
                   size="icon"
                   className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
                   onClick={handleOpenSharePage}
                   disabled={isGeneratingLink}
-                  title={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
-                  aria-label={isGeneratingLink ? "Ouverture..." : "Voir la page partagée"}
+                  title={isGeneratingLink ? "Ouverture..." : "Ouvrir la page client"}
+                  aria-label={isGeneratingLink ? "Ouverture..." : "Ouvrir la page client"}
                 >
                   {isGeneratingLink ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -3125,7 +3625,61 @@ export function ProspectDrawer({
               </div>
             )}
           </div>
-        ) : null}
+        ) : (
+          <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl border-t border-border">
+            {discoveryExistingPipelineProspect?.id ? (
+              <div className="flex flex-wrap gap-2">
+                {discoveryPipelineMapHref && !isOnDiscovery ? (
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="icon"
+                    className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
+                    asChild
+                  >
+                    <Link
+                      href={discoveryPipelineMapHref}
+                      title="Voir sur la carte Découverte"
+                      aria-label="Voir sur la carte Découverte"
+                    >
+                      <MapIcon className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="default"
+                  size="icon"
+                  className="h-12 w-12 shrink-0 border-0 bg-gray-100 hover:bg-gray-200 text-gray-700"
+                  onClick={() => void openProspectClientPortal(discoveryExistingPipelineProspect)}
+                  disabled={isGeneratingLink}
+                  title={isGeneratingLink ? "Ouverture..." : "Ouvrir la page client"}
+                  aria-label={isGeneratingLink ? "Ouverture..." : "Ouvrir la page client"}
+                >
+                  {isGeneratingLink ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ExternalLink className="h-4 w-4" />
+                  )}
+                </Button>
+                <Button type="button" variant="outline" className="flex-1 min-w-0" size="lg" asChild>
+                  <Link href="/">Ouvrir le pipeline</Link>
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant={discoveryFootprintSumM2 > 0 ? "default" : "secondary"}
+                onClick={() => void handleDiscoveryAddToPipeline()}
+                className="w-full"
+                size="lg"
+                disabled={isAdding || discoveryFootprintSumM2 <= 0}
+              >
+                {isAdding ? "Ajout en cours..." : "Ajouter au pipeline"}
+              </Button>
+            )}
+          </div>
+        )}
     </div>
   );
 }

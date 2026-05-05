@@ -15,6 +15,7 @@ import {
   DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION,
   DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
 } from "@/lib/solar-settings";
+import { radianzCartesianGridProps } from "@/lib/radianz-chart-recharts";
 
 export type RoiFinancingMode = "capex" | "lease" | "ppa";
 
@@ -28,15 +29,15 @@ type RoiComboDatum = {
 const chartConfig = {
   net: {
     label: "Cashflow net (€)",
-    color: "#0000FF",
+    color: "var(--chart-1)",
   },
   capex: {
     label: "CAPEX",
-    color: "#6b7280",
+    color: "var(--chart-3)",
   },
   savings: {
     label: "Économies / an",
-    color: "#0000FF",
+    color: "var(--chart-1)",
   },
 } satisfies ChartConfig;
 
@@ -211,10 +212,10 @@ export function RoiComboChart({
   return (
     <ChartContainer
       config={chartConfig}
-      className="aspect-auto h-full min-h-0 w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[8px] [&_.recharts-cartesian-axis-tick-value]:text-[8px] [&_.recharts-default-legend]:text-[10px] [&_.recharts-default-legend]:font-sans [&_.recharts-legend-item-text]:text-[10px] [&_.recharts-legend-item-text]:font-sans [&_.recharts-legend-item-text]:tabular-nums [&_.recharts-legend-item-text]:text-zinc-700"
+      className="aspect-auto h-full min-h-0 w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:font-mono [&_.recharts-cartesian-axis-tick_text]:text-[8px] [&_.recharts-cartesian-axis-tick-value]:text-[8px] [&_.recharts-cartesian-axis-tick_text]:tracking-wide [&_.recharts-default-legend]:text-[10px] [&_.recharts-legend-item-text]:text-[10px] [&_.recharts-legend-item-text]:tabular-nums [&_.recharts-legend-item-text]:text-muted-foreground"
     >
       <ComposedChart data={data} margin={{ top: 8, right: 10, left: 10, bottom: 0 }}>
-        <CartesianGrid vertical={false} />
+        <CartesianGrid {...radianzCartesianGridProps} />
         <XAxis
           dataKey="year"
           tickLine={false}
@@ -232,14 +233,14 @@ export function RoiComboChart({
           ticks={y.ticks}
           tickFormatter={(v) => formatScaledTicks(Number(v), tickUnit)}
         />
-        <ReferenceLine y={0} stroke="hsl(var(--border))" strokeDasharray="4 4" />
+        <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="2 4" />
         <ChartTooltip
           content={({ active, payload }) => {
             if (!active || !payload?.length) return null;
             const p = payload[0]?.payload as RoiComboDatum | undefined;
             if (!p) return null;
             return (
-              <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+              <div className="rounded-[12px] border border-border bg-card px-2.5 py-1.5 text-xs shadow-xs">
                 <div className="font-medium mb-1">Année {p.year}</div>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">
@@ -268,13 +269,11 @@ export function RoiComboChart({
             );
           }}
         />
-        <Bar dataKey="netEur" name="net" radius={0}>
+        <Bar dataKey="netEur" name="net" radius={[2, 2, 0, 0]}>
           {data.map((d) => (
             <Cell
               key={d.year}
-              fill={
-                d.netEur < 0 ? "hsl(240 6% 90%)" : "var(--color-savings)"
-              }
+              fill={d.netEur < 0 ? "var(--chart-5)" : "var(--chart-1)"}
             />
           ))}
         </Bar>

@@ -287,7 +287,7 @@ export function SettingsPopup({ open, onClose }: SettingsPopupProps) {
           <nav className="w-56 shrink-0 border-r bg-muted/30 flex flex-col">
             <div className="p-4 border-b flex items-center gap-2">
               <Image
-                src="/logo-radianz.png"
+                src="/logo-radianz.svg"
                 alt="Radianz"
                 width={32}
                 height={32}

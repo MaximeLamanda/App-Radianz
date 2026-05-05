@@ -69,6 +69,8 @@ export interface ProspectDocument {
   inverterReferenceId?: string;
   batteryReferenceId?: string;
   batteryCount?: number;
+  pipelineEntrySource?: "discovery_v5";
+  matchingV5RowId?: string;
 }
 
 /** Valeurs calculées par le drawer, stockées telles quelles (pas de recalcul) */
@@ -225,6 +227,8 @@ export function prepareProspectForFirestore(
   if (prospect.inverterReferenceId) doc.inverterReferenceId = prospect.inverterReferenceId;
   if (prospect.batteryReferenceId) doc.batteryReferenceId = prospect.batteryReferenceId;
   if (prospect.batteryCount != null && prospect.batteryCount >= 1) doc.batteryCount = prospect.batteryCount;
+  if (prospect.pipelineEntrySource) doc.pipelineEntrySource = prospect.pipelineEntrySource;
+  if (prospect.matchingV5RowId) doc.matchingV5RowId = prospect.matchingV5RowId;
 
   return doc;
 }
@@ -310,5 +314,7 @@ export function prospectFromFirestore(
   if (data.inverterReferenceId) result.inverterReferenceId = data.inverterReferenceId;
   if (data.batteryReferenceId) result.batteryReferenceId = data.batteryReferenceId;
   if (data.batteryCount != null && data.batteryCount >= 1) result.batteryCount = data.batteryCount;
+  if (data.pipelineEntrySource) result.pipelineEntrySource = data.pipelineEntrySource;
+  if (data.matchingV5RowId) result.matchingV5RowId = data.matchingV5RowId;
   return result;
 }

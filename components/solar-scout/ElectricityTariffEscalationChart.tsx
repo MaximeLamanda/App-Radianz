@@ -6,15 +6,16 @@ import {
   DEFAULT_ANNUAL_ELECTRICITY_PRICE_ESCALATION,
   projectedAnnualGridBillEur,
 } from "@/lib/solar-settings";
+import { radianzCartesianGridProps } from "@/lib/radianz-chart-recharts";
 
 const chartConfig = {
   fullBill: {
     label: "Sans solaire (conso réseau)",
-    color: "#71717a",
+    color: "var(--chart-3)",
   },
   gridBill: {
     label: "Avec projet (tirage réseau)",
-    color: "#0000FF",
+    color: "var(--chart-1)",
   },
 } satisfies ChartConfig;
 
@@ -82,10 +83,10 @@ export function ElectricityTariffEscalationChart({
   return (
     <ChartContainer
       config={chartConfig}
-      className="aspect-auto h-full min-h-0 w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[8px] [&_.recharts-cartesian-axis-tick-value]:text-[8px] [&_.recharts-legend-item-text]:text-[10px] [&_.recharts-legend-item-text]:tabular-nums"
+      className="aspect-auto h-full min-h-0 w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:font-mono [&_.recharts-cartesian-axis-tick_text]:text-[8px] [&_.recharts-cartesian-axis-tick-value]:text-[8px] [&_.recharts-cartesian-axis-tick_text]:tracking-wide [&_.recharts-legend-item-text]:text-[10px] [&_.recharts-legend-item-text]:tabular-nums [&_.recharts-legend-item-text]:text-muted-foreground"
     >
       <LineChart data={data} margin={{ top: 8, right: 10, left: 10, bottom: 0 }}>
-        <CartesianGrid vertical={false} />
+        <CartesianGrid {...radianzCartesianGridProps} />
         <XAxis
           dataKey="year"
           tickLine={false}
@@ -110,7 +111,7 @@ export function ElectricityTariffEscalationChart({
             if (!row) return null;
             const gap = row.fullBill - row.gridBill;
             return (
-              <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+              <div className="rounded-[12px] border border-border bg-card px-2.5 py-1.5 text-xs shadow-xs">
                 <div className="font-medium mb-1">Année {row.year}</div>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">

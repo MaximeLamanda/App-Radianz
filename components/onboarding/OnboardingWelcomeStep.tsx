@@ -4,15 +4,16 @@ import Image from "next/image";
 import { Phone, User } from "lucide-react";
 import { Cell, Label, Pie, PieChart } from "recharts";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
+import { BRAND_LIME } from "@/lib/brand-colors";
 
-/** Même jaune que le bouton default (`components/ui/button.tsx` : bg-[#E4FE55]). */
-const BUTTON_ACCENT = "#E4FE55";
+/** Arc score — lime marque (`--accent-lime`). */
+const SCORE_ARC = BRAND_LIME;
 const SCORE_TRACK = "#e5e5e5";
 
 const chartConfig = {
   score: {
     label: "Score",
-    color: BUTTON_ACCENT,
+    color: SCORE_ARC,
   },
   rest: {
     label: "Reste",
@@ -54,7 +55,7 @@ function WelcomeScoreDonut() {
               if (viewBox && "cx" in viewBox && "cy" in viewBox) {
                 const { cx, cy } = viewBox as { cx: number; cy: number };
                 return (
-                  <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" className="fill-[#171717]">
+                  <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" className="fill-foreground">
                     <tspan className="text-[15px] font-semibold tabular-nums">70</tspan>
                   </text>
                 );
@@ -84,7 +85,7 @@ export function OnboardingWelcomeStep() {
           sizes="(max-width: 768px) 100vw, 28rem"
           priority
         />
-        {/* Donut : haut gauche, fond blanc, texte #171717 comme le bouton, arc #E4FE55 */}
+        {/* Donut : arc lime marque, texte encre */}
         <div
           className="pointer-events-none absolute -left-2 top-3 z-10 flex size-[84px] items-center justify-center rounded-xl bg-white p-1 shadow-md ring-1 ring-black/10 sm:-left-3 sm:top-4 dark:bg-white"
           aria-hidden

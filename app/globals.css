@@ -17,9 +17,9 @@
 }
 
 @theme {
-  /* SolarView/RADIANZ - Typographie Geist */
-  --font-sans: var(--font-geist-sans, ui-sans-serif), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono, ui-monospace), ui-monospace, monospace;
+  /* Radianz DS — Inter + JetBrains Mono */
+  --font-sans: var(--font-inter, ui-sans-serif), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono, ui-monospace), ui-monospace, monospace;
 
   /* Shadow token used across the app (Tailwind v4) */
   --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.04);
@@ -64,6 +64,13 @@
   /* Marque RADIANZ — pastilles score / accents (variables :root ci-dessous) */
   --color-accent-lime: var(--accent-lime);
   --color-accent-lime-foreground: var(--accent-lime-foreground);
+  --color-accent-lime-hover: var(--accent-lime-hover);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
 
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
@@ -124,76 +131,88 @@
 
 @layer base {
   :root {
-    /* SolarView/RADIANZ - Mode clair */
-    --accent-lime: #E4FE55;
-    --accent-lime-hover: #d7f24f;
-    --accent-lime-foreground: #171717;
+    /* Radianz DS — primitives (fichier HTML v0.1) */
+    --accent-lime: #eff9ba;
+    --accent-lime-hover: #e5f09e;
+    --accent-lime-foreground: #0a0a0a;
 
-    --background: oklch(0.985 0 0);
-    --foreground: oklch(0.2 0.02 260);
+    --background: #f0efed;
+    --foreground: #0a0a0a;
     --card: #ffffff;
-    --card-foreground: oklch(0.2 0.02 260);
+    --card-foreground: #0a0a0a;
     --popover: #ffffff;
-    --popover-foreground: oklch(0.2 0.02 260);
-    --primary: oklch(0.55 0.18 155);
+    --popover-foreground: #0a0a0a;
+    --primary: #0a0a0a;
     --primary-foreground: #ffffff;
-    --secondary: oklch(0.96 0.01 155);
-    --secondary-foreground: oklch(0.2 0.02 260);
-    --muted: oklch(0.96 0.005 260);
-    --muted-foreground: oklch(0.45 0.02 260);
-    --accent: oklch(0.92 0.06 155);
-    --accent-foreground: oklch(0.2 0.02 260);
-    --destructive: oklch(0.55 0.22 25);
+    --secondary: #f0efed;
+    --secondary-foreground: #0a0a0a;
+    --muted: #f0efed;
+    --muted-foreground: #6b6b6b;
+    --accent: #eff9ba;
+    --accent-foreground: #0a0a0a;
+    --destructive: hsl(0 70% 45%);
     --destructive-foreground: #ffffff;
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: #E4FE55;
-    --radius: 0.625rem;
+    --border: #e4e2de;
+    --input: #d6d4cf;
+    --ring: rgb(10 10 10 / 0.22);
+    --radius: 0.75rem;
 
-    --sidebar-background: oklch(0.98 0.005 260);
-    --sidebar-foreground: oklch(0.25 0.02 260);
-    --sidebar-primary: oklch(0.55 0.18 155);
+    --chart-1: #0a0a0a;
+    --chart-2: #eff9ba;
+    --chart-3: #6b6b6b;
+    --chart-4: #d6d4cf;
+    --chart-5: #f0efed;
+
+    --sidebar-background: #ffffff;
+    --sidebar-foreground: #0a0a0a;
+    --sidebar-primary: #0a0a0a;
     --sidebar-primary-foreground: #ffffff;
-    --sidebar-accent: oklch(0.95 0.01 260);
-    --sidebar-accent-foreground: oklch(0.2 0.02 260);
-    --sidebar-border: oklch(0.92 0 0);
-    --sidebar-ring: #E4FE55;
+    --sidebar-accent: #f0efed;
+    --sidebar-accent-foreground: #0a0a0a;
+    --sidebar-border: #e4e2de;
+    --sidebar-ring: rgb(10 10 10 / 0.22);
   }
 
   .dark {
-    /* SolarView/RADIANZ - Mode sombre */
-    --accent-lime: #E4FE55;
-    --accent-lime-hover: #d7f24f;
-    --accent-lime-foreground: #171717;
+    /* Radianz — dérivation sombre (encre + canvas + lime) */
+    --accent-lime: #eff9ba;
+    --accent-lime-hover: #e5f09e;
+    --accent-lime-foreground: #0a0a0a;
 
-    --background: #09090b;
-    --foreground: #f4f4f5;
-    --card: oklch(0.145 0.005 260 / 0.5);
-    --card-foreground: #f4f4f5;
-    --popover: #18181b;
-    --popover-foreground: #f4f4f5;
-    --primary: #E4FE55;
-    --primary-foreground: #171717;
-    --secondary: #27272a;
-    --secondary-foreground: #f4f4f5;
-    --muted: #27272a;
-    --muted-foreground: #a1a1aa;
-    --accent: #27272a;
-    --accent-foreground: #f4f4f5;
-    --destructive: oklch(0.4 0.2 25);
+    --background: #0a0a0a;
+    --foreground: #f0efed;
+    --card: #141414;
+    --card-foreground: #f0efed;
+    --popover: #141414;
+    --popover-foreground: #f0efed;
+    --primary: #fafafa;
+    --primary-foreground: #0a0a0a;
+    --secondary: #1a1a1a;
+    --secondary-foreground: #f0efed;
+    --muted: #1a1a1a;
+    --muted-foreground: #9a9a9a;
+    --accent: #eff9ba;
+    --accent-foreground: #0a0a0a;
+    --destructive: oklch(0.5 0.2 25);
     --destructive-foreground: #ffffff;
-    --border: #3f3f46;
-    --input: #3f3f46;
-    --ring: oklch(0.9 0.15 155 / 0.3);
+    --border: #2a2a2a;
+    --input: #333333;
+    --ring: rgb(240 239 237 / 0.35);
 
-    --sidebar-background: #09090b;
-    --sidebar-foreground: #f4f4f5;
-    --sidebar-primary: #E4FE55;
-    --sidebar-primary-foreground: #171717;
-    --sidebar-accent: #27272a;
-    --sidebar-accent-foreground: #f4f4f5;
-    --sidebar-border: #3f3f46;
-    --sidebar-ring: oklch(0.9 0.15 155 / 0.3);
+    --chart-1: #fafafa;
+    --chart-2: #eff9ba;
+    --chart-3: #9a9a9a;
+    --chart-4: #4a4a4a;
+    --chart-5: #1a1a1a;
+
+    --sidebar-background: #0a0a0a;
+    --sidebar-foreground: #f0efed;
+    --sidebar-primary: #fafafa;
+    --sidebar-primary-foreground: #0a0a0a;
+    --sidebar-accent: #1a1a1a;
+    --sidebar-accent-foreground: #f0efed;
+    --sidebar-border: #2a2a2a;
+    --sidebar-ring: rgb(240 239 237 / 0.35);
   }
 }
 
@@ -204,20 +223,20 @@
   body {
     @apply bg-background text-foreground;
   }
-  /* Utilitaire explicite pour appliquer Geist Mono même si font-mono est surchargé */
+  /* Alias historique — stack JetBrains Mono */
   .font-geist-mono {
-    font-family: var(--font-geist-mono, ui-monospace), ui-monospace, monospace;
+    font-family: var(--font-jetbrains-mono, ui-monospace), ui-monospace, monospace;
   }
 
-  /* Recharts: harmoniser la légende avec la typographie UI */
+  /* Recharts — légende type DS (mono + muted) */
   .recharts-default-legend,
   .recharts-legend-item-text,
   .recharts-legend-item text {
-    font-family: var(--font-sans) !important;
+    font-family: var(--font-mono) !important;
     font-variant-numeric: tabular-nums !important;
     font-size: 10px !important;
-    fill: oklch(0.45 0.02 260) !important;
-    color: oklch(0.45 0.02 260) !important;
+    fill: var(--muted-foreground) !important;
+    color: var(--muted-foreground) !important;
   }
 }
 
@@ -227,20 +246,20 @@
 */
 @layer components {
   .drawer-discovery {
-    @apply flex w-full flex-col gap-0 pb-3;
+    @apply flex min-w-0 w-full max-w-full flex-col gap-0 pb-3;
   }
 
   .drawer-discovery-hero {
     @apply relative isolate mb-3 space-y-2 overflow-hidden rounded-xl border border-border/70 bg-card px-4 py-4 shadow-xs;
     background-image:
-      radial-gradient(ellipse 130% 90% at 100% -20%, oklch(0.94 0.09 95 / 0.45) 0%, transparent 52%),
-      radial-gradient(ellipse 100% 70% at -10% 110%, oklch(0.94 0.04 155 / 0.22) 0%, transparent 48%);
+      radial-gradient(ellipse 130% 90% at 100% -20%, rgb(239 249 186 / 0.5) 0%, transparent 52%),
+      radial-gradient(ellipse 100% 70% at -10% 110%, rgb(240 239 237 / 0.9) 0%, transparent 48%);
   }
 
   .dark .drawer-discovery-hero {
     background-image:
-      radial-gradient(ellipse 130% 90% at 100% -20%, oklch(0.35 0.08 95 / 0.35) 0%, transparent 55%),
-      radial-gradient(ellipse 100% 70% at -10% 110%, oklch(0.32 0.06 155 / 0.2) 0%, transparent 50%);
+      radial-gradient(ellipse 130% 90% at 100% -20%, rgb(239 249 186 / 0.12) 0%, transparent 55%),
+      radial-gradient(ellipse 100% 70% at -10% 110%, rgb(26 26 26 / 0.85) 0%, transparent 50%);
   }
 
   .drawer-discovery-hero::before {
@@ -261,34 +280,7 @@
   }
 
   .drawer-discovery-pills {
-    @apply flex flex-wrap gap-2 pt-1;
-  }
-
-  .drawer-discovery-pill {
-    @apply inline-flex items-center rounded-md px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase leading-none tracking-wide transition-[transform,box-shadow] duration-200;
-  }
-
-  @media (hover: hover) {
-    .drawer-discovery-pill-muted:hover,
-    .drawer-discovery-pill-secondary:hover {
-      @apply -translate-y-px shadow-xs;
-    }
-  }
-
-  .drawer-discovery-pill-score {
-    @apply bg-accent-lime text-accent-lime-foreground ring-1 ring-ring/35 shadow-[0_1px_0_oklch(0_0_0/0.06)];
-  }
-
-  .drawer-discovery-pill-inverse {
-    @apply bg-foreground text-background shadow-[0_1px_0_oklch(0_0_0/0.12)];
-  }
-
-  .drawer-discovery-pill-muted {
-    @apply border border-border bg-muted/80 text-foreground backdrop-blur-[2px];
-  }
-
-  .drawer-discovery-pill-secondary {
-    @apply border border-primary/40 bg-secondary text-secondary-foreground;
+    @apply flex flex-wrap items-center gap-2 pt-1;
   }
 
   .drawer-discovery-panel {
@@ -358,19 +350,6 @@
     @apply min-w-0 flex-1 whitespace-pre-wrap break-words pl-1 text-left font-mono text-[0.6875rem] leading-snug tracking-tight text-foreground;
   }
 
-  .drawer-discovery-callout {
-    @apply relative overflow-hidden rounded-xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-amber-50/60 px-3.5 py-3 text-xs leading-relaxed text-amber-950 shadow-xs dark:border-amber-800/50 dark:from-amber-950/40 dark:to-amber-950/15 dark:text-amber-50/95;
-  }
-
-  .drawer-discovery-callout::before {
-    content: "";
-    @apply absolute inset-y-2 left-0 w-0.5 rounded-full bg-amber-400/90 dark:bg-amber-400/70;
-  }
-
-  .drawer-discovery-callout > * {
-    @apply relative pl-2.5;
-  }
-
   .drawer-discovery-chart-shell {
     @apply flex flex-col rounded-xl border border-border/90 bg-gradient-to-b from-muted/50 to-muted/25 py-3.5 px-3.5 shadow-xs dark:from-muted/30 dark:to-muted/10;
   }
@@ -388,41 +367,115 @@
     @apply rounded-md px-2.5 py-1 text-xs font-medium transition-[color,background-color,box-shadow] duration-200;
   }
 
+  /* Tables discovery en style "drawer data-list" compact */
   .drawer-discovery-table-wrap {
-    @apply overflow-x-auto rounded-xl border border-border/90 bg-card p-1 shadow-xs;
+    @apply min-w-0 max-w-full w-full overflow-hidden rounded-xl border border-border/85 bg-card shadow-[inset_0_1px_0_oklch(1_0_0/0.05)];
+  }
+
+  .drawer-discovery-table-wrap > div {
+    @apply w-full max-w-full;
   }
 
   .drawer-discovery-table-wrap table {
-    @apply w-max min-w-full border-collapse text-xs leading-relaxed;
+    @apply w-max min-w-full table-auto border-collapse text-[11px] leading-snug;
   }
 
   .drawer-discovery-table-wrap thead tr {
-    @apply border-b border-border bg-muted/50;
+    @apply border-b border-border/90 bg-muted/35;
   }
 
   .drawer-discovery-table-wrap tbody tr {
-    @apply border-b border-border/80 transition-colors last:border-b-0 hover:bg-muted/35;
+    @apply border-b border-border/70 transition-colors last:border-b-0 hover:bg-muted/25;
   }
 
   .drawer-discovery-table-wrap th {
-    @apply whitespace-nowrap text-left text-[0.7rem] font-semibold uppercase tracking-wide text-muted-foreground;
+    @apply h-auto whitespace-nowrap text-left font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground;
   }
 
   .drawer-discovery-table-wrap td {
-    @apply align-top;
+    @apply align-top font-mono text-[11px] text-foreground;
   }
 
-  /* Priorité sur `p-4` des cellules shadcn pour aérer le contenu */
+  /* Densite compacte type data-list */
   .drawer-discovery-table-wrap th,
   .drawer-discovery-table-wrap td {
-    padding-left: 1.25rem;
-    padding-right: 1.25rem;
-    padding-top: 0.9375rem;
-    padding-bottom: 0.9375rem;
+    padding: 0.42rem 0.7rem;
   }
 
   .drawer-discovery-subpanel-title {
     @apply text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground;
+  }
+
+  .drawer-entity-list-wrap {
+    @apply overflow-hidden rounded-xl border border-border/90 bg-card;
+  }
+
+  .drawer-entity-list-head {
+    @apply flex items-center justify-between border-b border-border/90 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground;
+  }
+
+  .drawer-entity-list-head-title {
+    @apply inline-flex items-center gap-2 text-foreground;
+  }
+
+  .drawer-entity-list-head-glyph {
+    @apply inline-grid size-7 place-items-center rounded-md bg-muted;
+  }
+
+  .drawer-entity-list-count {
+    @apply tabular-nums text-foreground;
+  }
+
+  .drawer-entity-list {
+    @apply flex flex-col;
+  }
+
+  .drawer-entity-plain-table-wrap {
+    @apply min-w-0 max-w-full w-full overflow-x-auto;
+  }
+
+  .drawer-entity-plain-table {
+    @apply w-max min-w-full border-collapse;
+  }
+
+  .drawer-entity-plain-table tbody tr {
+    @apply border-0 bg-transparent hover:bg-transparent;
+  }
+
+  .drawer-entity-plain-table td {
+    padding: 0.28rem 0.38rem;
+  }
+
+  .drawer-entity-list-empty {
+    @apply px-3 py-3 text-xs leading-relaxed text-muted-foreground;
+  }
+
+  .drawer-entity-row {
+    @apply grid grid-cols-[1fr_auto] gap-x-2 gap-y-1 border-b border-border/70 px-3 py-2 font-mono text-[11px] last:border-b-0 hover:bg-muted/25;
+  }
+
+  .drawer-entity-row-label {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .drawer-entity-row-id {
+    @apply shrink-0 text-[9px] uppercase tracking-[0.06em] text-muted-foreground;
+  }
+
+  .drawer-entity-row-name {
+    @apply min-w-0 truncate text-foreground;
+  }
+
+  .drawer-entity-row-value {
+    @apply whitespace-nowrap text-right tabular-nums text-foreground;
+  }
+
+  .drawer-entity-row-value a {
+    @apply text-foreground underline-offset-2 hover:underline;
+  }
+
+  .drawer-entity-row-meta {
+    @apply col-span-2 truncate text-[10px] uppercase tracking-[0.06em] text-muted-foreground;
   }
 
   .drawer-discovery-json-block {

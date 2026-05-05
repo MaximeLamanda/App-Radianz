@@ -4,11 +4,10 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Map, ScanSearch, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, ScanSearch, Settings, LogOut } from "lucide-react";
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
-import { useUserProfile } from "@/lib/swr-hooks";
 import { SettingsPopup } from "@/components/solar-scout/SettingsPopup";
 import {
   Sidebar,
@@ -25,7 +24,6 @@ import {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const { user } = useAuth();
-  const { data: userProfile } = useUserProfile(user?.uid ?? null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   const menuItems = React.useMemo(() => {
@@ -41,15 +39,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         icon: ScanSearch,
       },
     ];
-    if (userProfile?.status === "admin") {
-      items.push({
-        title: "Solar Scout",
-        url: "/solar-scout",
-        icon: Map,
-      });
-    }
+    /** Solar Scout : page héritée, hors flux pipeline (voir /discovery). */
     return items;
-  }, [userProfile?.status]);
+  }, []);
 
   return (
     <Sidebar variant="inset" collapsible="icon" {...props}>
@@ -59,8 +51,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenuButton size="lg" asChild>
               <a
                 href="/"
-                className="flex items-center gap-2 p-0! min-w-0 pl-8 group-data-[collapsible=icon]:pl-0 bg-[length:32px_32px] bg-left bg-no-repeat group-data-[collapsible=icon]:bg-center"
-                style={{ backgroundImage: "url('/logo-radianz.png')" }}
+                className="flex items-center gap-2 p-0! min-w-0 pl-8 group-data-[collapsible=icon]:pl-0 bg-[length:34px_25px] bg-left bg-no-repeat group-data-[collapsible=icon]:bg-center"
+                style={{ backgroundImage: "url('/logo-radianz.svg')" }}
                 aria-label="Radianz"
               >
                 <div className="grid flex-1 text-left text-sm leading-tight min-w-0 group-data-[collapsible=icon]:hidden">

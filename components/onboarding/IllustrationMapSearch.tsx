@@ -2,6 +2,7 @@
 
 import { Search, SlidersHorizontal, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { BRAND_LIME } from "@/lib/brand-colors";
 
 export function IllustrationMapSearch() {
   return (
@@ -23,9 +24,7 @@ export function IllustrationMapSearch() {
           >
             <SlidersHorizontal className="size-2.5 lg:size-3" />
           </button>
-          <Badge className="text-[10px]" style={{ backgroundColor: "#E4FE55", color: "#171717" }}>
-            Supermarket
-          </Badge>
+          <Badge className="text-[10px]">Supermarket</Badge>
           <Badge variant="secondary" className="text-[10px]">
             Logistics
           </Badge>
@@ -97,7 +96,7 @@ export function IllustrationMapSearch() {
               const yConsoTop = 48 - hProd - hConso;
               return (
                 <g key={i}>
-                  <rect x={x} y={yProdTop} width={w} height={hProd} fill="#E4FE55" rx={1} />
+                  <rect x={x} y={yProdTop} width={w} height={hProd} fill={BRAND_LIME} rx={1} />
                   {hConso > 0 && (
                     <rect
                       x={x}
@@ -130,8 +129,7 @@ export function IllustrationMapSearch() {
         </div>
         <button
           type="button"
-          className="mt-2 flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-1 text-[9px] font-medium lg:mt-3 lg:px-2 lg:py-1.5 lg:text-[10px]"
-          style={{ backgroundColor: "#E4FE55", color: "#171717" }}
+          className="mt-2 flex w-full items-center justify-center gap-1 rounded-md bg-accent-lime px-1.5 py-1 text-[9px] font-medium text-accent-lime-foreground lg:mt-3 lg:px-2 lg:py-1.5 lg:text-[10px]"
         >
           <Plus className="size-3" /> Ajouter au pipeline
         </button>

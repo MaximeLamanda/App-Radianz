@@ -5,20 +5,22 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-semibold tracking-wide transition-colors transition-opacity focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[#E4FE55]/30 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 cursor-pointer [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-medium tracking-wide transition-colors transition-opacity focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 cursor-pointer [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
-          "bg-[#E4FE55] text-[#171717] hover:bg-[#d7f24f] min-w-[140px] h-11 px-5",
+          "bg-primary text-primary-foreground hover:bg-primary/90 min-w-[140px] h-11 px-5",
+        lime:
+          "bg-accent-lime text-accent-lime-foreground hover:bg-accent-lime-hover min-w-[140px] h-11 px-5",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:
-          "border border-border bg-transparent text-foreground hover:border-[#E4FE55]/50 hover:bg-[#E4FE55]/5 dark:border-zinc-700 dark:text-zinc-200",
+          "border border-border bg-transparent text-foreground hover:bg-muted hover:border-input",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700 dark:border dark:border-zinc-700",
-        ghost: "hover:bg-[#E4FE55]/10 hover:text-foreground",
-        link: "text-[#E4FE55] underline-offset-4 hover:underline",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-transparent",
+        ghost: "hover:bg-muted hover:text-foreground",
+        link: "text-primary underline-offset-4 hover:underline min-w-0 px-0 h-auto",
       },
       size: {
         default: "h-11 min-w-[140px] px-5 py-3",
@@ -31,7 +33,8 @@ const buttonVariants = cva(
       {
         size: "icon",
         variant: "default",
-        class: "bg-secondary text-secondary-foreground hover:bg-secondary/80 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700 dark:border dark:border-zinc-700 min-w-0",
+        class:
+          "bg-muted text-foreground hover:bg-muted/80 border border-border min-w-0",
       },
     ],
     defaultVariants: {

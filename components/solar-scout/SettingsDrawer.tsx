@@ -782,7 +782,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium">Profil</span>
                       {quotaDisplay && (
-                        <Badge variant={quotaDisplay.status === "admin" ? "default" : "outline"}>
+                        <Badge variant={quotaDisplay.status === "admin" ? "solid" : "outline"}>
                           {quotaDisplay.status === "admin" && "Admin"}
                           {quotaDisplay.status === "premium" && "Premium"}
                           {quotaDisplay.status === "starter" && "Starter"}

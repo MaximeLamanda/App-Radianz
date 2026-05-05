@@ -26,26 +26,26 @@ export interface DesignTokens {
   radius: string;
 }
 
-/** Valeurs par défaut SolarView/RADIANZ */
+/** Valeurs par défaut — Radianz DS (alignées sur `app/globals.css`) */
 export const DEFAULT_DESIGN_TOKENS: DesignTokens = {
-  background: "oklch(0.985 0 0)",
-  foreground: "oklch(0.2 0.02 260)",
+  background: "#f0efed",
+  foreground: "#0a0a0a",
   card: "#ffffff",
-  cardForeground: "oklch(0.2 0.02 260)",
-  primary: "oklch(0.55 0.18 155)",
+  cardForeground: "#0a0a0a",
+  primary: "#0a0a0a",
   primaryForeground: "#ffffff",
-  secondary: "oklch(0.96 0.01 155)",
-  secondaryForeground: "oklch(0.2 0.02 260)",
-  muted: "oklch(0.96 0.005 260)",
-  mutedForeground: "oklch(0.45 0.02 260)",
-  accent: "oklch(0.92 0.06 155)",
-  accentForeground: "oklch(0.2 0.02 260)",
-  destructive: "oklch(0.55 0.22 25)",
+  secondary: "#f0efed",
+  secondaryForeground: "#0a0a0a",
+  muted: "#f0efed",
+  mutedForeground: "#6b6b6b",
+  accent: "#eff9ba",
+  accentForeground: "#0a0a0a",
+  destructive: "hsl(0 70% 45%)",
   destructiveForeground: "#ffffff",
-  border: "oklch(0.922 0 0)",
-  input: "oklch(0.922 0 0)",
-  ring: "#E4FE55",
-  radius: "0.625rem",
+  border: "#e4e2de",
+  input: "#d6d4cf",
+  ring: "rgb(10 10 10 / 0.22)",
+  radius: "0.75rem",
 };
 
 const TOKEN_TO_CSS_VAR: Record<keyof DesignTokens, string> = {

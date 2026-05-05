@@ -92,10 +92,7 @@ export function IllustrationContactCard({
         </div>
         {/* Légende visuelle : cette card apparaît sur le portail partageable */}
         <div className="flex items-center gap-2 rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800/30">
-          <div
-            className="size-2 rounded-full shrink-0"
-            style={{ backgroundColor: "#E4FE55" }}
-          />
+          <div className="size-2 shrink-0 rounded-full bg-accent-lime" />
           <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
             Vos infos seront visibles sur le portail partageable envoyé à vos
             clients

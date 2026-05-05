@@ -385,7 +385,7 @@ function SolarScoutContent() {
               return merged;
             });
           }}
-          voirHref={(id) => `/?prospectId=${id}`}
+          voirHref={(_id) => "/discovery"}
         />
       );
     } else {

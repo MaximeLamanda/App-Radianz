@@ -105,7 +105,7 @@ export default function LoginPage() {
         <CardHeader className="text-center">
           <div className="flex justify-center mb-2">
             <Image
-              src="/logo-radianz.png"
+              src="/logo-radianz.svg"
               alt="Radianz"
               width={80}
               height={80}

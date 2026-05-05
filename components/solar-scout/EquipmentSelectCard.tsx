@@ -101,7 +101,7 @@ export function EquipmentSelectCard<T>({
                 }}
                 className={`w-full rounded-xl border p-2 flex items-stretch gap-2 text-left transition-colors hover:bg-muted/50 focus:outline-none ${
                   selected
-                    ? "border-[#E4FE55] bg-[#E4FE55]/10 ring-1 ring-[#E4FE55]/40"
+                    ? "border-accent-lime bg-accent-lime/10 ring-1 ring-accent-lime/40"
                     : "border-border bg-white"
                 }`}
               >

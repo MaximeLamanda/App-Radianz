@@ -10,6 +10,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { FilterLabel } from "./FilterLabel";
 import { cn } from "@/lib/utils";
+import { radianzCartesianGridProps } from "@/lib/radianz-chart-recharts";
 import { StickSliderTrack } from "./StickSliderTrack";
 
 export interface MonthlyProductionChartDatum {
@@ -58,14 +59,15 @@ const monthNames = [
   "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"
 ];
 
+/** Couleurs séries = tokens `--chart-1…5` (Radianz DS). */
 const chartConfig = {
   selfConsumption: {
     label: "Autoconsommation (kWh)",
-    color: "#2d2d2d",
+    color: "var(--chart-1)",
   },
   selfConsumptionDirect: {
     label: "Autoconsommation directe (kWh)",
-    color: "#2d2d2d",
+    color: "#0A0A0A",
   },
   selfConsumptionViaBattery: {
     label: "Tirage batterie (kWh)",
@@ -73,23 +75,23 @@ const chartConfig = {
   },
   injectionBattery: {
     label: "Injection batterie (kWh)",
-    color: "#9999FF",
+    color: "#BFD6FF",
   },
   excess: {
     label: "Injection réseau (kWh)",
-    color: "#32F490",
+    color: "#6B6B6B",
   },
   gridDraw: {
     label: "Tirage réseau (kWh)",
-    color: "hsl(0, 0%, 72%)",
+    color: "#E4E2DE",
   },
   production: {
     label: "Production (kWh)",
-    color: "#2d2d2d",
+    color: "var(--chart-1)",
   },
   consumption: {
     label: "Consommation (kWh)",
-    color: "hsl(38, 92%, 50%)",
+    color: "#E4E2DE",
   },
 } satisfies ChartConfig;
 
@@ -263,9 +265,12 @@ export function MonthlyProductionChart({
 
   return (
     <div className="w-full min-w-0 h-full min-h-0 flex-1 flex flex-col">
-      <ChartContainer config={chartConfig} className="aspect-auto h-full min-h-[120px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:text-[9px] [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground/70">
-        <BarChart accessibilityLayer data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 0 }}>
-          <CartesianGrid vertical={false} />
+      <ChartContainer
+        config={chartConfig}
+        className="aspect-auto h-full min-h-[120px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:font-mono [&_.recharts-cartesian-axis-tick_text]:text-[9px] [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-axis-tick_text]:tracking-wide"
+      >
+        <BarChart accessibilityLayer data={chartData} margin={{ top: 8, right: 4, left: 4, bottom: 0 }}>
+          <CartesianGrid {...radianzCartesianGridProps} />
           <XAxis
             dataKey="month"
             tickLine={false}
@@ -447,7 +452,7 @@ export function MonthlyProductionChart({
           <div className="flex items-center gap-2 max-w-full">
             <FilterLabel label="Mois" />
             {/* Rotation slider : piste sombre, sticks (mois sélectionné = plus large + rouge), pas de round vert */}
-            <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-xl bg-gray-200/80 dark:bg-gray-700/50 px-3 py-3">
+            <div className="relative flex-1 min-w-[180px] max-w-[280px] rounded-[12px] border border-border bg-muted/50 px-3 py-3">
             <StickSliderTrack segments={12} selectedIndices={[selectedMonthIndex]} />
             <Slider
               value={[selectedMonthIndex + 1]}
