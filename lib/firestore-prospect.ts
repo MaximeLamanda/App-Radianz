@@ -60,6 +60,7 @@ export interface ProspectDocument {
   shareToken?: string;
   commercialReferent?: CommercialReferent;
   annualConsumptionKwhOverride?: number;
+  monthlyConsumptionKwhOverride?: number[];
   userId?: string;
   /** Année de construction (BDNB) */
   anneeConstruction?: number | null;
@@ -71,6 +72,8 @@ export interface ProspectDocument {
   batteryCount?: number;
   pipelineEntrySource?: "discovery_v5";
   matchingV5RowId?: string;
+  /** Surface contour parcelle(s) (m²), Discovery. */
+  parcelContourAreaM2?: number;
 }
 
 /** Valeurs calculées par le drawer, stockées telles quelles (pas de recalcul) */
@@ -220,6 +223,10 @@ export function prepareProspectForFirestore(
     ) as unknown as CommercialReferent;
   }
   if (prospect.annualConsumptionKwhOverride != null) doc.annualConsumptionKwhOverride = prospect.annualConsumptionKwhOverride;
+  if (prospect.monthlyConsumptionKwhOverride && prospect.monthlyConsumptionKwhOverride.length === 12) {
+    doc.monthlyConsumptionKwhOverride = prospect.monthlyConsumptionKwhOverride
+      .map((v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0));
+  }
   if (userId) doc.userId = userId;
   if (prospect.anneeConstruction != null) doc.anneeConstruction = prospect.anneeConstruction;
   if (prospect.includeBatteryOverride != null) doc.includeBatteryOverride = prospect.includeBatteryOverride;
@@ -229,6 +236,9 @@ export function prepareProspectForFirestore(
   if (prospect.batteryCount != null && prospect.batteryCount >= 1) doc.batteryCount = prospect.batteryCount;
   if (prospect.pipelineEntrySource) doc.pipelineEntrySource = prospect.pipelineEntrySource;
   if (prospect.matchingV5RowId) doc.matchingV5RowId = prospect.matchingV5RowId;
+  if (prospect.parcelContourAreaM2 != null && prospect.parcelContourAreaM2 > 0) {
+    doc.parcelContourAreaM2 = Math.round(prospect.parcelContourAreaM2);
+  }
 
   return doc;
 }
@@ -307,6 +317,10 @@ export function prospectFromFirestore(
   if (data.shareToken) result.shareToken = data.shareToken;
   if (data.commercialReferent) result.commercialReferent = data.commercialReferent;
   if (data.annualConsumptionKwhOverride != null) result.annualConsumptionKwhOverride = data.annualConsumptionKwhOverride;
+  if (data.monthlyConsumptionKwhOverride?.length === 12) {
+    result.monthlyConsumptionKwhOverride = data.monthlyConsumptionKwhOverride
+      .map((v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0));
+  }
   if (data.userId) result.userId = data.userId;
   if (data.anneeConstruction != null) result.anneeConstruction = data.anneeConstruction;
   if (data.includeBatteryOverride != null) result.includeBatteryOverride = data.includeBatteryOverride;
@@ -316,5 +330,8 @@ export function prospectFromFirestore(
   if (data.batteryCount != null && data.batteryCount >= 1) result.batteryCount = data.batteryCount;
   if (data.pipelineEntrySource) result.pipelineEntrySource = data.pipelineEntrySource;
   if (data.matchingV5RowId) result.matchingV5RowId = data.matchingV5RowId;
+  if (data.parcelContourAreaM2 != null && data.parcelContourAreaM2 > 0) {
+    result.parcelContourAreaM2 = data.parcelContourAreaM2;
+  }
   return result;
 }

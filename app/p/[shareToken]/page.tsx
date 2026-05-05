@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useAuth } from "@/lib/auth-context";
 import { useParams } from "next/navigation";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { shouldClearBillMonthToBaseline } from "@/lib/prospect-share-bill-input";
-import { BRAND_MUTED } from "@/lib/brand-colors";
+import { BRAND_LIME } from "@/lib/brand-colors";
 import {
   RadianzLimeDotOverlay,
   radianzCardBorderStyle,
@@ -18,7 +19,6 @@ import {
 } from "@/lib/radianz-card-primitives";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
   DialogContent,
@@ -26,10 +26,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, Pencil, ArrowUpRight, Info } from "lucide-react";
+import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, ArrowUpRight, Info } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   usePanelReferences,
@@ -59,6 +59,10 @@ import {
   getUsableRoofAreaM2,
 } from "@/lib/surface-to-kwp";
 import {
+  avoidedCo2TonnesPerYearGridFr,
+  co2AvoidanceHasDataForDisplay,
+} from "@/lib/co2-avoidance-fr";
+import {
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
   getRecommendedBatteryReferenceSync,
@@ -68,7 +72,6 @@ import {
   estimateInstallationPriceEur,
   estimateTotalPriceRangeEur,
   estimateAnnualSavingsEurWithBattery,
-  DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH,
   DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH,
   estimateAnnualSavingsEurWithBreakdown,
   estimateEnergyBillEur,
@@ -82,10 +85,18 @@ import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProducti
 import { MonthlyConsumptionOnlyChart } from "@/components/solar-scout/MonthlyConsumptionOnlyChart";
 import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scout/EquipmentSelectCard";
 import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
-import type { Prospect, PanelReference, InverterReference, BatteryReference } from "@/types";
+import type {
+  Prospect,
+  PanelReference,
+  InverterReference,
+  BatteryReference,
+  ProspectConfigurationMode,
+} from "@/types";
 import { toast } from "sonner";
 import { RoiComboChart, getRoiCumulativeNetEurAfterHorizon } from "@/components/solar-scout/RoiChart";
 import { ElectricityTariffEscalationChart } from "@/components/solar-scout/ElectricityTariffEscalationChart";
+import { RadianzBillReductionCard } from "@/components/solar-scout/RadianzBillReductionCard";
+import { RadianzCo2AvoidanceRadial } from "@/components/solar-scout/RadianzCo2AvoidanceRadial";
 
 type FinancingMode = "capex" | "lease" | "ppa";
 
@@ -129,7 +140,21 @@ const KWH_PER_MWH = 1000;
 /** Affichage saisie / placeholder en MWh (données internes toujours en kWh). */
 function formatKwhAsMwhForBillInput(kwh: number) {
   const mwh = (Number.isFinite(kwh) ? kwh : 0) / KWH_PER_MWH;
-  return mwh.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+  return mwh.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+function formatKwhAsEurForBillInput(kwh: number, retailPriceEurPerKwh: number) {
+  const eur = Math.max(0, kwh) * Math.max(0, retailPriceEurPerKwh);
+  return Math.round(eur).toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function areMonthlyValuesEqual(a: number[] | null | undefined, b: number[] | null | undefined) {
+  if (!a || !b) return false;
+  if (a.length !== 12 || b.length !== 12) return false;
+  for (let i = 0; i < 12; i++) {
+    if (Math.round(a[i] ?? 0) !== Math.round(b[i] ?? 0)) return false;
+  }
+  return true;
 }
 
 function SharePortalInstallationCard({
@@ -142,15 +167,18 @@ function SharePortalInstallationCard({
   className?: string;
 }) {
   return (
-    <Card className={cn(radianzLimeCardRootClass, "shadow-none", className)} style={radianzLimeCardStyle}>
+    <Card
+      className={cn(radianzLimeCardRootClass, "shadow-none flex h-full min-h-0 flex-col", className)}
+      style={radianzLimeCardStyle}
+    >
       <RadianzLimeDotOverlay />
-      <CardHeader className="relative space-y-1 pb-2 pt-5">
+      <CardHeader className="relative shrink-0 space-y-1 pb-2 pt-5">
         <div className={cn(radianzMonoLabelClass, "flex justify-between gap-2")}>
           <span>Installation</span>
           <span className="font-normal opacity-70">TTC est.</span>
         </div>
       </CardHeader>
-      <CardContent className="relative pb-5 pt-0">
+      <CardContent className="relative mt-auto pb-5 pt-0">
         <p className="font-sans text-3xl font-light tabular-nums tracking-tight sm:text-[2rem] sm:leading-none">
           {priceKMin}
           <span className="mx-1 font-light text-lg text-foreground/50">–</span>
@@ -174,9 +202,17 @@ export default function ProspectSharePage() {
   const { data: invertersData } = useInverterReferences(ownerUserId);
   const { data: batteriesData } = useBatteryReferences(ownerUserId);
   const loading = prospectData === undefined && shareToken != null;
-  const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
+  /**
+   * Lien partagé : toujours démarrer sur Perfect fit (ne pas lire prospect.configurationMode, souvent highest_production en base).
+   * null = Perfect fit par défaut ; valeur = onglet choisi par le visiteur (pas de PATCH mode sur cette page).
+   */
+  const [configurationModeUserOverride, setConfigurationModeUserOverride] = useState<ProspectConfigurationMode | null>(null);
+  useEffect(() => {
+    setConfigurationModeUserOverride(null);
+  }, [prospect?.id]);
+  const configurationMode: ProspectConfigurationMode = configurationModeUserOverride ?? "perfect_fit";
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
-  const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("daily");
+  const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
   const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(6);
   const [includeBatteryLocal, setIncludeBatteryLocal] = useState<boolean>(true);
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
@@ -188,6 +224,8 @@ export default function ProspectSharePage() {
   const [financeChartView, setFinanceChartView] = useState<"roi" | "tariff">("roi");
 
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
+  /** Après application de recommendedBatteryComposition au chargement (même règle que changement d'onglet). */
+  const initialBatteryAppliedForProspectRef = useRef<string | null>(null);
 
   const visiblePanels = useMemo(() => {
     const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
@@ -236,12 +274,9 @@ export default function ProspectSharePage() {
   const includeBatteryEffective = includeBatteryLocal;
 
   useEffect(() => {
-    if (prospect?.configurationMode) setConfigurationMode(prospect.configurationMode);
     if (prospect?.annualConsumptionKwhOverride != null) setAnnualConsumptionOverride(prospect.annualConsumptionKwhOverride);
     if (prospect != null) setIncludeBatteryLocal(prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true);
-    if (prospect?.batteryReferenceId) setSelectedBatteryId(prospect.batteryReferenceId);
-    if (prospect?.batteryCount != null && prospect.batteryCount >= 1) setSelectedBatteryCount(prospect.batteryCount);
-  }, [prospect?.configurationMode, prospect?.annualConsumptionKwhOverride, prospect?.includeBatteryOverride, prospect?.batteryReferenceId, prospect?.batteryCount, prospect]);
+  }, [prospect?.annualConsumptionKwhOverride, prospect?.includeBatteryOverride, prospect]);
 
   const surfaceM2 =
     prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
@@ -259,24 +294,91 @@ export default function ProspectSharePage() {
   const [billMonthUserEdited, setBillMonthUserEdited] = useState<boolean[]>(() =>
     Array.from({ length: 12 }, () => false)
   );
+  const [billValueMode, setBillValueMode] = useState<"mwh" | "eur">("mwh");
   /** Saisie contrôlée : un seul mois focalisé à la fois (brouillon vs placeholder valeur de base). */
   const [billFocusedMonthIndex, setBillFocusedMonthIndex] = useState<number | null>(null);
   const [billFocusedDraft, setBillFocusedDraft] = useState("");
   const billInputsGridRef = useRef<HTMLDivElement>(null);
   const billMonthFocusValueRef = useRef<string[]>(Array.from({ length: 12 }, () => ""));
+  const monthlySaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const monthlySaveLastPayloadRef = useRef<string>("");
 
   useEffect(() => {
     if (!prospect || surfaceM2 <= 0) return;
-    const next = monthlyConsumptionKwhFromAnnualProfile(
-      placeType,
-      surfaceM2,
-      annualConsumptionOverride ?? consoFromType
-    );
-    setEditedBillMonthlyKwh([...next]);
-    setBillMonthUserEdited(Array.from({ length: 12 }, () => false));
+    const monthlyOverride = prospect.monthlyConsumptionKwhOverride;
+    if (monthlyOverride?.length === 12) {
+      setEditedBillMonthlyKwh(
+        monthlyOverride.map((v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0))
+      );
+      setBillMonthUserEdited(Array.from({ length: 12 }, () => true));
+    } else {
+      const next = monthlyConsumptionKwhFromAnnualProfile(
+        placeType,
+        surfaceM2,
+        annualConsumptionOverride ?? consoFromType
+      );
+      setEditedBillMonthlyKwh([...next]);
+      setBillMonthUserEdited(Array.from({ length: 12 }, () => false));
+    }
     setBillFocusedMonthIndex(null);
     setBillFocusedDraft("");
-  }, [prospect?.id, surfaceM2, placeType, annualConsumptionOverride, consoFromType]);
+  }, [prospect?.id, prospect?.monthlyConsumptionKwhOverride, surfaceM2, placeType, annualConsumptionOverride, consoFromType]);
+
+  useEffect(() => {
+    if (!shareToken || !prospect?.id || editedBillMonthlyKwh.length !== 12) return;
+    const hasManualEdits = billMonthUserEdited.some(Boolean);
+    const normalizedMonthly = hasManualEdits
+      ? editedBillMonthlyKwh.map((v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0))
+      : null;
+
+    const initialMonthly = prospect.monthlyConsumptionKwhOverride?.length === 12
+      ? prospect.monthlyConsumptionKwhOverride
+      : null;
+
+    if (
+      (normalizedMonthly == null && initialMonthly == null) ||
+      (normalizedMonthly != null && areMonthlyValuesEqual(normalizedMonthly, initialMonthly))
+    ) {
+      return;
+    }
+
+    const payload = JSON.stringify({ monthlyConsumptionKwhOverride: normalizedMonthly });
+    if (payload === monthlySaveLastPayloadRef.current) return;
+    monthlySaveLastPayloadRef.current = payload;
+
+    if (monthlySaveTimeoutRef.current) {
+      clearTimeout(monthlySaveTimeoutRef.current);
+    }
+    monthlySaveTimeoutRef.current = setTimeout(() => {
+      fetch(`/api/prospect-view/${encodeURIComponent(shareToken)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      })
+        .then((response) => {
+          if (!response.ok) {
+            monthlySaveLastPayloadRef.current = "";
+          }
+        })
+        .catch((error) => {
+          monthlySaveLastPayloadRef.current = "";
+          console.error("Erreur sauvegarde consommation mensuelle:", error);
+        });
+    }, 700);
+
+    return () => {
+      if (monthlySaveTimeoutRef.current) {
+        clearTimeout(monthlySaveTimeoutRef.current);
+        monthlySaveTimeoutRef.current = null;
+      }
+    };
+  }, [
+    shareToken,
+    prospect?.id,
+    prospect?.monthlyConsumptionKwhOverride,
+    editedBillMonthlyKwh,
+    billMonthUserEdited,
+  ]);
 
   const liveAnnualConsumptionKwh = useMemo(() => {
     if (editedBillMonthlyKwh.length !== 12) return annualConsumptionOverride ?? consoFromType;
@@ -394,7 +496,28 @@ export default function ProspectSharePage() {
 
   useEffect(() => {
     pendingBatteryResyncAfterModeChangeRef.current = false;
+    initialBatteryAppliedForProspectRef.current = null;
   }, [prospect?.id]);
+
+  /** Tant que la cible kWh n'est pas calculable, conserver les champs batterie du prospect (PVGIS / catalogue en attente). */
+  useEffect(() => {
+    if (!prospect?.id) return;
+    if (initialBatteryAppliedForProspectRef.current === prospect.id) return;
+    if (recommendedBatteryComposition != null) return;
+    if (prospect.batteryReferenceId) setSelectedBatteryId(prospect.batteryReferenceId);
+    if (prospect.batteryCount != null && prospect.batteryCount >= 1) setSelectedBatteryCount(prospect.batteryCount);
+  }, [prospect?.id, prospect?.batteryReferenceId, prospect?.batteryCount, recommendedBatteryComposition]);
+
+  /** Premier chargement : aligner batterie sur recommendedBatteryComposition (identique au retour d'onglet). */
+  useEffect(() => {
+    if (!prospect?.id || recommendedBatteryComposition == null) return;
+    if (pendingBatteryResyncAfterModeChangeRef.current) return;
+    if (initialBatteryAppliedForProspectRef.current === prospect.id) return;
+    const { model, count } = recommendedBatteryComposition;
+    setSelectedBatteryId(model.id);
+    setSelectedBatteryCount(count);
+    initialBatteryAppliedForProspectRef.current = prospect.id;
+  }, [prospect?.id, configurationMode, recommendedBatteryComposition]);
 
   /** Après clic sur Perfect fit / Highest production : aligner batterie sur la cible (y compris quand la composition arrive après PVGIS). */
   useEffect(() => {
@@ -455,6 +578,11 @@ export default function ProspectSharePage() {
   const energyBillEur = estimateEnergyBillEur(consoAnnuelleKwh);
   const displayEnergyBillEur = energyBillEurOverride ?? energyBillEur;
 
+  const effectiveRetailPricePerKwh = useMemo(
+    () => effectiveRetailPriceEurPerKwhFromBill(consoAnnuelleKwh, displayEnergyBillEur),
+    [consoAnnuelleKwh, displayEnergyBillEur]
+  );
+
   const financialSummary = useMemo(() => {
     if (!prospect || surfaceM2 <= 0) return null;
     const recommendedPanel = usedPanelRef ?? getRecommendedPanelReferenceSync();
@@ -495,7 +623,11 @@ export default function ProspectSharePage() {
         consumptionTypicalDayByMonth,
         battery: scaledBattery,
       });
-      annualSavings = estimateAnnualSavingsEurWithBattery(simulationResult);
+      annualSavings = estimateAnnualSavingsEurWithBattery(
+        simulationResult,
+        effectiveRetailPricePerKwh,
+        DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH
+      );
       equipmentEur = estimateInstallationPriceEur(
         panelCount,
         inverterCount,
@@ -512,7 +644,9 @@ export default function ProspectSharePage() {
     } else {
       const breakdown = estimateAnnualSavingsEurWithBreakdown(
         annualProductionKwh,
-        consoAnnuelleKwh
+        consoAnnuelleKwh,
+        effectiveRetailPricePerKwh,
+        DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH
       );
       annualSavings = breakdown.annualSavingsEur;
       selfConsumptionDirectKwhTotal = breakdown.selfConsumptionKwh;
@@ -559,6 +693,7 @@ export default function ProspectSharePage() {
     includeBatteryEffective,
     baselineBillMonthlyKwh,
     editedBillMonthlyKwh,
+    effectiveRetailPricePerKwh,
   ]);
 
   const chartData = useMemo(() => {
@@ -646,6 +781,103 @@ export default function ProspectSharePage() {
   const selfConsumptionDirectKwhTotal = financialSummary?.selfConsumptionDirectKwhTotal ?? 0;
   const selfConsumptionViaBatteryKwhTotal = financialSummary?.selfConsumptionViaBatteryKwhTotal ?? 0;
   const injectionReseauKwhTotal = financialSummary?.injectionReseauKwhTotal ?? 0;
+  const billReductionCard = useMemo(() => {
+    const retail = effectiveRetailPricePerKwh;
+    const feedIn = DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+    const billAnnual = displayEnergyBillEur;
+    const pctOfRefBill = (partEurAnnualOrMonthly: number, refBillEur: number) =>
+      refBillEur > 0 && Number.isFinite(partEurAnnualOrMonthly)
+        ? (Math.max(0, partEurAnnualOrMonthly) / refBillEur) * 100
+        : 0;
+
+    const byMonth = financialSummary?.batteryByMonth;
+    const useSelectedMonth =
+      chartViewMode === "daily" && byMonth != null && byMonth[chartSelectedMonthIndex] != null;
+
+    if (useSelectedMonth) {
+      const b = byMonth![chartSelectedMonthIndex]!;
+      const monthConsoKwh =
+        editedBillMonthlyKwh.length === 12
+          ? editedBillMonthlyKwh[chartSelectedMonthIndex] ?? 0
+          : Math.round(getEnergyConsumptionForMonth(placeType, chartSelectedMonthIndex as MonthIndex) * surfaceM2);
+      const monthBillEur = Math.max(0, monthConsoKwh) * retail;
+      const directEur = Math.max(0, b.selfConsumptionDirectKwh) * retail;
+      const viaBatteryEur = Math.max(0, b.selfConsumptionViaBatteryKwh) * retail;
+      const injectionEur = Math.max(0, b.injectionReseauKwh) * feedIn;
+      const year = new Date().getFullYear();
+      return {
+        periodLabel: `${BILL_MONTH_LABELS_FR[chartSelectedMonthIndex]} ${year}`,
+        headlineReductionEur: Math.round(directEur + viaBatteryEur + injectionEur),
+        segments: [
+          {
+            id: "direct",
+            label: "Autoconso directe",
+            monthlyReductionEur: Math.round(directEur),
+            pctOfBill: pctOfRefBill(directEur, monthBillEur),
+            variant: "direct" as const,
+          },
+          {
+            id: "battery",
+            label: "Autoconso batterie",
+            monthlyReductionEur: Math.round(viaBatteryEur),
+            pctOfBill: pctOfRefBill(viaBatteryEur, monthBillEur),
+            variant: "battery" as const,
+          },
+          {
+            id: "injection",
+            label: "Injection réseau",
+            monthlyReductionEur: Math.round(injectionEur),
+            pctOfBill: pctOfRefBill(injectionEur, monthBillEur),
+            variant: "injection" as const,
+          },
+        ],
+      };
+    }
+
+    const directEurY = Math.max(0, selfConsumptionDirectKwhTotal) * retail;
+    const viaBatteryEurY = Math.max(0, selfConsumptionViaBatteryKwhTotal) * retail;
+    const injectionEurY = Math.max(0, injectionReseauKwhTotal) * feedIn;
+    return {
+      periodLabel: "Moyenne mensuelle",
+      headlineReductionEur: Math.round(annualSavings / 12),
+      segments: [
+        {
+          id: "direct",
+          label: "Autoconso directe",
+          monthlyReductionEur: Math.round(directEurY / 12),
+          pctOfBill: pctOfRefBill(directEurY, billAnnual),
+          variant: "direct" as const,
+        },
+        {
+          id: "battery",
+          label: "Autoconso batterie",
+          monthlyReductionEur: Math.round(viaBatteryEurY / 12),
+          pctOfBill: pctOfRefBill(viaBatteryEurY, billAnnual),
+          variant: "battery" as const,
+        },
+        {
+          id: "injection",
+          label: "Injection réseau",
+          monthlyReductionEur: Math.round(injectionEurY / 12),
+          pctOfBill: pctOfRefBill(injectionEurY, billAnnual),
+          variant: "injection" as const,
+        },
+      ],
+    };
+  }, [
+    annualSavings,
+    chartSelectedMonthIndex,
+    chartViewMode,
+    displayEnergyBillEur,
+    editedBillMonthlyKwh,
+    effectiveRetailPricePerKwh,
+    financialSummary?.batteryByMonth,
+    injectionReseauKwhTotal,
+    placeType,
+    selfConsumptionDirectKwhTotal,
+    selfConsumptionViaBatteryKwhTotal,
+    surfaceM2,
+  ]);
   const annualGridDrawKwh = financialSummary?.annualGridDrawKwh ?? 0;
   const breakdownFromHourlySim = financialSummary?.breakdownFromHourlySim ?? false;
   const priceRange = financialSummary?.priceRange ?? { equipmentEur: 0, totalMinEur: 0, totalMaxEur: 0 };
@@ -657,11 +889,6 @@ export default function ProspectSharePage() {
     priceRange.totalMaxEur > 0;
   const priceKMinPortal = installationBandReady ? (priceRange.totalMinEur / 1000).toFixed(0) : null;
   const priceKMaxPortal = installationBandReady ? (priceRange.totalMaxEur / 1000).toFixed(0) : null;
-
-  const effectiveRetailPricePerKwh = useMemo(
-    () => effectiveRetailPriceEurPerKwhFromBill(consoAnnuelleKwh, displayEnergyBillEur),
-    [consoAnnuelleKwh, displayEnergyBillEur]
-  );
 
   const formatPower = (powerW: number) => {
     if (!Number.isFinite(powerW)) return "—";
@@ -715,9 +942,17 @@ export default function ProspectSharePage() {
     prospect.name?.trim() ||
     "Entreprise";
 
-  const productionGwh = effectiveConfig.effectiveAnnualProductionKwh > 0
-    ? effectiveConfig.effectiveAnnualProductionKwh / 1_000_000
-    : 0;
+  const recapAnnualMwh = effectiveConfig.effectiveAnnualProductionKwh / KWH_PER_MWH;
+  const recapShowMwh = Number.isFinite(recapAnnualMwh) && recapAnnualMwh > 0;
+  const recapCo2HasData = co2AvoidanceHasDataForDisplay(
+    effectiveConfig.effectiveAnnualProductionKwh,
+    liveAnnualConsumptionKwh
+  );
+  const recapCo2TonnesStr = avoidedCo2TonnesPerYearGridFr(
+    effectiveConfig.effectiveAnnualProductionKwh
+  ).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const recapParcelM2 = prospect.parcelContourAreaM2;
+  const recapShowParcelle = recapParcelM2 != null && recapParcelM2 > 0;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -804,12 +1039,15 @@ export default function ProspectSharePage() {
           <div className="min-w-0 flex flex-col gap-10 py-1">
             <section id="recap" className="scroll-mt-24">
               <div
-                className={cn(radianzLimeCardRootClass, "relative mb-4 h-[240px] overflow-hidden border shadow-none")}
-                style={radianzLimeCardStyle}
+                className={cn(radianzLimeCardRootClass, "relative mb-4 h-[240px] overflow-hidden border shadow-none text-white")}
+                style={{
+                  backgroundColor: "#0A0A0A",
+                  borderColor: "#262626",
+                }}
               >
-                <RadianzLimeDotOverlay />
+                <RadianzLimeDotOverlay dotColor={BRAND_LIME} layerOpacity={0.18} />
                 <div className="absolute top-4 right-4 z-[1]">
-                  <div className="size-14 rounded-[12px] border border-border bg-card/90 backdrop-blur-sm shadow-xs overflow-hidden">
+                  <div className="size-14 rounded-[12px] border border-white/15 bg-white/10 backdrop-blur-sm shadow-xs overflow-hidden">
                     {commercialReferent?.logoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -820,7 +1058,7 @@ export default function ProspectSharePage() {
                       />
                     ) : (
                       <div className="h-full w-full flex items-center justify-center">
-                        <span className="text-xs font-semibold text-foreground">
+                        <span className="text-xs font-semibold text-white">
                           {(portalCompanyName?.trim()?.[0] ?? "—").toUpperCase()}
                         </span>
                       </div>
@@ -829,11 +1067,18 @@ export default function ProspectSharePage() {
                 </div>
 
                 <div className="relative z-[1] flex h-full flex-col justify-end p-6">
-                  <p className={cn(radianzMonoLabelClass, "mb-2 opacity-90")}>{portalCompanyName}</p>
-                  <div className="font-sans text-3xl font-light tracking-tight sm:text-[2.5rem] sm:leading-[1.05]">
+                  <p
+                    className={cn(
+                      radianzMonoLabelClass,
+                      "mb-2 text-white opacity-100"
+                    )}
+                  >
+                    {portalCompanyName}
+                  </p>
+                  <div className="font-sans text-3xl font-light tracking-tight text-white sm:text-[2.5rem] sm:leading-[1.05]">
                     Hello <span aria-hidden>👋</span>
                   </div>
-                  <p className="mt-2 max-w-xl font-mono text-[10px] leading-snug" style={{ color: BRAND_MUTED }}>
+                  <p className="mt-2 max-w-xl font-mono text-[10px] leading-snug text-white/90">
                     Welcome to the {portalCompanyName} Portal
                   </p>
                 </div>
@@ -870,6 +1115,45 @@ export default function ProspectSharePage() {
                     )}
 
                     <div className="drawer-discovery-pills mt-3">
+                      {recapShowMwh ? (
+                        <Badge
+                          variant="outline"
+                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                          title="Production photovoltaïque annuelle estimée (scénario affiché)"
+                        >
+                          {recapAnnualMwh.toLocaleString("fr-FR", {
+                            minimumFractionDigits: 1,
+                            maximumFractionDigits: 1,
+                          })}{" "}
+                          MWh/an
+                        </Badge>
+                      ) : null}
+                      {recapCo2HasData ? (
+                        <Badge
+                          variant="outline"
+                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                          title="CO₂ évité par la production PV — hypothèse mix réseau ~52 g CO₂e/kWh (indicatif)"
+                        >
+                          ≈ {recapCo2TonnesStr} t CO₂/an
+                        </Badge>
+                      ) : null}
+                      {recapShowParcelle ? (
+                        <Badge
+                          variant="outline"
+                          className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
+                          title="Surface au sol du contour parcelle cadastrale (approx. cartographique)"
+                        >
+                          <Image
+                            src="/Topoicon.svg"
+                            alt=""
+                            width={26}
+                            height={26}
+                            className="size-6 shrink-0"
+                            aria-hidden
+                          />
+                          {Math.round(recapParcelM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
+                        </Badge>
+                      ) : null}
                       {effectiveConfig.effectiveKwp > 0 ? (
                         <Badge
                           variant="outline"
@@ -879,14 +1163,6 @@ export default function ProspectSharePage() {
                           {effectiveConfig.effectiveKwp.toFixed(2)} kWp
                         </Badge>
                       ) : null}
-                      <Badge
-                        variant="outline"
-                        className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-                        title="Surface de toit prise en compte pour le dimensionnement"
-                      >
-                        <Building2 className="size-3.5 shrink-0" aria-hidden />
-                        {surfaceM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
-                      </Badge>
                     </div>
                   </div>
                 </div>
@@ -897,23 +1173,26 @@ export default function ProspectSharePage() {
               <section id="facture" className="scroll-mt-24">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between mb-3">
                   <h2 className="text-lg font-semibold text-foreground">Votre facture</h2>
-                  <button
-                    type="button"
-                    onClick={resetBillEstimates}
-                    className="text-left text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline sm:text-right"
-                  >
-                    Réinitialiser les estimations
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={resetBillEstimates}
+                      className="text-left text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline sm:text-right"
+                    >
+                      Réinitialiser
+                    </button>
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground mb-4 max-w-2xl">
-                  Consommation mensuelle estimée (MWh). Saisissez un mois connu : chaque validation recalcule le même profil saisonnier sur l’année à partir de ce mois de référence.
-                </p>
                 <div
-                  className={cn("rounded-[12px] border p-4 shadow-xs", radianzDefaultCardClass)}
+                  className={cn("flex min-h-[450px] flex-col rounded-[12px] border p-4 shadow-xs", radianzDefaultCardClass)}
                   style={radianzCardBorderStyle}
                 >
                   <MonthlyConsumptionOnlyChart
+                    fillVertical
                     monthlyKwh={editedBillMonthlyKwh}
+                    unitMode={billValueMode}
+                    onUnitModeChange={setBillValueMode}
+                    retailPriceEurPerKwh={effectiveRetailPricePerKwh}
                     highlightedMonthIndex={billChartHighlightedMonth}
                     contentBelowTotal={(
                       <div
@@ -922,15 +1201,19 @@ export default function ProspectSharePage() {
                       >
                         {BILL_MONTH_LABELS_FR.map((label, i) => {
                           const kwhHint = Math.round(editedBillMonthlyKwh[i] ?? 0);
-                          const hintStrMwh = formatKwhAsMwhForBillInput(kwhHint);
+                          const hintStr = billValueMode === "eur"
+                            ? formatKwhAsEurForBillInput(kwhHint, effectiveRetailPricePerKwh)
+                            : formatKwhAsMwhForBillInput(kwhHint);
                           const isFocused = billFocusedMonthIndex === i;
                           const inputValue = isFocused
                             ? billFocusedDraft
                             : billMonthUserEdited[i]
-                              ? formatKwhAsMwhForBillInput(kwhHint)
+                              ? billValueMode === "eur"
+                                ? formatKwhAsEurForBillInput(kwhHint, effectiveRetailPricePerKwh)
+                                : formatKwhAsMwhForBillInput(kwhHint)
                               : "";
                           const inputPlaceholder =
-                            billMonthUserEdited[i] || isFocused ? undefined : hintStrMwh;
+                            billMonthUserEdited[i] || isFocused ? undefined : hintStr;
                           return (
                             <div key={label} className="flex min-w-0 flex-col items-stretch gap-0.5">
                               <span
@@ -961,7 +1244,9 @@ export default function ProspectSharePage() {
                                   setBillFocusedMonthIndex(i);
                                   setBillFocusedDraft(
                                     billMonthUserEdited[i]
-                                      ? formatKwhAsMwhForBillInput(Math.round(editedBillMonthlyKwh[i] ?? 0))
+                                      ? billValueMode === "eur"
+                                        ? formatKwhAsEurForBillInput(Math.round(editedBillMonthlyKwh[i] ?? 0), effectiveRetailPricePerKwh)
+                                        : formatKwhAsMwhForBillInput(Math.round(editedBillMonthlyKwh[i] ?? 0))
                                       : ""
                                   );
                                   setBillChartHighlightedMonth(i);
@@ -969,8 +1254,12 @@ export default function ProspectSharePage() {
                                 onBlur={(e) => {
                                   const blurred = e.target.value;
                                   const normalized = normalizeBillInputRaw(blurred);
-                                  const vMwh = parseFloat(normalized);
-                                  const vKwh = Number.isFinite(vMwh) ? vMwh * KWH_PER_MWH : NaN;
+                                  const parsed = parseFloat(normalized);
+                                  const vKwh = Number.isFinite(parsed)
+                                    ? billValueMode === "eur"
+                                      ? parsed / Math.max(0.000001, effectiveRetailPricePerKwh)
+                                      : parsed * KWH_PER_MWH
+                                    : NaN;
                                   const valid = Number.isFinite(vKwh) && vKwh >= 1 && normalized.length > 0;
                                   const baselineMonth = baselineBillMonthlyKwh[i] ?? 0;
 
@@ -1041,7 +1330,11 @@ export default function ProspectSharePage() {
                                     setBillChartHighlightedMonth(null);
                                   }
                                 }}
-                                aria-label={`Consommation ${label} en mégawattheures. Estimation ${hintStrMwh} MWh affichée en filigrane tant que vous n’avez pas saisi de valeur.`}
+                                aria-label={
+                                  billValueMode === "eur"
+                                    ? `Facture ${label} en euros. Estimation ${hintStr} euros affichée en filigrane tant que vous n’avez pas saisi de valeur.`
+                                    : `Consommation ${label} en mégawattheures. Estimation ${hintStr} MWh affichée en filigrane tant que vous n’avez pas saisi de valeur.`
+                                }
                               />
                             </div>
                           );
@@ -1061,59 +1354,46 @@ export default function ProspectSharePage() {
               {/* Graphique + boutons (système) */}
               {(prospect.solarPotential?.productionPerKwpMonthly?.length || prospect.solarPotential?.monthlyProduction?.length) && surfaceM2 > 0 && (
                 <div className="flex flex-col gap-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        pendingBatteryResyncAfterModeChangeRef.current = true;
-                        setConfigurationMode("perfect_fit");
-                      }}
-                      className={`cursor-pointer rounded-[12px] px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-                        configurationMode === "perfect_fit"
-                          ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                          : "border border-border bg-card hover:bg-muted/60"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className={radianzMonoLabelClass}>Perfect fit</span>
-                      </div>
-                      <div className={`text-base font-normal mt-auto ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-foreground"}`}>
-                        {choiceCardsConfig.perfectFit.kwp.toFixed(2)}
-                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "perfect_fit" ? "text-[#0000FF]" : "text-muted-foreground"}`}>kWp</span>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        pendingBatteryResyncAfterModeChangeRef.current = true;
-                        setConfigurationMode("highest_production");
-                      }}
-                      className={`cursor-pointer rounded-[12px] px-4 py-4 text-left h-full flex flex-col justify-between overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-                        configurationMode === "highest_production"
-                          ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                          : "border border-border bg-card hover:bg-muted/60"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className={radianzMonoLabelClass}>Highest production</span>
-                      </div>
-                      <div className={`text-base font-normal mt-auto ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-foreground"}`}>
-                        {choiceCardsConfig.highestProduction.kwp.toFixed(2)}
-                        <span className={`text-sm font-light ml-0.5 ${configurationMode === "highest_production" ? "text-[#0000FF]" : "text-muted-foreground"}`}>kWp</span>
-                      </div>
-                    </button>
-                  </div>
+                  <Tabs
+                    value={configurationMode}
+                    onValueChange={(v) => {
+                      pendingBatteryResyncAfterModeChangeRef.current = true;
+                      setConfigurationModeUserOverride(v as ProspectConfigurationMode);
+                    }}
+                    variant="line"
+                    className="w-full min-w-0"
+                  >
+                    <TabsList aria-label="Mode de configuration" className="w-full min-w-0">
+                      <TabsTrigger value="perfect_fit">
+                        Perfect fit ({choiceCardsConfig.perfectFit.kwp.toFixed(2)} kWp)
+                      </TabsTrigger>
+                      <TabsTrigger value="highest_production">
+                        Highest production ({choiceCardsConfig.highestProduction.kwp.toFixed(2)} kWp)
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
 
                   <div
                     className={cn("h-[360px] py-3 px-4 pb-2 flex flex-col overflow-hidden", radianzDefaultCardClass)}
                     style={radianzCardBorderStyle}
                   >
                     <div className="flex flex-col gap-1.5 mb-2 shrink-0">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className={radianzMonoLabelClass}>Production</span>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <span className={radianzMonoLabelClass}>Production</span>
+                          <p className="mt-1 font-sans text-[2rem] font-light leading-none tracking-[-0.04em] text-foreground tabular-nums sm:text-[2.25rem] shrink-0">
+                            {(effectiveConfig.effectiveAnnualProductionKwh / KWH_PER_MWH).toLocaleString("fr-FR", {
+                              minimumFractionDigits: 1,
+                              maximumFractionDigits: 1,
+                            })}
+                            <span className="ml-1.5 align-baseline font-mono text-sm font-normal tracking-normal text-muted-foreground">
+                              MWh/an
+                            </span>
+                          </p>
+                        </div>
                         <div
                           role="tablist"
-                          className="inline-flex rounded-md border border-border bg-muted/50 p-0.5 shrink-0"
+                          className="inline-flex shrink-0 rounded-md border border-border bg-muted/50 p-0.5"
                           aria-label="Vue du graphique"
                         >
                           <button
@@ -1156,121 +1436,17 @@ export default function ProspectSharePage() {
                 </div>
               )}
 
-              {/* Sous le graphe : 2 colonnes (finance à gauche, équipement à droite) */}
-              <div className="mt-6 grid grid-cols-1 gap-4 min-h-[280px] items-stretch">
-                <div
-                  className={cn("py-3 px-4 overflow-hidden", radianzDefaultCardClass)}
-                  style={radianzCardBorderStyle}
-                >
-                  <div className="flex items-center justify-between gap-2 mb-4">
-                    <span className={radianzMonoLabelClass}>Réduction de facture</span>
-                  </div>
-                  <div className="mb-4">
-                    {displayEnergyBillEur > 0 ? (
-                      (() => {
-                        const bill = displayEnergyBillEur;
-                        const savingsPctRaw = bill > 0 ? (annualSavings / bill) * 100 : 0;
-                        const savingsPct = Math.min(100, Math.max(0, savingsPctRaw));
-
-                        const directEur = selfConsumptionDirectKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-                        const viaBatteryEur = selfConsumptionViaBatteryKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-                        const injectionEur = injectionReseauKwhTotal * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
-                        const totalParts = directEur + viaBatteryEur + injectionEur;
-
-                        const partPct = (part: number) => (totalParts > 0 ? (part / totalParts) * 100 : 0);
-                        const pctBattery = partPct(viaBatteryEur);
-                        const pctDirect = partPct(directEur);
-                        const pctInjection = Math.max(0, 100 - pctBattery - pctDirect);
-
-                        return (
-                          <div className="flex flex-col gap-3">
-                            <div className="flex items-end justify-between gap-3">
-                              <div className="text-3xl font-light tabular-nums text-foreground leading-none shrink-0">
-                                -{Math.round(savingsPct)}%
-                              </div>
-                            </div>
-
-                            <div className="w-full h-2.5 rounded-full bg-muted overflow-hidden flex">
-                              {savingsPct > 0 && totalParts > 0 ? (
-                                <div className="h-full flex shrink-0" style={{ width: `${savingsPct}%` }}>
-                                  <div className="h-full bg-[#0000FF] shrink-0" style={{ width: `${pctBattery}%` }} title="Autoconsommation batterie" />
-                                  <div className="h-full bg-[#4B5563] shrink-0" style={{ width: `${pctDirect}%` }} title="Autoconsommation directe" />
-                                  <div className="h-full bg-[#32F490] shrink-0 flex-1" title="Injection réseau" />
-                                </div>
-                              ) : savingsPct > 0 ? (
-                                <div className="h-full bg-muted-foreground/50" style={{ width: `${savingsPct}%` }} />
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })()
-                    ) : (
-                      <div className="text-3xl font-light tabular-nums text-foreground leading-none">—</div>
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-3 text-xs">
-                    <Separator className="bg-border/70" />
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs sm:text-sm font-normal text-muted-foreground truncate">Est. Energy bill</span>
-                      <button
-                        type="button"
-                        onClick={() => setEnergyBillDialogOpen(true)}
-                        className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 -my-0.5 text-left cursor-pointer shrink-0 tabular-nums text-xs sm:text-sm font-normal text-muted-foreground transition-[background-color,transform] duration-150 ease-out hover:bg-muted active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
-                        aria-label="Modifier la facture annuelle"
-                      >
-                        <Pencil className="h-3 w-3 text-muted-foreground shrink-0" />
-                        {displayEnergyBillEur.toLocaleString("fr-FR")}
-                        <span className="text-muted-foreground/80 ml-0.5 font-light">€</span>
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs sm:text-sm font-normal text-muted-foreground truncate">Savings</span>
-                      <span className="text-xs sm:text-sm font-normal text-muted-foreground shrink-0 tabular-nums">
-                        {annualSavings.toLocaleString("fr-FR")}
-                        <span className="text-muted-foreground/80 ml-0.5 font-light">€</span>
-                      </span>
-                    </div>
-                    {(() => {
-                      const directEur = selfConsumptionDirectKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-                      const viaBatteryEur = selfConsumptionViaBatteryKwhTotal * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-                      const injectionEur = injectionReseauKwhTotal * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
-                      const totalParts = directEur + viaBatteryEur + injectionEur;
-                      if (!Number.isFinite(totalParts) || totalParts <= 0) return null;
-                      return (
-                        <div className="mt-2 flex flex-col gap-1.5 text-[11px] text-muted-foreground">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="h-2 w-2 rounded-full shrink-0 bg-[#0000FF]" aria-hidden />
-                              <span className="truncate">Autoconsommation batterie</span>
-                            </span>
-                            <span className="shrink-0 tabular-nums text-foreground">
-                              {Math.round(viaBatteryEur).toLocaleString("fr-FR")}€
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="h-2 w-2 rounded-full shrink-0 bg-[#4B5563]" aria-hidden />
-                              <span className="truncate">Autoconsommation directe</span>
-                            </span>
-                            <span className="shrink-0 tabular-nums text-foreground">
-                              {Math.round(directEur).toLocaleString("fr-FR")}€
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="h-2 w-2 rounded-full shrink-0 bg-[#32F490]" aria-hidden />
-                              <span className="truncate">Injection réseau</span>
-                            </span>
-                            <span className="shrink-0 tabular-nums text-foreground">
-                              {Math.round(injectionEur).toLocaleString("fr-FR")}€
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-
+              <div className="mt-6 flex flex-col items-center justify-center gap-6 sm:flex-row sm:items-start sm:justify-start">
+                <RadianzBillReductionCard
+                  periodLabel={billReductionCard.periodLabel}
+                  initialBillAnnualEur={displayEnergyBillEur}
+                  headlineReductionEur={billReductionCard.headlineReductionEur}
+                  segments={billReductionCard.segments}
+                />
+                <RadianzCo2AvoidanceRadial
+                  annualProductionKwh={effectiveConfig.effectiveAnnualProductionKwh}
+                  annualConsumptionKwh={liveAnnualConsumptionKwh}
+                />
               </div>
             </section>
 
@@ -1369,34 +1545,18 @@ export default function ProspectSharePage() {
 
                 return (
                   <>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                      {([
-                        { id: "capex", title: "CAPEX" },
-                        { id: "lease", title: "Lease" },
-                        { id: "ppa", title: "PPA" },
-                      ] satisfies Array<{ id: FinancingMode; title: string }>).map((item) => {
-                        const selected = financingMode === item.id;
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            onClick={() => setFinancingMode(item.id)}
-                            className={`cursor-pointer rounded-[12px] px-4 py-4 text-left h-full flex flex-col justify-center overflow-hidden transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0000FF33] focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-                              selected
-                                ? "border border-[#0000FF33] bg-[#0000FF0D] shadow-xs"
-                                : "border border-border bg-card hover:bg-muted/60"
-                            }`}
-                            aria-pressed={selected}
-                          >
-                            <div
-                              className={`text-base font-normal uppercase ${selected ? "text-[#0000FF]" : "text-foreground"}`}
-                            >
-                              {item.title}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <Tabs
+                      value={financingMode}
+                      onValueChange={(v) => setFinancingMode(v as FinancingMode)}
+                      variant="line"
+                      className="w-full min-w-0"
+                    >
+                      <TabsList aria-label="Mode de financement" className="w-full min-w-0">
+                        <TabsTrigger value="capex">CAPEX</TabsTrigger>
+                        <TabsTrigger value="lease">Lease</TabsTrigger>
+                        <TabsTrigger value="ppa">PPA</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
 
                     <div
                       className={cn("mt-3 h-[360px] py-3 px-4 pb-2 flex flex-col overflow-hidden", radianzDefaultCardClass)}
@@ -1520,18 +1680,18 @@ export default function ProspectSharePage() {
                     panelsData !== undefined ||
                     invertersData !== undefined ||
                     batteriesData !== undefined ? (
-                      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+                      <div className="mt-3 grid grid-cols-1 gap-4 items-stretch md:grid-cols-[minmax(0,4fr)_minmax(0,6fr)]">
                         {installationBandReady && priceKMinPortal != null && priceKMaxPortal != null ? (
                           <SharePortalInstallationCard
                             priceKMin={priceKMinPortal}
                             priceKMax={priceKMaxPortal}
-                            className="h-full"
+                            className="h-full min-w-0"
                           />
                         ) : null}
 
                         {(panelsData !== undefined || invertersData !== undefined || batteriesData !== undefined) && (
                           <div
-                            className={cn("py-3 px-4 overflow-auto", radianzDefaultCardClass)}
+                            className={cn("min-w-0 py-3 px-4 overflow-auto", radianzDefaultCardClass)}
                             style={radianzCardBorderStyle}
                           >
                             <div className={cn(radianzMonoLabelClass, "mb-3")}>Équipement</div>

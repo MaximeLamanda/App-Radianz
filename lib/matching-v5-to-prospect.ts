@@ -4,6 +4,7 @@
  */
 
 import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
+import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
 import {
   centroidWeightedFromParcelleRowGeometries,
   parsePasserelleAddressesJson,
@@ -53,6 +54,17 @@ export function footprintSumTotalFromV5(
     return parcelleCluster.reduce((s, p) => s + p.footprintSumM2, 0);
   }
   return row.footprintSumM2;
+}
+
+/** Aire contour parcelle(s) sur la carte (m²), même logique que le tiroir Discovery. */
+export function parcelContourAreaM2FromV5Row(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): number {
+  if (parcelleCluster.length === 0) {
+    return Math.max(0, polygonAreaM2ApproxWgs84(row.geometry));
+  }
+  return parcelleCluster.reduce((sum, p) => sum + polygonAreaM2ApproxWgs84(p.geometry), 0);
 }
 
 export function discoveryScoreDisplayFromV5(
@@ -222,6 +234,7 @@ export function matchingV5RowsToProspectDraft(
   options?: MatchingV5ToProspectDraftOptions
 ): Prospect {
   const parcelleCluster = getParcelleClusterForV5(row, linkedParcelleRows);
+  const parcelContourM2 = parcelContourAreaM2FromV5Row(row, parcelleCluster);
   const footprintSum = footprintSumTotalFromV5(row, parcelleCluster);
   const centroid = discoveryCentroidFromV5(row, parcelleCluster);
   const coordinates = centroid ?? DISCOVERY_FALLBACK_CENTER;
@@ -248,6 +261,7 @@ export function matchingV5RowsToProspectDraft(
     matchingV5RowId: row.id,
     ...company,
     ...(solarPotential ? { solarPotential } : {}),
+    ...(parcelContourM2 > 0 ? { parcelContourAreaM2: Math.round(parcelContourM2) } : {}),
   };
 
   return base;

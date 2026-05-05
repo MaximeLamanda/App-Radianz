@@ -7,6 +7,7 @@ import {
   footprintSumTotalFromV5,
   getParcelleClusterForV5,
   matchingV5RowsToProspectDraft,
+  parcelContourAreaM2FromV5Row,
 } from "@/lib/matching-v5-to-prospect";
 
 const testPanel: PanelReference = {
@@ -108,6 +109,19 @@ describe("discoveryCentroidFromV5", () => {
   });
 });
 
+describe("parcelContourAreaM2FromV5Row", () => {
+  it("somme les aires des polygones du cluster parcelle", () => {
+    const p1 = rowParcelle("p1", 100, 50, ringPessac);
+    const p2 = rowParcelle("p2", 200, 60, ringPessac);
+    const b = { ...p1, id: "b1", grain: "building" as const };
+    const a = parcelContourAreaM2FromV5Row(b, [p1, p2]);
+    expect(a).toBeGreaterThan(0);
+    expect(Math.round(a)).toBe(
+      Math.round(parcelContourAreaM2FromV5Row(p1, [p1]) + parcelContourAreaM2FromV5Row(p2, [p2]))
+    );
+  });
+});
+
 describe("matchingV5RowsToProspectDraft", () => {
   it("remplit pipelineEntrySource, matchingV5RowId, qualityScore et adresse", () => {
     const p = rowParcelle("row-abc", 800, 73, ringPessac);
@@ -121,6 +135,8 @@ describe("matchingV5RowsToProspectDraft", () => {
     expect(draft.roofSurfaces?.[0]?.orientation).toBeDefined();
     expect(typeof draft.roofSurfaces?.[0]?.orientation).toBe("number");
     expect(draft.solarPotential?.estimatedKwp).toBeGreaterThan(0);
+    expect(draft.parcelContourAreaM2).toBeDefined();
+    expect(draft.parcelContourAreaM2!).toBeGreaterThan(0);
   });
 
   it("sans PVGIS fourni, expose quand même estimatedKwp et surface", () => {

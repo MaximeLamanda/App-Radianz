@@ -138,6 +138,8 @@ export interface Prospect {
   commercialReferent?: CommercialReferent;
   /** Consommation annuelle override saisie par le prospect (kWh) */
   annualConsumptionKwhOverride?: number;
+  /** Consommations mensuelles override saisies par le prospect (kWh, Jan->Déc) */
+  monthlyConsumptionKwhOverride?: number[];
   /** UID du propriétaire (Firebase Auth) */
   userId?: string;
   /** Année de construction du bâtiment (source BDNB), affichée quand disponible */
@@ -158,6 +160,8 @@ export interface Prospect {
   pipelineEntrySource?: "discovery_v5";
   /** Identifiant de la ligne / cluster matching V5 à l’origine du prospect. */
   matchingV5RowId?: string;
+  /** Aire approximative contour(s) parcelle(s) cadastrale(s) (m²), source Discovery. */
+  parcelContourAreaM2?: number;
 }
 
 export interface Lead {
