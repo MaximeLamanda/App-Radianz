@@ -39,6 +39,8 @@
     "neon:drop-discovery-artifacts": "node scripts/neon-drop-discovery-artifact-tables.mjs",
     "neon:drop-bdnb-after-v5-enrichment:dry": "DRY_RUN=1 node scripts/neon-drop-bdnb-after-v5-enrichment.mjs",
     "neon:drop-bdnb-after-v5-enrichment": "node scripts/neon-drop-bdnb-after-v5-enrichment.mjs",
+    "neon:sync-v5-building-geometries:dry": "DRY_RUN=1 node scripts/sync-scout-v5-building-geometries-json.mjs",
+    "neon:sync-v5-building-geometries": "node scripts/sync-scout-v5-building-geometries-json.mjs",
     "postgres:local:up": "PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\" docker compose up -d",
     "postgres:local:down": "PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\" docker compose down",
     "pipeline:matching-v5:run": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/run_matching_v5.py --min-parcelle-footprint-sum-m2 400'",

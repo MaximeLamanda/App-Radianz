@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { radianzMonoLabelClass } from "@/lib/radianz-card-primitives";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
@@ -41,7 +42,6 @@ import {
   Battery,
   ChevronLeft,
   ChevronRight,
-  Building2,
 } from "lucide-react";
 import { PieChart, Pie, Cell } from "recharts";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
@@ -442,7 +442,6 @@ function ProspectDrawerDiscoverySection({
   useEffect(() => {
     matchingV5ApiNomFetchedRef.current.clear();
     setMatchingV5ApiNomBySiren({});
-    setDiscoveryMainTab("batiments");
     setShowAllEstablishments(false);
   }, [discoveryClusterKey]);
 
@@ -949,15 +948,23 @@ function ProspectDrawerDiscoverySection({
     return row.passerelleAddress?.trim() || "Pas d’adresse passerelle";
   }, [parcelleCluster, row.passerelleAddress]);
 
-  const heroTypeLine = useMemo(() => {
-    if (row.grain === "building") {
-      return `Bâtiment multi-parcelles · empreinte BDNB ${footprintSumTotal.toLocaleString("fr-FR")} m²`;
-    }
-    if (parcelleCluster.length > 1) {
-      return `${parcelleCluster.length} parcelles cadastrales liées (partage) · empreinte BDNB Σ ${footprintSumTotal.toLocaleString("fr-FR")} m² · contours ~${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
-    }
-    return `Parcelle cadastrale · empreinte BDNB ${footprintSumTotal.toLocaleString("fr-FR")} m² · contour ~${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
-  }, [row.grain, parcelleCluster, footprintSumTotal, cartePolygonAreaM2]);
+  const discoveryRecapShowBdnb = Number.isFinite(footprintSumTotal) && footprintSumTotal > 0;
+  const discoveryRecapShowParcel = Number.isFinite(cartePolygonAreaM2) && cartePolygonAreaM2 > 0;
+  const discoveryRecapShowAzimuth = discoveryFootprintAzimuth != null;
+  const discoveryAzimuthDisplay =
+    discoveryFootprintAzimuth == null
+      ? null
+      : new Intl.NumberFormat("fr-FR", {
+          maximumFractionDigits: 1,
+          minimumFractionDigits: 0,
+          signDisplay: "exceptZero",
+        }).format(discoveryFootprintAzimuth) + "°";
+  const discoveryParcelSurfaceTitle =
+    row.grain === "parcelle"
+      ? parcelleCluster.length > 1
+        ? "Somme des aires des polygones parcelles (approx. géodésique locale)"
+        : "Aire du polygone parcelle sur la carte (approx. géodésique locale)"
+      : "Aire du polygone affiché (bâtiment) sur la carte";
 
   const geoPillLabel = (() => {
     const n = (row.nomIris || "").trim().replace(/\s+/g, " ");
@@ -966,8 +973,6 @@ function ProspectDrawerDiscoverySection({
     if (ci.length >= 2) return `DEPT. ${ci.slice(0, 2)}`;
     return "ZONE";
   })();
-  const empreinteM2Formatted = `${footprintSumTotal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
-  const contourM2Formatted = `${cartePolygonAreaM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
   const kwcRounded = `${Math.round(kwpEst)} kWc`;
 
   return (
@@ -984,7 +989,75 @@ function ProspectDrawerDiscoverySection({
         <p className="drawer-discovery-hero-address" title={heroAddress}>
           {heroAddress}
         </p>
-        <p className="drawer-discovery-subtitle">{heroTypeLine}</p>
+        {discoveryRecapShowBdnb || discoveryRecapShowParcel || discoveryRecapShowAzimuth ? (
+          <div className="flex w-full flex-nowrap gap-3 border-b border-border/80 pb-2.5 pt-0.5 sm:gap-4">
+            {discoveryRecapShowBdnb ? (
+              <div
+                className="flex min-w-0 flex-1 basis-0 flex-col items-center gap-1 text-center"
+                title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
+              >
+                <Image
+                  src="/Buildingicon.svg"
+                  alt=""
+                  width={28}
+                  height={28}
+                  className="size-7 shrink-0 object-contain"
+                  aria-hidden
+                />
+                <span className="font-sans text-xs font-medium tabular-nums tracking-tight text-foreground">
+                  {Math.round(footprintSumTotal).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
+                </span>
+                <span className={cn(radianzMonoLabelClass, "max-w-full text-pretty text-[9px] leading-snug")}>
+                  Surface building
+                </span>
+              </div>
+            ) : null}
+            {discoveryRecapShowParcel ? (
+              <div
+                className="flex min-w-0 flex-1 basis-0 flex-col items-center gap-1 text-center"
+                title={discoveryParcelSurfaceTitle}
+              >
+                <span className="flex size-7 shrink-0 items-center justify-center" aria-hidden>
+                  <Image
+                    src="/Topoicon.svg"
+                    alt=""
+                    width={28}
+                    height={28}
+                    className="size-7 object-contain opacity-90"
+                  />
+                </span>
+                <span className="font-sans text-xs font-medium tabular-nums tracking-tight text-foreground">
+                  {Math.round(cartePolygonAreaM2).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
+                </span>
+                <span className={cn(radianzMonoLabelClass, "max-w-full text-pretty text-[9px] leading-snug")}>
+                  Surface parcelle
+                </span>
+              </div>
+            ) : null}
+            {discoveryRecapShowAzimuth && discoveryAzimuthDisplay ? (
+              <div
+                className="flex min-w-0 flex-1 basis-0 flex-col items-center gap-1 text-center"
+                title="Azimut PVGIS déduit de l’empreinte (0° = plein sud, 90° = ouest, −90° = est) — heuristique du plus long côté du polygone, identique à l’appel PVGIS de ce panneau."
+              >
+                <span className="flex size-7 shrink-0 items-center justify-center" aria-hidden>
+                  <Image
+                    src="/surfaceicon.svg"
+                    alt=""
+                    width={28}
+                    height={28}
+                    className="size-7 object-contain opacity-90"
+                  />
+                </span>
+                <span className="font-sans text-xs font-medium tabular-nums tracking-tight text-foreground">
+                  {discoveryAzimuthDisplay}
+                </span>
+                <span className={cn(radianzMonoLabelClass, "max-w-full text-pretty text-[9px] leading-snug")}>
+                  Azimut toit
+                </span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="drawer-discovery-pills">
           <Badge
             variant="lime"
@@ -998,35 +1071,6 @@ function ProspectDrawerDiscoverySection({
             className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
           >
             {kwcRounded}
-          </Badge>
-          <Badge
-            variant="outline"
-            className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-            title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
-          >
-            <Building2 className="size-3.5 shrink-0" aria-hidden />
-            {empreinteM2Formatted}
-          </Badge>
-          <Badge
-            variant="outline"
-            className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-            title={
-              row.grain === "parcelle"
-                ? parcelleCluster.length > 1
-                  ? "Somme des aires des polygones parcelles (approx. géodésique locale)"
-                  : "Aire du polygone parcelle sur la carte (approx. géodésique locale)"
-                : "Aire du polygone affiché (bâtiment) sur la carte"
-            }
-          >
-            <Image
-              src="/Topoicon.svg"
-              alt=""
-              width={26}
-              height={26}
-              className="size-6 shrink-0"
-              aria-hidden
-            />
-            {contourM2Formatted}
           </Badge>
           <Badge
             variant="outline"
@@ -1070,9 +1114,9 @@ function ProspectDrawerDiscoverySection({
           <span>Contact</span>
           <span
             className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
-            aria-label={`${terrainDetailParcelles.length} parcelle${terrainDetailParcelles.length !== 1 ? "s" : ""} cadastrale${terrainDetailParcelles.length !== 1 ? "s" : ""}`}
+            aria-label={`${discoveryMergedPois.length} point${discoveryMergedPois.length !== 1 ? "s" : ""} d'intérêt détecté${discoveryMergedPois.length !== 1 ? "s" : ""}`}
           >
-            {terrainDetailParcelles.length}
+            {discoveryMergedPois.length}
           </span>
         </TabsTrigger>
       </TabsList>

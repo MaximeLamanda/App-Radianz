@@ -271,10 +271,6 @@
     @apply text-balance font-sans text-2xl font-semibold leading-tight tracking-tight text-foreground sm:text-[1.65rem];
   }
 
-  .drawer-discovery-subtitle {
-    @apply max-w-[52ch] text-pretty text-sm leading-snug text-muted-foreground;
-  }
-
   .drawer-discovery-hero-address {
     @apply min-w-0 max-w-full truncate whitespace-nowrap text-sm leading-snug text-muted-foreground;
   }

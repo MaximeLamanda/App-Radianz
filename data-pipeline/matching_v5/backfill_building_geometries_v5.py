@@ -19,6 +19,17 @@ def _chunked(items: list[str], size: int) -> Iterable[list[str]]:
         yield items[i : i + size]
 
 
+def _buildings_json_raw_for_parse(v: Any) -> str:
+    """psycopg2 renvoie souvent `buildings_json` comme list/dict ; `str(list)` n'est pas du JSON valide."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, ensure_ascii=False)
+    return str(v).strip()
+
+
 def _extract_construction_ids(buildings_json_raw: str) -> list[str]:
     s = str(buildings_json_raw or "").strip()
     if not s:
@@ -108,7 +119,7 @@ def main() -> int:
                     props = row.get("properties_json") or {}
                     if not isinstance(props, dict):
                         continue
-                    all_ids.extend(_extract_construction_ids(str(props.get("buildings_json") or "")))
+                    all_ids.extend(_extract_construction_ids(_buildings_json_raw_for_parse(props.get("buildings_json"))))
                 uniq_ids = sorted(set(all_ids))
                 payload_by_id: dict[str, dict[str, Any]] = {}
                 if uniq_ids:
@@ -118,7 +129,7 @@ def main() -> int:
                     props = row.get("properties_json") or {}
                     if not isinstance(props, dict):
                         continue
-                    buildings_json_raw = str(props.get("buildings_json") or "")
+                    buildings_json_raw = _buildings_json_raw_for_parse(props.get("buildings_json"))
                     ids = _extract_construction_ids(buildings_json_raw)
                     payload = []
                     for bid in ids:

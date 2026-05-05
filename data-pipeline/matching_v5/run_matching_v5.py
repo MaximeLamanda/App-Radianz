@@ -276,13 +276,22 @@ def fetch_construction_geometries(cur, construction_ids: list[str], construction
         return {}
     cur.execute(
         f"""
-        SELECT batiment_construction_id::text, ST_AsGeoJSON(ST_Transform(geom_cstr, 4326))::text
+        SELECT batiment_construction_id::text AS batiment_construction_id,
+               ST_AsGeoJSON(ST_Transform(geom_cstr, 4326))::text AS geometry
         FROM {constructions_qualified}
         WHERE batiment_construction_id = ANY(%s::text[])
         """,
         (construction_ids,),
     )
-    return {str(a): str(b) for a, b in cur.fetchall()}
+    out: dict[str, str] = {}
+    for row in cur.fetchall():
+        if isinstance(row, dict):
+            a = row["batiment_construction_id"]
+            b = row["geometry"]
+        else:
+            a, b = row
+        out[str(a)] = str(b)
+    return out
 
 
 def fetch_construction_payloads(cur, construction_ids: list[str], constructions_qualified: str) -> dict[str, dict[str, Any]]:
@@ -291,8 +300,8 @@ def fetch_construction_payloads(cur, construction_ids: list[str], constructions_
     cur.execute(
         f"""
         SELECT
-          bc.batiment_construction_id::text,
-          bc.batiment_groupe_id::text,
+          bc.batiment_construction_id::text AS batiment_construction_id,
+          bc.batiment_groupe_id::text AS batiment_groupe_id,
           ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
           ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::text AS geometry
         FROM {constructions_qualified} bc
@@ -302,7 +311,14 @@ def fetch_construction_payloads(cur, construction_ids: list[str], constructions_
         (construction_ids,),
     )
     out: dict[str, dict[str, Any]] = {}
-    for bid, gid, footprint_m2, geometry in cur.fetchall():
+    for row in cur.fetchall():
+        if isinstance(row, dict):
+            bid = row["batiment_construction_id"]
+            gid = row["batiment_groupe_id"]
+            footprint_m2 = row["footprint_m2"]
+            geometry = row["geometry"]
+        else:
+            bid, gid, footprint_m2, geometry = row
         out[str(bid)] = {
             "batiment_construction_id": str(bid),
             "batiment_groupe_id": (str(gid).strip() if gid is not None else "") or None,
