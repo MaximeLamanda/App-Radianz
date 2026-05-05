@@ -137,6 +137,7 @@ describe("matchingV5RowsToProspectDraft", () => {
     expect(draft.solarPotential?.estimatedKwp).toBeGreaterThan(0);
     expect(draft.parcelContourAreaM2).toBeDefined();
     expect(draft.parcelContourAreaM2!).toBeGreaterThan(0);
+    expect(draft.bdnbFootprintSumM2).toBe(800);
   });
 
   it("sans PVGIS fourni, expose quand même estimatedKwp et surface", () => {

@@ -953,6 +953,8 @@ export default function ProspectSharePage() {
   ).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const recapParcelM2 = prospect.parcelContourAreaM2;
   const recapShowParcelle = recapParcelM2 != null && recapParcelM2 > 0;
+  const recapBdnbM2 = prospect.bdnbFootprintSumM2;
+  const recapShowBdnb = recapBdnbM2 != null && recapBdnbM2 > 0;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -1134,14 +1136,37 @@ export default function ProspectSharePage() {
                           className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
                           title="CO₂ évité par la production PV — hypothèse mix réseau ~52 g CO₂e/kWh (indicatif)"
                         >
-                          ≈ {recapCo2TonnesStr} t CO₂/an
+                          {recapCo2TonnesStr} t CO₂/an
+                        </Badge>
+                      ) : null}
+                      {effectiveConfig.effectiveKwp > 0 ? (
+                        <Badge
+                          variant="outline"
+                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                          title="Puissance crête estimée (kWp)"
+                        >
+                          {effectiveConfig.effectiveKwp.toFixed(2)} kWp
+                        </Badge>
+                      ) : null}
+                      {recapShowBdnb ? (
+                        <Badge
+                          variant="outline"
+                          className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
+                          title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
+                        >
+                          <Building2 className="size-3.5 shrink-0" aria-hidden />
+                          {Math.round(recapBdnbM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
                         </Badge>
                       ) : null}
                       {recapShowParcelle ? (
                         <Badge
                           variant="outline"
                           className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-                          title="Surface au sol du contour parcelle cadastrale (approx. cartographique)"
+                          title={
+                            prospect.pipelineEntrySource === "discovery_v5"
+                              ? "Aire du polygone parcelle sur la carte (approx. géodésique locale) ou somme des parcelles liées"
+                              : "Surface au sol du contour parcelle cadastrale (approx. cartographique)"
+                          }
                         >
                           <Image
                             src="/Topoicon.svg"
@@ -1152,15 +1177,6 @@ export default function ProspectSharePage() {
                             aria-hidden
                           />
                           {Math.round(recapParcelM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
-                        </Badge>
-                      ) : null}
-                      {effectiveConfig.effectiveKwp > 0 ? (
-                        <Badge
-                          variant="outline"
-                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
-                          title="Puissance crête estimée (kWp)"
-                        >
-                          {effectiveConfig.effectiveKwp.toFixed(2)} kWp
                         </Badge>
                       ) : null}
                     </div>

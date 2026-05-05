@@ -162,6 +162,8 @@ export interface Prospect {
   matchingV5RowId?: string;
   /** Aire approximative contour(s) parcelle(s) cadastrale(s) (m²), source Discovery. */
   parcelContourAreaM2?: number;
+  /** Empreinte au sol bâtiments BDNB Σ (m²), source Discovery — aligné tiroir. */
+  bdnbFootprintSumM2?: number;
 }
 
 export interface Lead {

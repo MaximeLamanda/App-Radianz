@@ -262,6 +262,7 @@ export function matchingV5RowsToProspectDraft(
     ...company,
     ...(solarPotential ? { solarPotential } : {}),
     ...(parcelContourM2 > 0 ? { parcelContourAreaM2: Math.round(parcelContourM2) } : {}),
+    ...(footprintSum > 0 ? { bdnbFootprintSumM2: Math.round(footprintSum) } : {}),
   };
 
   return base;

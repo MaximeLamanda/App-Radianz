@@ -105,7 +105,7 @@ export function RadianzCo2AvoidanceRadial({
 
       {hasData ? (
         <div className="mt-auto border-t pt-3 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[#6B6B6B]">
-          <span className="text-[#0A0A0A]">≈ {tonnesStr} t</span>
+          <span className="text-[#0A0A0A]">{tonnesStr} t</span>
           <span className="block normal-case">CO₂ évités / an · ~52 g/kWh</span>
         </div>
       ) : null}

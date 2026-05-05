@@ -74,6 +74,8 @@ export interface ProspectDocument {
   matchingV5RowId?: string;
   /** Surface contour parcelle(s) (m²), Discovery. */
   parcelContourAreaM2?: number;
+  /** Empreinte BDNB Σ (m²), Discovery. */
+  bdnbFootprintSumM2?: number;
 }
 
 /** Valeurs calculées par le drawer, stockées telles quelles (pas de recalcul) */
@@ -239,6 +241,9 @@ export function prepareProspectForFirestore(
   if (prospect.parcelContourAreaM2 != null && prospect.parcelContourAreaM2 > 0) {
     doc.parcelContourAreaM2 = Math.round(prospect.parcelContourAreaM2);
   }
+  if (prospect.bdnbFootprintSumM2 != null && prospect.bdnbFootprintSumM2 > 0) {
+    doc.bdnbFootprintSumM2 = Math.round(prospect.bdnbFootprintSumM2);
+  }
 
   return doc;
 }
@@ -332,6 +337,9 @@ export function prospectFromFirestore(
   if (data.matchingV5RowId) result.matchingV5RowId = data.matchingV5RowId;
   if (data.parcelContourAreaM2 != null && data.parcelContourAreaM2 > 0) {
     result.parcelContourAreaM2 = data.parcelContourAreaM2;
+  }
+  if (data.bdnbFootprintSumM2 != null && data.bdnbFootprintSumM2 > 0) {
+    result.bdnbFootprintSumM2 = data.bdnbFootprintSumM2;
   }
   return result;
 }
