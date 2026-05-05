@@ -301,8 +301,11 @@ function DiscoveryContent() {
         const byFeatId = new Map<string, GeoJSON.Feature>();
         for (let i = 0; i < ids.length; i += BDNB_BUILDINGS_CHUNK) {
           const chunk = ids.slice(i, i + BDNB_BUILDINGS_CHUNK);
-          const qs = new URLSearchParams({ ids: chunk.join(",") });
-          const res = await fetchWithAuth(`/api/matching-v5/buildings?${qs.toString()}`);
+          const res = await fetchWithAuth("/api/matching-v5/buildings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: chunk }),
+          });
           if (!res.ok) {
             if (!cancelled) {
               setBdnbBuildingFeatures([]);

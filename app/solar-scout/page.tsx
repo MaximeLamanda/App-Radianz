@@ -249,8 +249,11 @@ function SolarScoutContent() {
         return;
       }
       try {
-        const qs = new URLSearchParams({ ids: ids.slice(0, 200).join(",") });
-        const res = await fetchWithAuth(`/api/matching-v5/buildings?${qs.toString()}`);
+        const res = await fetchWithAuth("/api/matching-v5/buildings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ids.slice(0, 200) }),
+        });
         if (!res.ok) {
           if (!cancelled) setMatchingV5BuildingsError(`Erreur API buildings (${res.status}).`);
           if (!cancelled) setMatchingV5BuildingFeatures([]);

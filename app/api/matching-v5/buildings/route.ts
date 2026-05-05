@@ -9,7 +9,33 @@ import {
 import { getBdnbConstructionsTableRef } from "@/lib/bdnb-constructions-table";
 import { splitMatchingV5BuildingIds } from "@/lib/matching-v5-building-ids";
 
-export async function GET(request: NextRequest) {
+async function readIdsFromRequest(request: NextRequest): Promise<string[]> {
+  const { searchParams } = request.nextUrl;
+  const fromQuery = searchParams.get("ids") ?? "";
+  if (fromQuery.trim()) {
+    return fromQuery
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 300);
+  }
+
+  try {
+    const body = (await request.json()) as { ids?: unknown };
+    if (Array.isArray(body?.ids)) {
+      return body.ids
+        .map((v) => String(v).trim())
+        .filter(Boolean)
+        .slice(0, 300);
+    }
+  } catch {
+    // Ignore body parse errors and fallback to empty list.
+  }
+
+  return [];
+}
+
+async function handleRequest(request: NextRequest) {
   const authResult = await requireAuth(request);
   if (!authResult.ok) return authResult.response;
 
@@ -24,13 +50,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { searchParams } = request.nextUrl;
-  const idsParam = searchParams.get("ids") ?? "";
-  const ids = idsParam
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 300);
+  const ids = await readIdsFromRequest(request);
 
   if (ids.length === 0) {
     return NextResponse.json({ type: "FeatureCollection", features: [] });
@@ -94,5 +114,13 @@ export async function GET(request: NextRequest) {
   } finally {
     await client.end();
   }
+}
+
+export async function GET(request: NextRequest) {
+  return handleRequest(request);
+}
+
+export async function POST(request: NextRequest) {
+  return handleRequest(request);
 }
 
