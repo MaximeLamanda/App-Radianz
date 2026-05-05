@@ -36,36 +36,38 @@ async function readIdsFromRequest(request: NextRequest): Promise<string[]> {
 }
 
 async function handleRequest(request: NextRequest) {
-  const authResult = await requireAuth(request);
-  if (!authResult.ok) return authResult.response;
-
-  const databaseUrl = getServerDatabaseUrl();
-  if (!databaseUrl) {
-    return NextResponse.json(
-      {
-        error: `Variable Postgres manquante (${getServerDatabaseUrlEnvHint()})`,
-        envPresence: getServerDatabaseUrlEnvPresence(),
-      },
-      { status: 500 }
-    );
-  }
-
-  const ids = await readIdsFromRequest(request);
-
-  if (ids.length === 0) {
-    return NextResponse.json({ type: "FeatureCollection", features: [] });
-  }
-  const { constructionIds, groupIds } = splitMatchingV5BuildingIds(ids);
-  if (constructionIds.length === 0 && groupIds.length === 0) {
-    return NextResponse.json({ type: "FeatureCollection", features: [] });
-  }
-
-  const tableRef = getBdnbConstructionsTableRef(process.env.BDNB_CONSTRUCTIONS_TABLE);
-  const ffoQualified = `"${tableRef.schema}"."batiment_groupe_ffo_bat"`;
-
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
+  let client: Client | null = null;
   try {
+    const authResult = await requireAuth(request);
+    if (!authResult.ok) return authResult.response;
+
+    const databaseUrl = getServerDatabaseUrl();
+    if (!databaseUrl) {
+      return NextResponse.json(
+        {
+          error: `Variable Postgres manquante (${getServerDatabaseUrlEnvHint()})`,
+          envPresence: getServerDatabaseUrlEnvPresence(),
+        },
+        { status: 500 }
+      );
+    }
+
+    const ids = await readIdsFromRequest(request);
+
+    if (ids.length === 0) {
+      return NextResponse.json({ type: "FeatureCollection", features: [] });
+    }
+    const { constructionIds, groupIds } = splitMatchingV5BuildingIds(ids);
+    if (constructionIds.length === 0 && groupIds.length === 0) {
+      return NextResponse.json({ type: "FeatureCollection", features: [] });
+    }
+
+    const tableRef = getBdnbConstructionsTableRef(process.env.BDNB_CONSTRUCTIONS_TABLE);
+    const ffoQualified = `"${tableRef.schema}"."batiment_groupe_ffo_bat"`;
+
+    client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+
     const runBuildingsQuery = async (withFfoJoin: boolean) =>
       client.query<{
         batiment_construction_id: string;
@@ -152,7 +154,9 @@ async function handleRequest(request: NextRequest) {
     const pgCode = (err as { code?: string } | null)?.code ?? null;
     return NextResponse.json({ error: "Erreur requête Postgres", message, pgCode }, { status: 500 });
   } finally {
-    await client.end();
+    if (client) {
+      await client.end();
+    }
   }
 }
 
