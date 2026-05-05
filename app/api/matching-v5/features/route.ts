@@ -82,12 +82,14 @@ export async function GET(request: NextRequest) {
     const { rows } = await client.query<{
       scout_v5_id: string;
       geometry: GeoJSON.Geometry;
+      building_geometries_json: unknown;
       properties_json: Record<string, unknown>;
     }>(
       `
       SELECT
         scout_v5_id,
         ST_AsGeoJSON(geom)::json AS geometry,
+        building_geometries_json,
         properties_json
       ${sqlFrom}
       ORDER BY scout_v5_id
@@ -106,7 +108,10 @@ export async function GET(request: NextRequest) {
         type: "Feature" as const,
         id: r.scout_v5_id,
         geometry: r.geometry,
-        properties: r.properties_json ?? {},
+        properties: {
+          ...(r.properties_json ?? {}),
+          building_geometries_json: r.building_geometries_json ?? [],
+        },
       }));
 
     return NextResponse.json({ type: "FeatureCollection", features });

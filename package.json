@@ -37,10 +37,13 @@
     "neon:transfer:indexes": "NEON_TRANSFER_MODE=indexes-only bash scripts/neon-transfer-local-docker-to-neon.sh",
     "neon:drop-discovery-artifacts:dry": "DRY_RUN=1 node scripts/neon-drop-discovery-artifact-tables.mjs",
     "neon:drop-discovery-artifacts": "node scripts/neon-drop-discovery-artifact-tables.mjs",
+    "neon:drop-bdnb-after-v5-enrichment:dry": "DRY_RUN=1 node scripts/neon-drop-bdnb-after-v5-enrichment.mjs",
+    "neon:drop-bdnb-after-v5-enrichment": "node scripts/neon-drop-bdnb-after-v5-enrichment.mjs",
     "postgres:local:up": "PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\" docker compose up -d",
     "postgres:local:down": "PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\" docker compose down",
     "pipeline:matching-v5:run": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/run_matching_v5.py --min-parcelle-footprint-sum-m2 400'",
     "pipeline:matching-v5:run-google": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/run_matching_v5.py --min-parcelle-footprint-sum-m2 400 --google-fallback'",
+    "pipeline:matching-v5:backfill-building-geometries": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/backfill_building_geometries_v5.py'",
     "pipeline:osm-poi:schema": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_poi.py --ensure-schema'",
     "pipeline:osm-poi:import": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_poi.py --input datasource/osm/aquitaine-260406.osm.pbf --truncate'",
     "import:bdnb-constructions:local": "node scripts/import-bdnb-constructions-local.mjs --data-dir=datasource/bdnb/dep33_extract"

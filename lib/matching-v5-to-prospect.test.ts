@@ -51,6 +51,7 @@ function rowParcelle(
     passerelleAddressesJson: "",
     parcellesJson: "",
     buildingsJson: "",
+    buildingGeometriesJson: "",
     properties: {},
   };
 }

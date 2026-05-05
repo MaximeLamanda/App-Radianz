@@ -30,6 +30,7 @@ function parcelle(
     passerelleAddress: "",
     passerelleAddressesJson: "",
     parcellesJson: "",
+    buildingGeometriesJson: "",
     properties: {},
     ...partial,
   } as ScoutMatchingV5Row;
@@ -61,6 +62,7 @@ function buildingRow(id: string, parcellesJson: string): ScoutMatchingV5Row {
     passerelleAddress: "",
     passerelleAddressesJson: "",
     buildingsJson: "",
+    buildingGeometriesJson: "",
     parcellesJson,
     properties: {},
   } as ScoutMatchingV5Row;

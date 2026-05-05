@@ -96,6 +96,7 @@ describe("filterScoutMatchingV5RowsByMapBounds", () => {
       passerelleAddressesJson: "",
       parcellesJson: "",
       buildingsJson: "",
+      buildingGeometriesJson: "",
       properties: {},
     } as ScoutMatchingV5Row;
   }

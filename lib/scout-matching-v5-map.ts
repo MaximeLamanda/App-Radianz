@@ -35,6 +35,7 @@ export type ScoutMatchingV5Row = {
   passerelleAddressesJson: string;
   parcellesJson: string;
   buildingsJson: string;
+  buildingGeometriesJson: string;
   /** POI OSM dans la parcelle (export matching V5, `osm_pois_json`). */
   osmPoisJson?: string;
   osmPoiCount?: number;
@@ -47,6 +48,16 @@ export type ScoutMatchingV5Row = {
 function strProp(v: unknown): string {
   if (v == null) return "";
   return String(v).trim();
+}
+
+function jsonStringProp(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return "";
+  }
 }
 
 /** Aligné sur `data-pipeline/matching_v5/osm_poi_v5.py` — catégories pour repli client. */
@@ -171,6 +182,14 @@ export type V5BuildingsJsonEntry = {
   matchingSirenSelected: string;
 };
 
+export type V5BuildingGeometryEntry = {
+  batimentConstructionId: string;
+  batimentGroupeId: string | null;
+  anneeConstruction: number | null;
+  footprintM2: number | null;
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+};
+
 function numPropNullable(v: unknown): number | null {
   if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(String(v));
@@ -206,6 +225,69 @@ export function parseMatchingV5BuildingsJson(raw: string): V5BuildingsJsonEntry[
   } catch {
     return [];
   }
+}
+
+export function parseMatchingV5BuildingGeometriesJson(raw: string): V5BuildingGeometryEntry[] {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s) as unknown;
+    if (!Array.isArray(v)) return [];
+    const out: V5BuildingGeometryEntry[] = [];
+    for (const item of v) {
+      if (!item || typeof item !== "object") continue;
+      const o = item as Record<string, unknown>;
+      const bc = strProp(o.batiment_construction_id);
+      const geometry = parseGeometry(o.geometry);
+      if (!bc || !geometry) continue;
+      out.push({
+        batimentConstructionId: bc,
+        batimentGroupeId: strProp(o.batiment_groupe_id) || null,
+        anneeConstruction: numPropNullable(o.annee_construction),
+        footprintM2: numPropNullable(o.footprint_m2),
+        geometry,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function collectMatchingV5BuildingFeatures(rows: ScoutMatchingV5Row[]): GeoJSON.Feature[] {
+  const byId = new Map<string, GeoJSON.Feature>();
+  for (const row of rows) {
+    if (row.grain === "building") {
+      const id = String(row.batimentConstructionId || row.batimentGroupeId || "").trim();
+      if (!id || byId.has(id)) continue;
+      byId.set(id, {
+        type: "Feature",
+        id: `bdnbcstr:${id}`,
+        geometry: row.geometry,
+        properties: {
+          batiment_construction_id: row.batimentConstructionId,
+          batiment_groupe_id: row.batimentGroupeId,
+          footprint_m2: row.footprintSumM2,
+        },
+      });
+      continue;
+    }
+    for (const entry of parseMatchingV5BuildingGeometriesJson(row.buildingGeometriesJson)) {
+      if (byId.has(entry.batimentConstructionId)) continue;
+      byId.set(entry.batimentConstructionId, {
+        type: "Feature",
+        id: `bdnbcstr:${entry.batimentConstructionId}`,
+        geometry: entry.geometry,
+        properties: {
+          batiment_construction_id: entry.batimentConstructionId,
+          batiment_groupe_id: entry.batimentGroupeId,
+          annee_construction: entry.anneeConstruction,
+          footprint_m2: entry.footprintM2,
+        },
+      });
+    }
+  }
+  return Array.from(byId.values());
 }
 
 /** POI Google Nearby classés (dans la parcelle), export pipeline V5 (`google_nearby_ranked_json`). */
@@ -762,6 +844,7 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
       passerelleAddressesJson,
       parcellesJson: strProp(p.parcelles_json),
       buildingsJson: strProp(p.buildings_json),
+      buildingGeometriesJson: jsonStringProp(p.building_geometries_json),
       osmPoisJson,
       osmPoiCount,
       osmPoisStatus,

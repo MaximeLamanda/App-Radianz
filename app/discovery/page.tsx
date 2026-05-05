@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useDrawer } from "@/lib/drawer-context";
 import { fetchWithAuth } from "@/lib/api-client";
 import {
+  collectMatchingV5BuildingFeatures,
   collectBatimentIdsForMatchingV5BuildingsApi,
   findMatchingV5LinkedParcelleRowsTransitive,
   findMatchingV5ParcelleRowsForBuilding,
@@ -277,6 +278,15 @@ function DiscoveryContent() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
+    const embeddedFeatures = collectMatchingV5BuildingFeatures(filteredFootprintsForBdnb);
+    if (embeddedFeatures.length > 0) {
+      discoveryDebug("page", "BDNB buildings : utilisation des géométries enrichies", {
+        featureCount: embeddedFeatures.length,
+      });
+      setBdnbBuildingFeatures(embeddedFeatures);
+      lastBdnbIdsPackRef.current = "embedded";
+      return;
+    }
     const rawIds = collectBatimentIdsForMatchingV5BuildingsApi(filteredFootprintsForBdnb);
     const ids = rawIds.slice(0, BDNB_BUILDINGS_MAX_IDS);
     if (ids.length === 0) {
@@ -331,7 +341,7 @@ function DiscoveryContent() {
           const feats = Array.from(byFeatId.values());
           setBdnbBuildingFeatures(feats);
           lastBdnbIdsPackRef.current = idsPack;
-          discoveryDebug("page", "BDNB buildings : fin OK", { featureCount: feats.length });
+          discoveryDebug("page", "BDNB buildings : fin OK (fallback API)", { featureCount: feats.length });
         }
       } catch {
         if (!cancelled) {

@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS public.scout_matching_v5_features (
   status_metier TEXT NOT NULL DEFAULT '',
   matching_confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
   siren_status TEXT NOT NULL DEFAULT '',
+  building_geometries_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   properties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   source_run TEXT,
   imported_at TIMESTAMPTZ NOT NULL DEFAULT now()

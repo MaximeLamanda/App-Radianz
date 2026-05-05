@@ -285,6 +285,33 @@ def fetch_construction_geometries(cur, construction_ids: list[str], construction
     return {str(a): str(b) for a, b in cur.fetchall()}
 
 
+def fetch_construction_payloads(cur, construction_ids: list[str], constructions_qualified: str) -> dict[str, dict[str, Any]]:
+    if not construction_ids:
+        return {}
+    cur.execute(
+        f"""
+        SELECT
+          bc.batiment_construction_id::text,
+          bc.batiment_groupe_id::text,
+          ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
+          ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::text AS geometry
+        FROM {constructions_qualified} bc
+        WHERE bc.geom_cstr IS NOT NULL
+          AND bc.batiment_construction_id = ANY(%s::text[])
+        """,
+        (construction_ids,),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for bid, gid, footprint_m2, geometry in cur.fetchall():
+        out[str(bid)] = {
+            "batiment_construction_id": str(bid),
+            "batiment_groupe_id": (str(gid).strip() if gid is not None else "") or None,
+            "footprint_m2": safe_float(footprint_m2),
+            "geometry": str(geometry),
+        }
+    return out
+
+
 def _join_address_parts(
     numero_voirie: str | None,
     indice_repetition: str | None,
@@ -1366,6 +1393,12 @@ def write_matching_v5_features_postgres(
         conn.autocommit = False
         with conn.cursor() as cur:
             cur.execute(
+                f"""
+                ALTER TABLE {qualified}
+                ADD COLUMN IF NOT EXISTS building_geometries_json JSONB NOT NULL DEFAULT '[]'::jsonb
+                """
+            )
+            cur.execute(
                 f"DELETE FROM {qualified} WHERE code_insee = %s",
                 (code_insee_filter,),
             )
@@ -1373,11 +1406,11 @@ def write_matching_v5_features_postgres(
             INSERT INTO {qualified} (
               scout_v5_id, geom, grain, code_insee, section, numero_norm,
               nb_batiments, footprint_sum_m2, siret_count, status_technique, status_metier,
-              matching_confidence, siren_status, properties_json, source_run
+              matching_confidence, siren_status, building_geometries_json, properties_json, source_run
             ) VALUES (
               %s,
               ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             """
             for r in out_rows:
@@ -1396,6 +1429,14 @@ def write_matching_v5_features_postgres(
                     n_skip += 1
                     continue
                 props = {k: v for k, v in r.items() if k != "geometry_geojson"}
+                building_geometries_json = props.get("building_geometries_json") or "[]"
+                if isinstance(building_geometries_json, str):
+                    try:
+                        building_geometries_payload = json.loads(building_geometries_json)
+                    except json.JSONDecodeError:
+                        building_geometries_payload = []
+                else:
+                    building_geometries_payload = building_geometries_json
                 row_insee = str(r.get("code_insee") or code_insee_filter).strip() or code_insee_filter
                 grain = str(r.get("grain") or "parcelle")
                 sec = str(r.get("section") or "")
@@ -1416,6 +1457,7 @@ def write_matching_v5_features_postgres(
                         str(r.get("status_metier") or ""),
                         _safe_float(r.get("matching_confidence")),
                         str(r.get("siren_status") or ""),
+                        psycopg2.extras.Json(building_geometries_payload),
                         psycopg2.extras.Json(props),
                         source_run or None,
                     ),
@@ -1680,6 +1722,16 @@ def main() -> int:
         finally:
             conn.close()
 
+    all_selected_ids = sorted({str(bid).strip() for bids in by_parcel.values() for bid in bids if str(bid).strip()})
+    payload_by_bat: dict[str, dict[str, Any]] = {}
+    if all_selected_ids:
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                payload_by_bat = fetch_construction_payloads(cur, all_selected_ids, constructions_q)
+        finally:
+            conn.close()
+
     if args.include_building_grain:
         for bid in multi_ids:
             plist = by_building[bid]
@@ -1899,6 +1951,21 @@ def main() -> int:
                 "matching_debug_json": "",
                 "parcelles_json": "",
                 "buildings_json": json.dumps(bdetails, ensure_ascii=False),
+                "building_geometries_json": json.dumps(
+                    [
+                        {
+                            "batiment_construction_id": item["batiment_construction_id"],
+                            "batiment_groupe_id": item.get("batiment_groupe_id"),
+                            "annee_construction": item.get("annee_construction"),
+                            "footprint_m2": item.get("footprint_m2"),
+                            "geometry": json.loads(payload_by_bat[item["batiment_construction_id"]]["geometry"]),
+                        }
+                        for item in bdetails
+                        if item.get("batiment_construction_id")
+                        and item["batiment_construction_id"] in payload_by_bat
+                    ],
+                    ensure_ascii=False,
+                ),
                 "geometry_geojson": gj,
                 **google_row,
                 **parcel_osm_export_columns(
@@ -1943,6 +2010,7 @@ def main() -> int:
         "matching_debug_json",
         "parcelles_json",
         "buildings_json",
+        "building_geometries_json",
         "google_fallback_attempted",
         "google_fallback_success",
         "google_fallback_group_id",

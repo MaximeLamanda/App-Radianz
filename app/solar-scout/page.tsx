@@ -19,6 +19,7 @@ import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 import { toast } from "sonner";
 import type { Prospect, AddressCoordinates } from "@/types";
 import {
+  collectMatchingV5BuildingFeatures,
   findMatchingV5LinkedParcelleRowsTransitive,
   parseMatchingV5GeoJsonFeatureCollection,
   type ScoutMatchingV5Row,
@@ -202,6 +203,7 @@ function SolarScoutContent() {
     let cancelled = false;
     void (async () => {
       const linked = findMatchingV5LinkedParcelleRowsTransitive(selected, matchingV5Rows);
+      const embeddedFeatures = collectMatchingV5BuildingFeatures(linked);
       const ids: string[] = [];
       const idSeen = new Set<string>();
       for (const row of linked) {
@@ -242,6 +244,13 @@ function SolarScoutContent() {
               )
             : []
         );
+      }
+      if (embeddedFeatures.length > 0) {
+        if (!cancelled) {
+          setMatchingV5BuildingsError(null);
+          setMatchingV5BuildingFeatures(embeddedFeatures);
+        }
+        return;
       }
       if (ids.length === 0) {
         if (!cancelled) setMatchingV5BuildingsError("Aucun identifiant bâtiment dans buildings_json.");

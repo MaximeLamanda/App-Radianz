@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScoutMatchingV5Row } from "./scout-matching-v5-map";
 import {
+  collectMatchingV5BuildingFeatures,
   collectBatimentIdsForMatchingV5BuildingsApi,
   collectPartageBatimentConstructionIds,
   findMatchingV5LinkedParcelleRows,
@@ -10,6 +11,7 @@ import {
   formatV5OsmPoiTypeLabelForDisplay,
   mergeOsmPoisFromParcelleRows,
   parseGoogleNearbyRankedJson,
+  parseMatchingV5BuildingGeometriesJson,
   parseMatchingV5BuildingsJson,
   parseOsmPoisJson,
   parseSiretsMatchJson,
@@ -18,6 +20,8 @@ import {
 function parcelle(
   partial: Pick<ScoutMatchingV5Row, "id" | "section" | "numeroNorm" | "codeInsee"> & {
     buildingsJson?: string;
+    buildingGeometriesJson?: string;
+    osmPoisJson?: string;
   }
 ): ScoutMatchingV5Row {
   return {
@@ -41,6 +45,7 @@ function parcelle(
     passerelleAddress: "",
     passerelleAddressesJson: "",
     parcellesJson: "",
+    buildingGeometriesJson: "",
     properties: {},
     ...partial,
   } as ScoutMatchingV5Row;
@@ -72,6 +77,7 @@ function buildingRow(id: string, parcellesJson: string): ScoutMatchingV5Row {
     passerelleAddress: "",
     passerelleAddressesJson: "",
     buildingsJson: "",
+    buildingGeometriesJson: "",
     parcellesJson,
     properties: {},
   } as ScoutMatchingV5Row;
@@ -394,5 +400,100 @@ describe("parseMatchingV5BuildingsJson", () => {
     expect(rows[0]!.anneeConstruction).toBe(2017);
     expect(rows[0]!.footprintM2).toBeCloseTo(1188.18, 1);
     expect(rows[0]!.matchingStatus).toBe("mono");
+  });
+});
+
+describe("parseMatchingV5BuildingGeometriesJson", () => {
+  it("retourne [] si vide ou JSON invalide", () => {
+    expect(parseMatchingV5BuildingGeometriesJson("")).toEqual([]);
+    expect(parseMatchingV5BuildingGeometriesJson("{")).toEqual([]);
+  });
+
+  it("parse un tableau enrichi avec geometry", () => {
+    const raw = JSON.stringify([
+      {
+        batiment_construction_id: "bdnb-bg-A:1",
+        batiment_groupe_id: "bdnb-bg-A",
+        annee_construction: 2017,
+        footprint_m2: 1188.18,
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0],
+            ],
+          ],
+        },
+      },
+    ]);
+    const rows = parseMatchingV5BuildingGeometriesJson(raw);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.batimentConstructionId).toBe("bdnb-bg-A:1");
+    expect(rows[0]!.geometry.type).toBe("Polygon");
+    expect(rows[0]!.anneeConstruction).toBe(2017);
+  });
+});
+
+describe("collectMatchingV5BuildingFeatures", () => {
+  it("construit des features depuis building_geometries_json", () => {
+    const p = parcelle({
+      id: "p1",
+      section: "ET",
+      numeroNorm: "0001",
+      codeInsee: "33318",
+      buildingGeometriesJson: JSON.stringify([
+        {
+          batiment_construction_id: "bdnb-bg-A:1",
+          batiment_groupe_id: "bdnb-bg-A",
+          annee_construction: 2017,
+          footprint_m2: 1188.18,
+          geometry: {
+            type: "Polygon",
+            coordinates: [
+              [
+                [0, 0],
+                [1, 0],
+                [1, 1],
+                [0, 0],
+              ],
+            ],
+          },
+        },
+      ]),
+    });
+    const features = collectMatchingV5BuildingFeatures([p]);
+    expect(features).toHaveLength(1);
+    expect(features[0]!.id).toBe("bdnbcstr:bdnb-bg-A:1");
+  });
+
+  it("déduplique avec une ligne grain=building déjà présente", () => {
+    const p = parcelle({
+      id: "p1",
+      section: "ET",
+      numeroNorm: "0001",
+      codeInsee: "33318",
+      buildingGeometriesJson: JSON.stringify([
+        {
+          batiment_construction_id: "bc-1",
+          geometry: {
+            type: "Polygon",
+            coordinates: [
+              [
+                [0, 0],
+                [1, 0],
+                [1, 1],
+                [0, 0],
+              ],
+            ],
+          },
+        },
+      ]),
+    });
+    const features = collectMatchingV5BuildingFeatures([p, buildingRow("building:x", "[]")]);
+    expect(features).toHaveLength(1);
+    expect(features[0]!.id).toBe("bdnbcstr:bc-1");
   });
 });
