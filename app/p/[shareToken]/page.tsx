@@ -8,7 +8,7 @@ import { useParams } from "next/navigation";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { shouldClearBillMonthToBaseline } from "@/lib/prospect-share-bill-input";
-import { BRAND_LIME } from "@/lib/brand-colors";
+import { BRAND_INK, BRAND_LIME, BRAND_LINE } from "@/lib/brand-colors";
 import {
   RadianzLimeDotOverlay,
   radianzCardBorderStyle,
@@ -29,7 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, ArrowUpRight, Info } from "lucide-react";
+import { User, Phone, Mail, Building2, Loader2, ArrowLeft, Link2, Battery, Zap, FileCheck, ArrowUpRight, Info, Calendar } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   usePanelReferences,
@@ -155,6 +155,16 @@ function areMonthlyValuesEqual(a: number[] | null | undefined, b: number[] | nul
     if (Math.round(a[i] ?? 0) !== Math.round(b[i] ?? 0)) return false;
   }
   return true;
+}
+
+/** Initiales pour l’avatar texte (design system Radianz, carte contact). */
+function referentInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  const a = parts[0][0] ?? "";
+  const b = parts[parts.length - 1][0] ?? "";
+  return `${a}${b}`.toUpperCase();
 }
 
 function SharePortalInstallationCard({
@@ -1116,68 +1126,93 @@ export default function ProspectSharePage() {
                       <p className="text-xs text-muted-foreground mt-1 truncate">{prospect.address}</p>
                     )}
 
-                    <div className="drawer-discovery-pills mt-3">
-                      {recapShowMwh ? (
-                        <Badge
-                          variant="outline"
-                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
-                          title="Production photovoltaïque annuelle estimée (scénario affiché)"
-                        >
-                          {recapAnnualMwh.toLocaleString("fr-FR", {
-                            minimumFractionDigits: 1,
-                            maximumFractionDigits: 1,
-                          })}{" "}
-                          MWh/an
-                        </Badge>
-                      ) : null}
-                      {recapCo2HasData ? (
-                        <Badge
-                          variant="outline"
-                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
-                          title="CO₂ évité par la production PV — hypothèse mix réseau ~52 g CO₂e/kWh (indicatif)"
-                        >
-                          {recapCo2TonnesStr} t CO₂/an
-                        </Badge>
-                      ) : null}
-                      {effectiveConfig.effectiveKwp > 0 ? (
-                        <Badge
-                          variant="outline"
-                          className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
-                          title="Puissance crête estimée (kWp)"
-                        >
-                          {effectiveConfig.effectiveKwp.toFixed(2)} kWp
-                        </Badge>
-                      ) : null}
-                      {recapShowBdnb ? (
-                        <Badge
-                          variant="outline"
-                          className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-                          title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
-                        >
-                          <Building2 className="size-3.5 shrink-0" aria-hidden />
-                          {Math.round(recapBdnbM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
-                        </Badge>
-                      ) : null}
-                      {recapShowParcelle ? (
-                        <Badge
-                          variant="outline"
-                          className="h-6 min-h-6 gap-1 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-                          title={
-                            prospect.pipelineEntrySource === "discovery_v5"
-                              ? "Aire du polygone parcelle sur la carte (approx. géodésique locale) ou somme des parcelles liées"
-                              : "Surface au sol du contour parcelle cadastrale (approx. cartographique)"
-                          }
-                        >
-                          <Image
-                            src="/Topoicon.svg"
-                            alt=""
-                            width={26}
-                            height={26}
-                            className="size-6 shrink-0"
-                            aria-hidden
-                          />
-                          {Math.round(recapParcelM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
-                        </Badge>
+                    <div className="mt-3 flex flex-col gap-4">
+                      <div className="drawer-discovery-pills">
+                        {recapShowMwh ? (
+                          <Badge
+                            variant="outline"
+                            className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                            title="Production photovoltaïque annuelle estimée (scénario affiché)"
+                          >
+                            {recapAnnualMwh.toLocaleString("fr-FR", {
+                              minimumFractionDigits: 1,
+                              maximumFractionDigits: 1,
+                            })}{" "}
+                            MWh/an
+                          </Badge>
+                        ) : null}
+                        {recapCo2HasData ? (
+                          <Badge
+                            variant="outline"
+                            className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                            title="CO₂ évité par la production PV — hypothèse mix réseau ~52 g CO₂e/kWh (indicatif)"
+                          >
+                            {recapCo2TonnesStr} t CO₂/an
+                          </Badge>
+                        ) : null}
+                        {effectiveConfig.effectiveKwp > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="h-6 min-h-6 rounded-md border-0 bg-foreground px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[transform,box-shadow] duration-200 hover:bg-foreground/90 hover:-translate-y-px hover:shadow-xs"
+                            title="Puissance crête estimée (kWp)"
+                          >
+                            {effectiveConfig.effectiveKwp.toFixed(2)} kWp
+                          </Badge>
+                        ) : null}
+                      </div>
+
+                      {recapShowBdnb || recapShowParcelle ? (
+                        <div className="flex flex-wrap gap-8 border-t border-border pt-3 sm:gap-10">
+                          {recapShowBdnb ? (
+                            <div
+                              className="flex min-w-[5.5rem] max-w-[14rem] flex-col items-center gap-2 text-center"
+                              title="Empreinte au sol des bâtiments (BDNB, Σ footprint)"
+                            >
+                              <Image
+                                src="/Buildingicon.svg"
+                                alt=""
+                                width={44}
+                                height={44}
+                                className="size-11 shrink-0 object-contain"
+                                aria-hidden
+                              />
+                              <span className="font-sans text-sm font-medium tabular-nums tracking-tight text-foreground">
+                                {Math.round(recapBdnbM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })}{" "}
+                                m²
+                              </span>
+                              <span className={cn(radianzMonoLabelClass, "max-w-full text-pretty leading-snug")}>
+                                Surface building
+                              </span>
+                            </div>
+                          ) : null}
+                          {recapShowParcelle ? (
+                            <div
+                              className="flex min-w-[5.5rem] max-w-[14rem] flex-col items-center gap-2 text-center"
+                              title={
+                                prospect.pipelineEntrySource === "discovery_v5"
+                                  ? "Aire du polygone parcelle sur la carte (approx. géodésique locale) ou somme des parcelles liées"
+                                  : "Surface au sol du contour parcelle cadastrale (approx. cartographique)"
+                              }
+                            >
+                              <span className="flex size-11 shrink-0 items-center justify-center" aria-hidden>
+                                <Image
+                                  src="/Topoicon.svg"
+                                  alt=""
+                                  width={44}
+                                  height={44}
+                                  className="size-11 object-contain opacity-90"
+                                />
+                              </span>
+                              <span className="font-sans text-sm font-medium tabular-nums tracking-tight text-foreground">
+                                {Math.round(recapParcelM2!).toLocaleString("fr-FR", { maximumFractionDigits: 0 })}{" "}
+                                m²
+                              </span>
+                              <span className={cn(radianzMonoLabelClass, "max-w-full text-pretty leading-snug")}>
+                                Surface parcelle
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
                       ) : null}
                     </div>
                   </div>
@@ -1916,71 +1951,166 @@ export default function ProspectSharePage() {
               </div>
               {commercialReferent && (commercialReferent.name || commercialReferent.email || commercialReferent.phone) ? (
                 <div
-                  className={cn("flex min-h-[200px] min-w-0 flex-col overflow-hidden p-4", radianzDefaultCardClass)}
+                  className={cn(
+                    "grid min-w-0 grid-cols-1 gap-6 overflow-hidden p-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center lg:gap-7",
+                    radianzDefaultCardClass
+                  )}
                   style={radianzCardBorderStyle}
                 >
-                  <div className="flex w-full items-center justify-between">
-                    <p className={radianzMonoLabelClass}>Votre référent</p>
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400">
-                      <span className="size-1.5 rounded-full bg-emerald-500" />
-                      Disponible
-                    </span>
-                  </div>
-                  <div className="relative mx-auto mt-3 size-24 shrink-0 overflow-hidden rounded-[12px] bg-muted">
-                    {commercialReferent.photoURL ? (
-                      <img src={commercialReferent.photoURL} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center">
-                        <User className="size-8 text-muted-foreground" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="mt-3 flex w-full flex-1 flex-col gap-1.5 text-center">
-                    {commercialReferent.name && (
-                      <p className="truncate text-sm font-medium text-foreground">
-                        {commercialReferent.name}
-                      </p>
-                    )}
-                    {(commercialReferent.logoUrl || commercialReferent.company) && (
-                      <div className="flex items-center justify-center gap-2">
-                        {commercialReferent.logoUrl && (
-                          <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-card">
-                            <img src={commercialReferent.logoUrl} alt="" className="h-full w-full object-contain p-0.5" />
+                  {/* Identité + méta (portrait dans le même bloc que nom / entreprise) */}
+                  <div className="flex min-w-0 flex-col gap-4 lg:gap-[18px]">
+                    <div className="min-w-0">
+                      <div className="flex items-start gap-4">
+                        <div
+                          className="relative size-24 shrink-0 overflow-hidden rounded-full border bg-muted"
+                          style={{ borderColor: BRAND_LINE }}
+                        >
+                          {commercialReferent.photoURL ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={commercialReferent.photoURL}
+                              alt=""
+                              className="h-full w-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div
+                              className="flex h-full w-full items-center justify-center font-sans text-[2.375rem] font-light tracking-tight text-foreground"
+                              aria-hidden
+                            >
+                              {referentInitials(commercialReferent.name || commercialReferent.email || "?")}
+                            </div>
+                          )}
+                          <span
+                            className="absolute bottom-0.5 right-0.5 size-3.5 rounded-full ring-[3px] ring-card"
+                            style={{ backgroundColor: BRAND_INK }}
+                            aria-hidden
+                          />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              {commercialReferent.name ? (
+                                <p className="font-sans text-[1.625rem] font-normal leading-[1.1] tracking-[-0.015em] text-foreground">
+                                  {commercialReferent.name}
+                                </p>
+                              ) : null}
+                            </div>
+                            <span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] font-medium uppercase leading-none tracking-[0.1em] text-emerald-800 dark:text-emerald-300">
+                              <span className="leading-none">Disponible</span>
+                              <span
+                                className="size-1.5 shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400"
+                                aria-hidden
+                              />
+                            </span>
                           </div>
-                        )}
-                        <p className="truncate text-xs text-muted-foreground">
-                          {commercialReferent.company || "Entreprise"}
-                        </p>
+                          <div className="mt-2 flex min-w-0 items-center gap-2">
+                            {commercialReferent.logoUrl ? (
+                              <div
+                                className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded border bg-card"
+                                style={{ borderColor: BRAND_LINE }}
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={commercialReferent.logoUrl}
+                                  alt=""
+                                  className="h-full w-full object-contain p-0.5"
+                                />
+                              </div>
+                            ) : null}
+                            <p className="min-w-0 truncate font-mono text-xs uppercase tracking-[0.08em] text-muted-foreground">
+                              {commercialReferent.company?.trim()
+                                ? commercialReferent.company.trim()
+                                : "Accompagnement projet solaire"}
+                            </p>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                    <div className="mt-auto flex gap-2 pt-2">
-                      {commercialReferent.phone ? (
-                        <a
-                          href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
-                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-muted py-1.5 text-[11px] font-medium text-foreground"
-                        >
-                          <Phone className="size-3 shrink-0" />
-                          <span className="truncate">{commercialReferent.phone}</span>
-                        </a>
-                      ) : (
-                        <span className="flex flex-1 items-center justify-center rounded-md bg-muted py-1.5 text-[11px] text-muted-foreground">
-                          —
-                        </span>
-                      )}
-                      {commercialReferent.email ? (
-                        <a
-                          href={`mailto:${commercialReferent.email}`}
-                          className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-primary py-1.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
-                        >
-                          <Mail className="size-3 shrink-0" />
-                          Email
-                        </a>
-                      ) : (
-                        <span className="flex flex-1 items-center justify-center rounded-md bg-muted/80 py-1.5 text-[11px] text-muted-foreground">
-                          —
-                        </span>
-                      )}
                     </div>
+
+                    {(() => {
+                      const phoneLine = commercialReferent.phone?.trim();
+                      const emailLine = commercialReferent.email?.trim();
+                      const cells: { label: string; node: ReactNode }[] = [];
+                      if (phoneLine) {
+                        cells.push({
+                          label: "Téléphone",
+                          node: <span className="text-foreground/90">{phoneLine}</span>,
+                        });
+                      }
+                      if (emailLine) {
+                        cells.push({
+                          label: "Email",
+                          node: <span className="break-words text-foreground/90">{emailLine}</span>,
+                        });
+                      }
+                      if (cells.length === 0) return null;
+                      return (
+                        <div
+                          className="grid gap-4 border-t pt-3.5 font-mono sm:grid-flow-col sm:auto-cols-max sm:justify-start sm:gap-x-8"
+                          style={{ borderColor: BRAND_LINE }}
+                        >
+                          {cells.map((cell, i) => (
+                            <div
+                              key={cell.label}
+                              className={cn(
+                                "w-max min-w-0 max-w-full",
+                                i > 0 && "sm:border-l sm:pl-8"
+                              )}
+                              style={i > 0 ? { borderColor: BRAND_LINE } : undefined}
+                            >
+                              <div className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+                                {cell.label}
+                              </div>
+                              <div className="mt-1 text-[13px]">{cell.node}</div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Actions — sous le bloc identité jusqu'à lg ; colonne droite en lg+ */}
+                  <div className="flex min-w-0 flex-col gap-3.5 lg:min-w-[200px] lg:items-end">
+                    {commercialReferent.email ? (
+                      <Button
+                        asChild
+                        variant="default"
+                        className="h-11 w-full justify-center rounded-xl border-0 text-white hover:opacity-90 lg:w-[200px] [&_svg]:size-3.5"
+                        style={{ backgroundColor: BRAND_INK }}
+                      >
+                        <a href={`mailto:${commercialReferent.email}`}>
+                          <Mail className="size-3.5" aria-hidden />
+                          Envoyer un email
+                        </a>
+                      </Button>
+                    ) : null}
+                    {commercialReferent.phone ? (
+                      <Button
+                        asChild
+                        variant="outline"
+                        className="h-11 w-full justify-center rounded-xl bg-transparent lg:w-[200px] [&_svg]:size-3.5"
+                        style={{ borderColor: BRAND_INK, color: BRAND_INK }}
+                      >
+                        <a href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}>
+                          <Phone className="size-3.5" aria-hidden />
+                          Appeler
+                        </a>
+                      </Button>
+                    ) : null}
+                    {commercialReferent.calendlyUrl ? (
+                      <Button
+                        asChild
+                        variant="outline"
+                        className="h-11 w-full justify-center rounded-xl bg-transparent lg:w-[200px] [&_svg]:size-3.5"
+                        style={{ borderColor: BRAND_INK, color: BRAND_INK }}
+                      >
+                        <a href={commercialReferent.calendlyUrl} target="_blank" rel="noopener noreferrer">
+                          <Calendar className="size-3.5" aria-hidden />
+                          Prendre rendez-vous
+                        </a>
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               ) : (

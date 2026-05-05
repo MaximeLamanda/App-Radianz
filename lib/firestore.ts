@@ -232,7 +232,11 @@ export async function getProspectByShareToken(shareToken: string): Promise<Prosp
  */
 export async function updateProspectOverrides(
   shareToken: string,
-  overrides: { configurationMode?: Prospect["configurationMode"]; annualConsumptionKwhOverride?: number | null }
+  overrides: {
+    configurationMode?: Prospect["configurationMode"];
+    annualConsumptionKwhOverride?: number | null;
+    monthlyConsumptionKwhOverride?: number[] | null;
+  }
 ): Promise<boolean> {
   try {
     const prospect = await getProspectByShareToken(shareToken);
@@ -242,6 +246,14 @@ export async function updateProspectOverrides(
     if (overrides.configurationMode != null) updates.configurationMode = overrides.configurationMode;
     if ("annualConsumptionKwhOverride" in overrides)
       updates.annualConsumptionKwhOverride = overrides.annualConsumptionKwhOverride ?? null;
+    if ("monthlyConsumptionKwhOverride" in overrides) {
+      updates.monthlyConsumptionKwhOverride = overrides.monthlyConsumptionKwhOverride == null
+        ? null
+        : overrides.monthlyConsumptionKwhOverride.length === 12
+          ? overrides.monthlyConsumptionKwhOverride
+              .map((v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0))
+          : null;
+    }
     await updateDoc(prospectRef, updates);
     return true;
   } catch (error) {

@@ -19,14 +19,32 @@ export async function PATCH(
           ? body.annualConsumptionKwhOverride
           : null
         : undefined;
+    const monthlyConsumptionKwhOverride =
+      body.monthlyConsumptionKwhOverride != null
+        ? Array.isArray(body.monthlyConsumptionKwhOverride)
+          ? body.monthlyConsumptionKwhOverride
+          : null
+        : undefined;
 
-    const updates: { configurationMode?: "perfect_fit" | "highest_production"; annualConsumptionKwhOverride?: number | null } = {};
+    const updates: {
+      configurationMode?: "perfect_fit" | "highest_production";
+      annualConsumptionKwhOverride?: number | null;
+      monthlyConsumptionKwhOverride?: number[] | null;
+    } = {};
     if (configurationMode === "perfect_fit" || configurationMode === "highest_production") {
       updates.configurationMode = configurationMode;
     }
     if (annualConsumptionKwhOverride !== undefined) {
       updates.annualConsumptionKwhOverride =
         annualConsumptionKwhOverride === null ? null : Math.max(0, annualConsumptionKwhOverride);
+    }
+    if (monthlyConsumptionKwhOverride !== undefined) {
+      updates.monthlyConsumptionKwhOverride = monthlyConsumptionKwhOverride === null
+        ? null
+        : monthlyConsumptionKwhOverride.length === 12
+          ? monthlyConsumptionKwhOverride
+              .map((v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0))
+          : null;
     }
 
     if (Object.keys(updates).length === 0) {

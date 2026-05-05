@@ -23,12 +23,23 @@ export const radianzLimeCardRootClass = cn(
   "relative overflow-hidden border shadow-none rounded-[12px]"
 );
 
-export function RadianzLimeDotOverlay() {
+export type RadianzLimeDotOverlayProps = {
+  /** Couleur des points (défaut : encre sur fond lime). Sur fond sombre, utiliser `BRAND_LIME` ou `#FFFFFF`. */
+  dotColor?: string;
+  /** Opacité du calque motif (0–1). */
+  layerOpacity?: number;
+};
+
+export function RadianzLimeDotOverlay({
+  dotColor = BRAND_INK,
+  layerOpacity = 0.14,
+}: RadianzLimeDotOverlayProps = {}) {
   return (
     <div
-      className="pointer-events-none absolute inset-0 opacity-[0.14]"
+      className="pointer-events-none absolute inset-0"
       style={{
-        backgroundImage: `radial-gradient(${BRAND_INK} 1px, transparent 1px)`,
+        opacity: layerOpacity,
+        backgroundImage: `radial-gradient(${dotColor} 1px, transparent 1px)`,
         backgroundSize: "14px 14px",
         maskImage: "linear-gradient(135deg, #000 28%, transparent 78%)",
       }}

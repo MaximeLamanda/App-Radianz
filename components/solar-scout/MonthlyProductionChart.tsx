@@ -269,7 +269,13 @@ export function MonthlyProductionChart({
         config={chartConfig}
         className="aspect-auto h-full min-h-[120px] w-full min-w-0 [&_.recharts-cartesian-axis-tick_text]:font-mono [&_.recharts-cartesian-axis-tick_text]:text-[9px] [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-axis-tick_text]:tracking-wide"
       >
-        <BarChart accessibilityLayer data={chartData} margin={{ top: 8, right: 4, left: 4, bottom: 0 }}>
+        <BarChart
+          accessibilityLayer
+          data={chartData}
+          margin={{ top: 8, right: 4, left: 4, bottom: 0 }}
+          barCategoryGap="28%"
+          barGap={0}
+        >
           <CartesianGrid {...radianzCartesianGridProps} />
           <XAxis
             dataKey="month"
@@ -387,12 +393,14 @@ export function MonthlyProductionChart({
                   stackId="a"
                   fill="var(--color-selfConsumptionDirect)"
                   name="Autoconsommation directe"
+                  barSize={34}
                 />
                 <Bar
                   dataKey="selfConsumptionViaBattery"
                   stackId="a"
                   fill="var(--color-selfConsumptionViaBattery)"
                   name="Tirage batterie"
+                  barSize={34}
                 />
                 {isDaily && (
                   <Bar
@@ -400,6 +408,7 @@ export function MonthlyProductionChart({
                     stackId="a"
                     fill="var(--color-injectionBattery)"
                     name="Injection batterie"
+                    barSize={34}
                   />
                 )}
                 <Bar
@@ -407,12 +416,14 @@ export function MonthlyProductionChart({
                   stackId="a"
                   fill="var(--color-gridDraw)"
                   name="Tirage réseau"
+                  barSize={34}
                 />
                 <Bar
                   dataKey="excess"
                   stackId="a"
                   fill="var(--color-excess)"
                   name="Injection réseau"
+                  barSize={34}
                 />
               </>
             ) : (
@@ -422,18 +433,21 @@ export function MonthlyProductionChart({
                   stackId="a"
                   fill="var(--color-selfConsumption)"
                   name="Autoconsommation"
+                  barSize={34}
                 />
                 <Bar
                   dataKey="gridDraw"
                   stackId="a"
                   fill="var(--color-gridDraw)"
                   name="Tirage réseau"
+                  barSize={34}
                 />
                 <Bar
                   dataKey="excess"
                   stackId="a"
                   fill="var(--color-excess)"
                   name="Injection réseau"
+                  barSize={34}
                 />
               </>
             )
@@ -443,6 +457,7 @@ export function MonthlyProductionChart({
               stackId="a"
               fill="var(--color-production)"
               name="Production"
+              barSize={34}
             />
           )}
         </BarChart>
