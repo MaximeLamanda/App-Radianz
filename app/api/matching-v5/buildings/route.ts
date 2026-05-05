@@ -62,14 +62,28 @@ async function handleRequest(request: NextRequest) {
       return NextResponse.json({ type: "FeatureCollection", features: [] });
     }
 
-    const tableRef = getBdnbConstructionsTableRef(process.env.BDNB_CONSTRUCTIONS_TABLE);
-    const ffoQualified = `"${tableRef.schema}"."batiment_groupe_ffo_bat"`;
+    const pgClient = new Client({ connectionString: databaseUrl });
+    client = pgClient;
+    await pgClient.connect();
+    const tableCandidatesRaw = [
+      process.env.BDNB_CONSTRUCTIONS_TABLE,
+      "public.batiment_construction",
+      "bdnb_2025_07_a_open_data_dep33.batiment_construction",
+    ];
+    const tableCandidates = Array.from(
+      new Set(
+        tableCandidatesRaw
+          .map((x) => String(x ?? "").trim())
+          .filter(Boolean)
+      )
+    );
 
-    client = new Client({ connectionString: databaseUrl });
-    await client.connect();
-
-    const runBuildingsQuery = async (withFfoJoin: boolean) =>
-      client.query<{
+    const runBuildingsQuery = async (
+      tableQualifiedSql: string,
+      ffoQualified: string,
+      withFfoJoin: boolean
+    ) =>
+      pgClient.query<{
         batiment_construction_id: string;
         batiment_groupe_id: string | null;
         annee_construction: number | null;
@@ -78,37 +92,37 @@ async function handleRequest(request: NextRequest) {
       }>(
         withFfoJoin
           ? `
-      SELECT
-        bc.batiment_construction_id::text,
-        bc.batiment_groupe_id::text,
-        ffo.annee_construction,
-        ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
-        ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::json AS geometry
-      FROM ${tableRef.qualifiedSql} bc
-      LEFT JOIN ${ffoQualified} ffo
-        ON ffo.batiment_groupe_id::text = bc.batiment_groupe_id::text
-      WHERE bc.geom_cstr IS NOT NULL
-        AND (
-          (array_length($1::text[], 1) IS NOT NULL AND bc.batiment_construction_id::text = ANY($1::text[]))
-          OR
-          (array_length($2::text[], 1) IS NOT NULL AND bc.batiment_groupe_id::text = ANY($2::text[]))
-        )
-      `
+        SELECT
+          bc.batiment_construction_id::text,
+          bc.batiment_groupe_id::text,
+          ffo.annee_construction,
+          ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
+          ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::json AS geometry
+        FROM ${tableQualifiedSql} bc
+        LEFT JOIN ${ffoQualified} ffo
+          ON ffo.batiment_groupe_id::text = bc.batiment_groupe_id::text
+        WHERE bc.geom_cstr IS NOT NULL
+          AND (
+            (array_length($1::text[], 1) IS NOT NULL AND bc.batiment_construction_id::text = ANY($1::text[]))
+            OR
+            (array_length($2::text[], 1) IS NOT NULL AND bc.batiment_groupe_id::text = ANY($2::text[]))
+          )
+        `
           : `
-      SELECT
-        bc.batiment_construction_id::text,
-        bc.batiment_groupe_id::text,
-        NULL::integer AS annee_construction,
-        ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
-        ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::json AS geometry
-      FROM ${tableRef.qualifiedSql} bc
-      WHERE bc.geom_cstr IS NOT NULL
-        AND (
-          (array_length($1::text[], 1) IS NOT NULL AND bc.batiment_construction_id::text = ANY($1::text[]))
-          OR
-          (array_length($2::text[], 1) IS NOT NULL AND bc.batiment_groupe_id::text = ANY($2::text[]))
-        )
-      `,
+        SELECT
+          bc.batiment_construction_id::text,
+          bc.batiment_groupe_id::text,
+          NULL::integer AS annee_construction,
+          ST_Area(bc.geom_cstr)::double precision AS footprint_m2,
+          ST_AsGeoJSON(ST_Transform(bc.geom_cstr, 4326))::json AS geometry
+        FROM ${tableQualifiedSql} bc
+        WHERE bc.geom_cstr IS NOT NULL
+          AND (
+            (array_length($1::text[], 1) IS NOT NULL AND bc.batiment_construction_id::text = ANY($1::text[]))
+            OR
+            (array_length($2::text[], 1) IS NOT NULL AND bc.batiment_groupe_id::text = ANY($2::text[]))
+          )
+        `,
         [constructionIds, groupIds]
       );
 
@@ -119,19 +133,37 @@ async function handleRequest(request: NextRequest) {
       footprint_m2: number | null;
       geometry: GeoJSON.Geometry;
     }>;
-    try {
-      const res = await runBuildingsQuery(true);
-      rows = res.rows;
-    } catch (err) {
-      const pgCode = (err as { code?: string } | null)?.code;
-      // Tolère les environnements où la table FFO n'est pas encore déployée.
-      if (pgCode === "42P01" || pgCode === "42703") {
-        const res = await runBuildingsQuery(false);
+    let lastErr: unknown = null;
+    rows = [];
+    for (const tableRaw of tableCandidates) {
+      const tableRef = getBdnbConstructionsTableRef(tableRaw);
+      const ffoQualified = `"${tableRef.schema}"."batiment_groupe_ffo_bat"`;
+      try {
+        const res = await runBuildingsQuery(tableRef.qualifiedSql, ffoQualified, true);
         rows = res.rows;
-      } else {
+        lastErr = null;
+        break;
+      } catch (err) {
+        const pgCode = (err as { code?: string } | null)?.code;
+        if (pgCode === "42P01" || pgCode === "42703") {
+          try {
+            const res = await runBuildingsQuery(tableRef.qualifiedSql, ffoQualified, false);
+            rows = res.rows;
+            lastErr = null;
+            break;
+          } catch (errNoFfo) {
+            const pgCodeNoFfo = (errNoFfo as { code?: string } | null)?.code;
+            if (pgCodeNoFfo === "42P01" || pgCodeNoFfo === "42703") {
+              lastErr = errNoFfo;
+              continue;
+            }
+            throw errNoFfo;
+          }
+        }
         throw err;
       }
     }
+    if (lastErr) throw lastErr;
 
     const features = rows
       .filter((r) => r.geometry && (r.geometry.type === "Polygon" || r.geometry.type === "MultiPolygon"))
