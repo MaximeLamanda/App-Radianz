@@ -260,7 +260,25 @@ export function MonthlyProductionChart({
     setLockedDailyMax((prev) => (prev == null ? stackedMax : Math.max(prev, stackedMax)));
   }, [isDaily, stackedMax]);
 
-  const yMaxForDomain = isDaily ? (lockedDailyMax ?? stackedMax) : stackedMax;
+  // Vue mensuelle: garde le plus grand stackedMax déjà vu (avec ou sans batterie, etc.) pour
+  // que l’axe Y ne redescende pas quand on bascule le switch. Réinitialisé en journalier.
+  const [monthlyPeakStackedMax, setMonthlyPeakStackedMax] = useState<number | null>(null);
+  useEffect(() => {
+    if (isDaily) {
+      setMonthlyPeakStackedMax(null);
+      return;
+    }
+    setMonthlyPeakStackedMax((prev) => (prev == null ? stackedMax : Math.max(prev, stackedMax)));
+  }, [isDaily, stackedMax]);
+
+  const yMaxForDomain = useMemo(() => {
+    if (isDaily) return lockedDailyMax ?? stackedMax;
+    if (monthlyPeakStackedMax != null) {
+      return Math.max(monthlyPeakStackedMax, stackedMax);
+    }
+    return stackedMax;
+  }, [isDaily, lockedDailyMax, stackedMax, monthlyPeakStackedMax]);
+
   const y = useMemo(() => buildNiceYAxis(yMaxForDomain), [yMaxForDomain]);
 
   return (

@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils";
 
-/** Palette alignée sur Radianz Design System (Bill reduction · carte blanche 1:1). */
+/** Palette alignée sur Radianz Design System (Bill reduction · carte blanche). */
 const INK = "#0A0A0A";
 /** Accent batterie (cohérent avec le reste de la page prospect / graphiques). */
 const BATTERY = "#0000FF";
@@ -74,7 +74,7 @@ export function RadianzBillReductionCard({
   return (
     <div
       className={cn(
-        "relative flex aspect-square w-full max-w-[min(100%,360px)] flex-col overflow-hidden rounded-[20px] border bg-card p-6 text-[#0A0A0A] shadow-none",
+        "relative flex w-full min-w-0 flex-col overflow-hidden rounded-[20px] border bg-card p-6 text-[#0A0A0A] shadow-none",
         className
       )}
       style={{ borderColor: "#E4E2DE" }}

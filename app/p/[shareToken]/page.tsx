@@ -81,7 +81,7 @@ import {
   projectedAnnualGridBillEur,
 } from "@/lib/solar-settings";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
-import { MonthlyProductionChart } from "@/components/solar-scout/MonthlyProductionChart";
+import { ProspectEnergyChartsPanel } from "@/components/solar-scout/ProspectEnergyChartsPanel";
 import { MonthlyConsumptionOnlyChart } from "@/components/solar-scout/MonthlyConsumptionOnlyChart";
 import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scout/EquipmentSelectCard";
 import { BatterySelectCard } from "@/components/solar-scout/BatterySelectCard";
@@ -1424,70 +1424,22 @@ export default function ProspectSharePage() {
                     </TabsList>
                   </Tabs>
 
-                  <div
-                    className={cn("h-[360px] py-3 px-4 pb-2 flex flex-col overflow-hidden", radianzDefaultCardClass)}
-                    style={radianzCardBorderStyle}
-                  >
-                    <div className="flex flex-col gap-1.5 mb-2 shrink-0">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <span className={radianzMonoLabelClass}>Production</span>
-                          <p className="mt-1 font-sans text-[2rem] font-light leading-none tracking-[-0.04em] text-foreground tabular-nums sm:text-[2.25rem] shrink-0">
-                            {(effectiveConfig.effectiveAnnualProductionKwh / KWH_PER_MWH).toLocaleString("fr-FR", {
-                              minimumFractionDigits: 1,
-                              maximumFractionDigits: 1,
-                            })}
-                            <span className="ml-1.5 align-baseline font-mono text-sm font-normal tracking-normal text-muted-foreground">
-                              MWh/an
-                            </span>
-                          </p>
-                        </div>
-                        <div
-                          role="tablist"
-                          className="inline-flex shrink-0 rounded-md border border-border bg-muted/50 p-0.5"
-                          aria-label="Vue du graphique"
-                        >
-                          <button
-                            type="button"
-                            role="tab"
-                            aria-selected={chartViewMode === "monthly"}
-                            onClick={() => setChartViewMode("monthly")}
-                            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                              chartViewMode === "monthly" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
-                            }`}
-                          >
-                            Mensuel
-                          </button>
-                          <button
-                            type="button"
-                            role="tab"
-                            aria-selected={chartViewMode === "daily"}
-                            onClick={() => setChartViewMode("daily")}
-                            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                              chartViewMode === "daily" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
-                            }`}
-                          >
-                            Journalier
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex-1 min-h-0 flex flex-col">
-                      <MonthlyProductionChart
-                        key={configurationMode}
-                        viewMode={chartViewMode}
-                        onViewModeChange={setChartViewMode}
-                        selectedMonthIndex={chartSelectedMonthIndex}
-                        onSelectedMonthIndexChange={setChartSelectedMonthIndex}
-                        data={chartData}
-                        dailyData={chartDailyData}
-                      />
-                    </div>
-                  </div>
+                  <ProspectEnergyChartsPanel
+                    configurationModeKey={configurationMode}
+                    annualProductionKwh={effectiveConfig.effectiveAnnualProductionKwh}
+                    chartViewMode={chartViewMode}
+                    onChartViewModeChange={setChartViewMode}
+                    chartSelectedMonthIndex={chartSelectedMonthIndex}
+                    onChartSelectedMonthIndexChange={setChartSelectedMonthIndex}
+                    data={chartData}
+                    dailyData={chartDailyData}
+                    includeBattery={includeBatteryLocal}
+                    onIncludeBatteryChange={setIncludeBatteryLocal}
+                  />
                 </div>
               )}
 
-              <div className="mt-6 flex flex-col items-center justify-center gap-6 sm:flex-row sm:items-start sm:justify-start">
+              <div className="mt-6 flex w-full flex-col gap-6">
                 <RadianzBillReductionCard
                   periodLabel={billReductionCard.periodLabel}
                   initialBillAnnualEur={displayEnergyBillEur}

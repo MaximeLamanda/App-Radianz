@@ -16,7 +16,7 @@ export interface RadianzCo2AvoidanceRadialProps {
 }
 
 /**
- * Carte Radianz 1:1 — RadialBar type « Green energy » du design system (Recharts),
+ * Carte Radianz — RadialBar type « Green energy » du design system (Recharts),
  * avec pourcentage d’émissions électriques de consommation évitées par la production PV
  * et tonnage CO₂/an indicatif.
  */
@@ -46,7 +46,7 @@ export function RadianzCo2AvoidanceRadial({
   return (
     <div
       className={cn(
-        "relative flex aspect-square w-full max-w-[min(100%,360px)] flex-col overflow-hidden rounded-[20px] border bg-card p-6 text-[#0A0A0A] shadow-none",
+        "relative flex w-full min-w-0 flex-col overflow-hidden rounded-[20px] border bg-card p-6 text-[#0A0A0A] shadow-none",
         className
       )}
       style={{ borderColor: "#E4E2DE" }}
@@ -56,10 +56,10 @@ export function RadianzCo2AvoidanceRadial({
         <span className="shrink-0 text-right">Énergie verte</span>
       </div>
 
-      <div className="mt-2 flex min-h-[200px] flex-1 flex-col justify-center">
+      <div className="mt-2 flex min-h-[200px] flex-col justify-center">
         {hasData ? (
           <div
-            className="mx-auto h-[200px] w-full max-w-[280px]"
+            className="h-[200px] w-full"
             role="img"
             aria-label={`Environ ${Math.round(pctAvoided)} pour cent des émissions liées à la consommation électrique annuelle évitées, soit environ ${tonnesStr} tonnes de CO₂ par an, hypothèse ~52 g CO₂ par kWh.`}
           >
