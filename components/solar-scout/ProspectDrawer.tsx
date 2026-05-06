@@ -13,8 +13,6 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -39,7 +37,6 @@ import {
   Eye,
   Map as MapIcon,
   ExternalLink,
-  Battery,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -66,8 +63,10 @@ import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 /** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
 const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
-import { MonthlyProductionChart } from "./MonthlyProductionChart";
 import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
+import { RadianzBillReductionCard, type RadianzBillReductionSegment } from "./RadianzBillReductionCard";
+import { RadianzCo2AvoidanceRadial } from "./RadianzCo2AvoidanceRadial";
+import type { MonthlyProductionChartDatum, DailyProductionChartDatum } from "./MonthlyProductionChart";
 import { BatterySelectCard } from "./BatterySelectCard";
 import { EquipmentSelectCard, EquipmentThumbnail } from "./EquipmentSelectCard";
 import { surfaceToKwp, getUsableRoofAreaM2 } from "@/lib/surface-to-kwp";
@@ -75,7 +74,6 @@ import {
   buildTypicalConsumptionDayForMonth,
   getEnergyConsumption,
   getEnergyConsumptionForMonth,
-  getHourlyConsumptionProfileKwhPerM2,
   type MonthIndex,
 } from "@/lib/building-energy-consumption";
 import {
@@ -88,6 +86,7 @@ import {
 } from "@/lib/pvgis";
 import { runProductionSimulation, runSimulationOneDayForChart, scaleBatteryForCount } from "@/lib/battery-simulation";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
+import { pickRecommendedBatteryComposition } from "@/lib/recommended-battery-composition";
 import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import {
   getPanelReferences,
@@ -357,6 +356,10 @@ function ProspectDrawerDiscoverySection({
   isOpen,
   onPipelineFinanceInputsChange,
   pipelineProject,
+  discoveryIncludeBattery,
+  onDiscoveryIncludeBatteryChange,
+  discoverySimulationSummary,
+  discoveryDailySimulationBattery,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
@@ -366,6 +369,13 @@ function ProspectDrawerDiscoverySection({
   onPipelineFinanceInputsChange?: (payload: DiscoveryDrawerFinancialInputs | null) => void;
   /** Résumé projet (onglet Solaire, sous le graphe) + surface pour la facture ref. */
   pipelineProject?: { summary: DiscoveryDrawerFinancialSummary; surfaceM2: number } | null;
+  /** Switch batterie (aligné simulation / page partagée). */
+  discoveryIncludeBattery: boolean;
+  onDiscoveryIncludeBatteryChange: (checked: boolean) => void;
+  /** Résumé simulation (autoconso batterie, segments facture, `batteryByMonth` pour graphes). */
+  discoverySimulationSummary: DiscoveryDrawerFinancialSummary | null;
+  /** Même pack batterie que le résumé, pour la vue journalière. */
+  discoveryDailySimulationBattery: { ref: BatteryReference; count: number } | null;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -810,14 +820,26 @@ function ProspectDrawerDiscoverySection({
       kwpEst
     );
     const surfaceM2 = footprintSumTotal;
-    return monthlyProduction.map((m) => ({
-      month: m.month,
-      production: m.production,
-      consumption: Math.round(
+    const byMonth = discoverySimulationSummary?.batteryByMonth;
+    return monthlyProduction.map((m) => {
+      const consumption = Math.round(
         getEnergyConsumptionForMonth(discoveryPlaceType, (m.month - 1) as MonthIndex) * surfaceM2
-      ),
-    }));
-  }, [discoveryPvgis, kwpEst, footprintSumTotal]);
+      );
+      const base = { month: m.month, production: m.production, consumption };
+      if (byMonth?.[m.month - 1]) {
+        const b = byMonth[m.month - 1]!;
+        return {
+          ...base,
+          selfConsumptionDirect: b.selfConsumptionDirectKwh,
+          selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
+          injectionBattery: b.injectionBatteryKwh,
+          excess: b.injectionReseauKwh,
+          gridDraw: b.gridDrawKwh,
+        };
+      }
+      return base;
+    });
+  }, [discoveryPvgis, kwpEst, footprintSumTotal, discoverySimulationSummary?.batteryByMonth]);
 
   const discoveryChartDailyData = useMemo(() => {
     if (!discoveryPvgis || footprintSumTotal <= 0 || kwpEst <= 0) return undefined;
@@ -828,12 +850,91 @@ function ProspectDrawerDiscoverySection({
       discoveryChartMonthIndex,
       footprintSumTotal
     );
-    return Array.from({ length: 24 }, (_, hour) => ({
+    const pack =
+      discoverySimulationSummary?.breakdownFromHourlySim && discoveryDailySimulationBattery
+        ? discoveryDailySimulationBattery
+        : null;
+    const batteryForChart =
+      discoveryIncludeBattery && pack ? scaleBatteryForCount(pack.ref, pack.count) : null;
+    const hourly = runSimulationOneDayForChart(prodDay, consDay, batteryForChart);
+    return hourly.map((h, hour) => ({
       hour,
       production: prodDay[hour] ?? 0,
       consumption: consDay[hour] ?? 0,
+      selfConsumptionDirect: h.selfConsumptionDirectKwh,
+      selfConsumptionViaBattery: h.selfConsumptionViaBatteryKwh,
+      injectionBattery: h.injectionBatteryKwh,
+      excess: h.injectionReseauKwh,
+      gridDraw: h.gridDrawKwh,
     }));
-  }, [discoveryPvgis, footprintSumTotal, kwpEst, discoveryChartMonthIndex]);
+  }, [
+    discoveryPvgis,
+    footprintSumTotal,
+    kwpEst,
+    discoveryChartMonthIndex,
+    discoveryIncludeBattery,
+    discoveryDailySimulationBattery,
+    discoverySimulationSummary?.breakdownFromHourlySim,
+  ]);
+
+  const discoveryAnnualConsumptionKwh = useMemo(
+    () => getEnergyConsumption(discoveryPlaceType) * footprintSumTotal,
+    [footprintSumTotal]
+  );
+
+  const discoveryBillReductionCard = useMemo(() => {
+    const billAnnual = estimateEnergyBillEur(discoveryAnnualConsumptionKwh);
+    const pctOfRefBill = (part: number, ref: number) =>
+      ref > 0 && Number.isFinite(part) ? (Math.max(0, part) / ref) * 100 : 0;
+    const sim = discoverySimulationSummary;
+    if (sim?.breakdownFromHourlySim) {
+      const retail = DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+      const feedIn = DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+      const directEurY = Math.max(0, sim.selfConsumptionDirectKwhTotal) * retail;
+      const viaBatteryEurY = Math.max(0, sim.selfConsumptionViaBatteryKwhTotal) * retail;
+      const injectionEurY = Math.max(0, sim.injectionReseauKwhTotal) * feedIn;
+      return {
+        periodLabel: "Moyenne mensuelle",
+        headlineReductionEur: Math.round(sim.annualSavings / 12),
+        segments: [
+          {
+            id: "direct",
+            label: "Autoconso directe",
+            monthlyReductionEur: Math.round(directEurY / 12),
+            pctOfBill: pctOfRefBill(directEurY, billAnnual),
+            variant: "direct" as const,
+          },
+          {
+            id: "battery",
+            label: "Autoconso batterie",
+            monthlyReductionEur: Math.round(viaBatteryEurY / 12),
+            pctOfBill: pctOfRefBill(viaBatteryEurY, billAnnual),
+            variant: "battery" as const,
+          },
+          {
+            id: "injection",
+            label: "Injection réseau",
+            monthlyReductionEur: Math.round(injectionEurY / 12),
+            pctOfBill: pctOfRefBill(injectionEurY, billAnnual),
+            variant: "injection" as const,
+          },
+        ],
+      };
+    }
+    const annualProductionKwh = discoveryChartMonthlyData.reduce((s, m) => s + m.production, 0);
+    const annualSavings = estimateAnnualSavingsEur(annualProductionKwh, undefined, discoveryAnnualConsumptionKwh);
+    const directEurY = Math.min(annualProductionKwh, discoveryAnnualConsumptionKwh) * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+    const injectionEurY = Math.max(0, annualProductionKwh - discoveryAnnualConsumptionKwh) * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+    return {
+      periodLabel: "Moyenne mensuelle",
+      headlineReductionEur: Math.round(annualSavings / 12),
+      segments: [
+        { id: "direct", label: "Autoconso directe", monthlyReductionEur: Math.round(directEurY / 12), pctOfBill: pctOfRefBill(directEurY, billAnnual), variant: "direct" as const },
+        { id: "battery", label: "Autoconso batterie", monthlyReductionEur: 0, pctOfBill: 0, variant: "battery" as const },
+        { id: "injection", label: "Injection réseau", monthlyReductionEur: Math.round(injectionEurY / 12), pctOfBill: pctOfRefBill(injectionEurY, billAnnual), variant: "injection" as const },
+      ],
+    };
+  }, [discoveryChartMonthlyData, discoveryAnnualConsumptionKwh, discoverySimulationSummary]);
 
   const discoveryBatimentsCount = buildingDetailRows.length;
   const discoveryEntreprisesCount = discoverySiretRows.length;
@@ -1401,18 +1502,10 @@ function ProspectDrawerDiscoverySection({
       </TabsContent>
 
       <TabsContent value="solaire" className="drawer-discovery-panel space-y-3">
-        {footprintSumTotal <= 0 || kwpEst <= 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
-            Empreinte ou kWc nul : graphique production / consommation non affiché.
-          </div>
-        ) : !centroid ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
-            Centroïde introuvable : impossible d’appeler PVGIS.
-          </div>
-        ) : discoveryPvgisLoading ? (
-          <div className="drawer-discovery-chart-shell space-y-2">
+        {discoveryPvgisLoading ? (
+          <div className="space-y-2">
             <Skeleton className="h-4 w-2/3" />
-            <Skeleton className="h-[220px] w-full rounded-lg" />
+            <Skeleton className="h-[300px] w-full rounded-xl" />
           </div>
         ) : discoveryPvgisError ? (
           <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2.5 text-xs text-destructive">
@@ -1420,58 +1513,29 @@ function ProspectDrawerDiscoverySection({
           </div>
         ) : discoveryChartMonthlyData.length > 0 ? (
           <div className="space-y-4">
-            <div className="drawer-discovery-chart-shell">
-              <div className="mb-1 flex shrink-0 items-start justify-between gap-3">
-                <div className="flex min-w-0 flex-col gap-1">
-                  <span className="drawer-discovery-subpanel-title">Production / consommation</span>
-                  <span className="text-[0.65rem] leading-snug text-muted-foreground">
-                    Mensuel kWh — conso estimée profil « other » ×{" "}
-                    {footprintSumTotal.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²
-                  </span>
-                </div>
-                <div
-                  role="tablist"
-                  className="drawer-discovery-segmented"
-                  aria-label="Vue du graphique"
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={discoveryChartViewMode === "monthly"}
-                    onClick={() => setDiscoveryChartViewMode("monthly")}
-                    className={cn(
-                      discoveryChartViewMode === "monthly"
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    Mensuel
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={discoveryChartViewMode === "daily"}
-                    onClick={() => setDiscoveryChartViewMode("daily")}
-                    className={cn(
-                      discoveryChartViewMode === "daily"
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    Journalier
-                  </button>
-                </div>
-              </div>
-              <div className="h-[240px] min-w-0 w-full">
-                <MonthlyProductionChart
-                  viewMode={discoveryChartViewMode}
-                  onViewModeChange={setDiscoveryChartViewMode}
-                  selectedMonthIndex={discoveryChartMonthIndex}
-                  onSelectedMonthIndexChange={setDiscoveryChartMonthIndex}
-                  data={discoveryChartMonthlyData}
-                  dailyData={discoveryChartDailyData}
-                />
-              </div>
+            <ProspectEnergyChartsPanel
+              configurationModeKey=""
+              annualProductionKwh={discoveryChartMonthlyData.reduce((s, m) => s + m.production, 0)}
+              chartViewMode={discoveryChartViewMode}
+              onChartViewModeChange={setDiscoveryChartViewMode}
+              chartSelectedMonthIndex={discoveryChartMonthIndex}
+              onChartSelectedMonthIndexChange={setDiscoveryChartMonthIndex}
+              data={discoveryChartMonthlyData}
+              dailyData={discoveryChartDailyData}
+              includeBattery={discoveryIncludeBattery}
+              onIncludeBatteryChange={onDiscoveryIncludeBatteryChange}
+            />
+            <div className="flex flex-col items-center justify-center gap-4 sm:flex-row sm:items-start sm:justify-start">
+              <RadianzBillReductionCard
+                periodLabel={discoveryBillReductionCard.periodLabel}
+                initialBillAnnualEur={estimateEnergyBillEur(discoveryAnnualConsumptionKwh)}
+                headlineReductionEur={discoveryBillReductionCard.headlineReductionEur}
+                segments={discoveryBillReductionCard.segments}
+              />
+              <RadianzCo2AvoidanceRadial
+                annualProductionKwh={discoveryChartMonthlyData.reduce((s, m) => s + m.production, 0)}
+                annualConsumptionKwh={discoveryAnnualConsumptionKwh}
+              />
             </div>
             {pipelineProject ? (
               <DiscoverySolaireProjectCards
@@ -1480,7 +1544,11 @@ function ProspectDrawerDiscoverySection({
               />
             ) : null}
           </div>
-        ) : null}
+        ) : (
+          <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+            Aucune donnée de production disponible pour ce bâtiment.
+          </div>
+        )}
       </TabsContent>
 
       <TabsContent value="batiments" className="drawer-discovery-panel space-y-3">
@@ -1677,6 +1745,9 @@ export function ProspectDrawer({
   /** PVGIS + kWp + surface (mode Découverte) pour fourchette prix / B-E pipeline. */
   const [discoveryPipelineFinanceInputs, setDiscoveryPipelineFinanceInputs] =
     useState<DiscoveryDrawerFinancialInputs | null>(null);
+  const [discoveryIncludeBattery, setDiscoveryIncludeBattery] = useState(
+    () => getSolarEquipmentSettings().includeBattery ?? true
+  );
   const { user } = useAuth();
 
   /** Mis à true uniquement au clic sur Perfect fit / Highest production — resync batterie quand la cible kWh change. */
@@ -1861,6 +1932,67 @@ export function ProspectDrawer({
   const { data: panelsData } = usePanelReferences(user?.uid ?? null);
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
   const { data: batteriesData } = useBatteryReferences(user?.uid ?? null);
+
+  useEffect(() => {
+    if (discoveryRow) {
+      setDiscoveryIncludeBattery(getSolarEquipmentSettings().includeBattery ?? true);
+    }
+  }, [discoveryRow]);
+
+  const discoveryRecommendedBatteryKwh = useMemo(() => {
+    const inputs = discoveryPipelineFinanceInputs;
+    if (!inputs || inputs.monthlyPerKwp.length !== 12 || inputs.kwp <= 0 || inputs.footprintM2 <= 0) {
+      return null;
+    }
+    const placeType = "other";
+    const annualConsumptionKwh = getEnergyConsumption(placeType) * inputs.footprintM2;
+    const annualProductionKwh = Math.round(inputs.annualPerKwp * inputs.kwp);
+    return computeRecommendedBatteryTargetKwh({
+      productionPerKwpMonthly: inputs.monthlyPerKwp,
+      effectiveKwp: inputs.kwp,
+      annualProductionKwh,
+      annualConsumptionKwh,
+      placeType,
+      surfaceM2: inputs.footprintM2,
+    });
+  }, [discoveryPipelineFinanceInputs]);
+
+  const discoveryRecommendedBatteryComposition = useMemo(() => {
+    const visible = (batteriesData ?? []).filter((b) => b.visible !== false);
+    if (!visible.length || discoveryRecommendedBatteryKwh == null) return null;
+    return pickRecommendedBatteryComposition(discoveryRecommendedBatteryKwh, visible);
+  }, [batteriesData, discoveryRecommendedBatteryKwh]);
+
+  const discoverySimBattery = useMemo(() => {
+    if (!discoveryRow || !discoveryPipelineFinanceInputs) return null;
+    const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
+    if (!visibleBatteries.length) return { ref: null as BatteryReference | null, count: 1 };
+    const composed = discoveryRecommendedBatteryComposition;
+    const ref =
+      composed?.model ??
+      (usedBatteryRef && visibleBatteries.some((b) => b.id === usedBatteryRef.id)
+        ? usedBatteryRef
+        : visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null);
+    const count =
+      composed != null && ref?.id === composed.model.id
+        ? composed.count
+        : Math.max(1, batteryCount);
+    return { ref, count };
+  }, [
+    discoveryRow,
+    discoveryPipelineFinanceInputs,
+    batteriesData,
+    discoveryRecommendedBatteryComposition,
+    usedBatteryRef,
+    batteryCount,
+  ]);
+
+  const discoveryDailySimulationBattery = useMemo((): { ref: BatteryReference; count: number } | null => {
+    if (!discoveryIncludeBattery) return null;
+    const b = discoverySimBattery;
+    if (!b?.ref) return null;
+    return { ref: b.ref, count: Math.max(1, b.count) };
+  }, [discoveryIncludeBattery, discoverySimBattery]);
 
   // Équipement propre au prospect : initialiser depuis prospect.panelReferenceId / etc. ou recommandé global
   useEffect(() => {
@@ -2446,44 +2578,7 @@ export function ProspectDrawer({
   const recommendedBatteryComposition = useMemo(() => {
     const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
     if (!visibleBatteries.length || recommendedBatteryKwh == null) return null;
-    const sortedByCapacity = [...visibleBatteries].sort((a, b) => b.capacityKwh - a.capacityKwh);
-    const largestModel = sortedByCapacity[0];
-    if (!largestModel) return null;
-
-    const target = recommendedBatteryKwh;
-
-    if (target >= largestModel.capacityKwh) {
-      // Cible haute : plus grosse batterie, optimiser le count
-      const maxPerRack = largestModel.maxBatteriesPerRack ?? 20;
-      let bestCount = 1;
-      let bestEcart = Math.abs(largestModel.capacityKwh - target);
-      for (let c = 2; c <= maxPerRack; c++) {
-        const totalKwh = largestModel.capacityKwh * c;
-        const ecart = Math.abs(totalKwh - target);
-        if (ecart < bestEcart) {
-          bestEcart = ecart;
-          bestCount = c;
-        }
-      }
-      return { model: largestModel, count: bestCount };
-    }
-
-    // Cible basse : meilleur match parmi tous les modèles
-    let best: { model: BatteryReference; count: number; ecart: number } | null = null;
-    for (const model of visibleBatteries) {
-      const maxPerRack = model.maxBatteriesPerRack ?? 20;
-      for (let c = 1; c <= maxPerRack; c++) {
-        const totalKwh = model.capacityKwh * c;
-        const ecart = Math.abs(totalKwh - target);
-        const isBetter =
-          best == null ||
-          ecart < best.ecart ||
-          (ecart === best.ecart && c < best.count) ||
-          (ecart === best.ecart && c === best.count && model.capacityKwh > best.model.capacityKwh);
-        if (isBetter) best = { model, count: c, ecart };
-      }
-    }
-    return best ? { model: best.model, count: best.count } : null;
+    return pickRecommendedBatteryComposition(recommendedBatteryKwh, visibleBatteries);
   }, [batteriesData, recommendedBatteryKwh]);
 
   useEffect(() => {
@@ -2550,30 +2645,26 @@ export function ProspectDrawer({
     const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
     const inverterRef = usedInverterRef ?? getRecommendedInverterReferenceSync();
     if (!panelRef || !inverterRef) return null;
-    const includeBattery = getSolarEquipmentSettings().includeBattery ?? true;
-    const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
-    const batteryRef = includeBattery
-      ? (usedBatteryRef && visibleBatteries.some((b) => b.id === usedBatteryRef.id)
-          ? usedBatteryRef
-          : visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null)
-      : null;
+    const simBat = discoverySimBattery;
+    const batteryRef = discoveryIncludeBattery ? simBat?.ref ?? null : null;
+    const batteryCountSim =
+      discoveryIncludeBattery && batteryRef ? Math.max(1, simBat?.count ?? 1) : 1;
     return computeDiscoveryDrawerFinancialSummary({
       inputs: discoveryPipelineFinanceInputs,
       placeType: "other",
       panelRef,
       inverterRef,
       batteryRef,
-      batteryCount: Math.max(1, batteryCount),
-      includeBattery,
+      batteryCount: batteryCountSim,
+      includeBattery: discoveryIncludeBattery,
     });
   }, [
     discoveryRow,
     discoveryPipelineFinanceInputs,
     usedPanelRef,
     usedInverterRef,
-    usedBatteryRef,
-    batteriesData,
-    batteryCount,
+    discoverySimBattery,
+    discoveryIncludeBattery,
   ]);
 
   /** Résumé financier (équipement, fourchette prix, économies, break-even) avec ou sans batterie */
@@ -2669,6 +2760,32 @@ export function ProspectDrawer({
     batteryCount,
     includeBatteryEffective,
   ]);
+
+  const liveAnnualConsumptionKwh = useMemo(() => {
+    const totalArea = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
+    const placeType = prospect?.placeType || "other";
+    return prospect?.annualConsumptionKwhOverride ?? getEnergyConsumption(placeType) * totalArea;
+  }, [prospect]);
+
+  const prospectBillReductionCard = useMemo(() => {
+    const retail = DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+    const feedIn = DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+    const billAnnual = estimateEnergyBillEur(liveAnnualConsumptionKwh);
+    const pctOfRefBill = (part: number, ref: number) =>
+      ref > 0 && Number.isFinite(part) ? (Math.max(0, part) / ref) * 100 : 0;
+    const directEurY = Math.max(0, financialSummary?.selfConsumptionDirectKwhTotal ?? 0) * retail;
+    const viaBatteryEurY = Math.max(0, financialSummary?.selfConsumptionViaBatteryKwhTotal ?? 0) * retail;
+    const injectionEurY = Math.max(0, financialSummary?.injectionReseauKwhTotal ?? 0) * feedIn;
+    return {
+      periodLabel: "Moyenne mensuelle",
+      headlineReductionEur: Math.round((financialSummary?.annualSavings ?? 0) / 12),
+      segments: [
+        { id: "direct", label: "Autoconso directe", monthlyReductionEur: Math.round(directEurY / 12), pctOfBill: pctOfRefBill(directEurY, billAnnual), variant: "direct" as const },
+        { id: "battery", label: "Autoconso batterie", monthlyReductionEur: Math.round(viaBatteryEurY / 12), pctOfBill: pctOfRefBill(viaBatteryEurY, billAnnual), variant: "battery" as const },
+        { id: "injection", label: "Injection réseau", monthlyReductionEur: Math.round(injectionEurY / 12), pctOfBill: pctOfRefBill(injectionEurY, billAnnual), variant: "injection" as const },
+      ],
+    };
+  }, [financialSummary, liveAnnualConsumptionKwh]);
 
   const chartData = useMemo(() => {
     const surfaceM2 = prospect?.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect?.roofSurface?.area ?? 0;
@@ -2812,6 +2929,10 @@ export function ProspectDrawer({
                     }
                   : null
               }
+              discoveryIncludeBattery={discoveryIncludeBattery}
+              onDiscoveryIncludeBatteryChange={setDiscoveryIncludeBattery}
+              discoverySimulationSummary={discoveryFinancialSummary}
+              discoveryDailySimulationBattery={discoveryDailySimulationBattery}
             />
           ) : prospect ? (
             <>
@@ -3189,84 +3310,16 @@ export function ProspectDrawer({
                 <>
                   <ProspectEnergyChartsPanel
                     configurationModeKey={configurationMode}
+                    annualProductionKwh={effectiveConfig.effectiveAnnualProductionKwh}
                     chartViewMode={chartViewMode}
                     onChartViewModeChange={setChartViewMode}
                     chartSelectedMonthIndex={chartSelectedMonthIndex}
                     onChartSelectedMonthIndexChange={setChartSelectedMonthIndex}
                     data={chartData}
                     dailyData={chartDailyData}
-                  >
-                    {(() => {
-                      const surfaceM2 =
-                        prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
-                        prospect.roofSurface?.area ??
-                        0;
-                      const placeType = prospect.placeType || "other";
-
-                      if (chartViewMode === "daily" && effectiveConfig.productionPerKwp) {
-                        const { dailyTypical } = getProductionFromPerKwp(
-                          effectiveConfig.productionPerKwp.productionPerKwpAnnual,
-                          effectiveConfig.productionPerKwp.productionPerKwpMonthly,
-                          effectiveConfig.effectiveKwp
-                        );
-                        const dailyProductionKwh = dailyTypical.reduce((s, v) => s + (v ?? 0), 0);
-                        const hourlyConsumptionPerM2 = getHourlyConsumptionProfileKwhPerM2(placeType);
-                        const dailyConsumptionKwh =
-                          surfaceM2 * (hourlyConsumptionPerM2?.reduce((s, v) => s + (v ?? 0), 0) ?? 0);
-                        const fmt = (kwh: number) =>
-                          kwh >= 1000 ? `${(kwh / 1000).toFixed(2)} MWh` : `${Math.round(kwh)} kWh`;
-                        return (
-                          <>
-                            <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
-                              {fmt(dailyProductionKwh)} /j
-                            </span>
-                            <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
-                              {fmt(dailyConsumptionKwh)} /j
-                            </span>
-                          </>
-                        );
-                      }
-
-                      const totalConsumptionKwh = getEnergyConsumption(placeType) * surfaceM2;
-                      const consumptionGwh = totalConsumptionKwh / 1_000_000;
-                      const productionKwh = effectiveConfig.effectiveAnnualProductionKwh;
-                      const productionGwh = productionKwh / 1_000_000;
-                      return (
-                        <>
-                          <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-black shrink-0" />
-                            {productionGwh >= 0.001 ? productionGwh.toFixed(3) : productionGwh.toFixed(6)} GWh
-                          </span>
-                          <span className="text-xs text-gray-600 flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[hsl(0,0%,72%)]" />
-                            {consumptionGwh >= 0.001 ? consumptionGwh.toFixed(3) : consumptionGwh.toFixed(6)} GWh
-                          </span>
-                        </>
-                      );
-                    })()}
-                  </ProspectEnergyChartsPanel>
-
-                  {/* Switch batterie : valeur effective = prospect.includeBatteryOverride ?? settings.includeBattery (défaut true) */}
-                  {(prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ?? prospect.roofSurface?.area ?? 0) > 0 && (
-                    <div className="flex items-center justify-between rounded-xl border border-border bg-white p-3">
-                      <div className="flex items-center gap-2">
-                        <Battery className="h-4 w-4 text-muted-foreground" />
-                        <Label htmlFor="include-battery" className="text-sm font-medium cursor-pointer">Inclure batterie</Label>
-                      </div>
-                      <Switch
-                        id="include-battery"
-                        className="data-[state=checked]:bg-[#0000FF]"
-                        checked={prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true}
-                        onCheckedChange={(checked) => {
-                          if (onProspectUpdate) {
-                            onProspectUpdate({ includeBatteryOverride: checked });
-                          }
-                        }}
-                      />
-                    </div>
-                  )}
+                    includeBattery={prospect.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true}
+                    onIncludeBatteryChange={(checked) => onProspectUpdate?.({ includeBatteryOverride: checked })}
+                  />
 
                   {/* Bloc finance (même que page partagée) + Estimated price */}
                   {(() => {
