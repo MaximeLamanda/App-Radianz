@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RangeSlider } from "@/components/ui/slider";
 
-/** Aligné sur les valeurs par défaut de la page découverte (`surfaceMinM2` / `surfaceMaxM2`). */
+/** Plafond slider. Le plancher par défaut côté page suit l’export matching V5 (`lib/discovery-surface-defaults.ts`). */
 const SURFACE_SLIDER_MAX_M2 = 50_000;
 const SURFACE_SLIDER_STEP = 50;
 

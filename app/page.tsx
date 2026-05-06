@@ -55,9 +55,6 @@ import { useDrawer } from "@/lib/drawer-context";
 import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
 import { loadMatchingV5DrawerContextForProspect } from "@/lib/pipeline-matching-v5-drawer-context";
 
-const PIPELINE_DEFAULT_CODE_INSEE =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_SCOUT_MATCHING_V5_CODE_INSEE?.trim()) || "33318";
-
 function EquipmentThumbnail({
   equipment,
   fallbackIcon: FallbackIcon,
@@ -225,7 +222,7 @@ function HomePage() {
     );
 
     void (async () => {
-      const ctx = await loadMatchingV5DrawerContextForProspect(selectedProspect, PIPELINE_DEFAULT_CODE_INSEE);
+      const ctx = await loadMatchingV5DrawerContextForProspect(selectedProspect);
       if (cancelled) return;
       if (!ctx.ok) {
         toast.error(ctx.message);

@@ -19,8 +19,7 @@ export type PipelineDiscoveryDrawerContext =
  * Charge les features matching V5 autour du prospect et calcule l’ancre + parcelles liées pour le tiroir Découverte.
  */
 export async function loadMatchingV5DrawerContextForProspect(
-  prospect: Prospect,
-  codeInsee: string
+  prospect: Prospect
 ): Promise<PipelineDiscoveryDrawerContext> {
   const rowId = String(prospect.matchingV5RowId ?? "").trim();
   if (!rowId) return { ok: false, message: "Identifiant matching V5 manquant." };
@@ -31,7 +30,6 @@ export async function loadMatchingV5DrawerContextForProspect(
   }
 
   const params = new URLSearchParams({
-    code_insee: codeInsee,
     limit: "4000",
     minLat: String(lat - BBOX_PAD),
     maxLat: String(lat + BBOX_PAD),

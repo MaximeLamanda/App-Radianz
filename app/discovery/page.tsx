@@ -30,9 +30,7 @@ import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
 import { DiscoveryMapView } from "@/components/discovery/DiscoveryMapView";
 import { DiscoveryFiltersPanel } from "@/components/discovery/DiscoveryFiltersPanel";
 import { DISCOVERY_FOCUS_QUERY } from "@/lib/discovery-focus-href";
-
-const DEFAULT_CODE_INSEE =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_SCOUT_MATCHING_V5_CODE_INSEE?.trim()) || "33318";
+import { MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2 } from "@/lib/discovery-surface-defaults";
 
 /** Pessac — centre carte par défaut (hors Google). */
 const DEFAULT_MAP_CENTER = { lat: 44.8067, lng: -0.6311 };
@@ -79,10 +77,10 @@ function DiscoveryContent() {
       return next;
     });
   }, []);
-  const [surfaceMinM2, setSurfaceMinM2] = useState(0);
+  const [surfaceMinM2, setSurfaceMinM2] = useState(MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2);
   const [surfaceMaxM2, setSurfaceMaxM2] = useState(50_000);
   const [appliedSurfaceRange, setAppliedSurfaceRange] = useState<{ min: number; max: number }>({
-    min: 0,
+    min: MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2,
     max: 50_000,
   });
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -205,10 +203,8 @@ function DiscoveryContent() {
     });
     void (async () => {
       try {
-        const params = new URLSearchParams({
-          code_insee: DEFAULT_CODE_INSEE,
-          limit: "4000",
-        });
+        /** Pas de `code_insee` : toutes les communes présentes en base dans la bbox (agrégation multi-INSEE). */
+        const params = new URLSearchParams({ limit: "4000" });
         params.set("minLat", String(queryBounds.sw.lat));
         params.set("maxLat", String(queryBounds.ne.lat));
         params.set("minLng", String(queryBounds.sw.lng));
@@ -257,10 +253,12 @@ function DiscoveryContent() {
   /** Postgres exporte surtout des parcelles (empreinte Σ bâtiments) ; les lignes `building` sont optionnelles (pipeline --include-building-grain). */
   const filteredFootprints = useMemo(() => {
     const { min: lo, max: hi } = appliedSurfaceRange;
-    return matchingV5Rows.filter(
-      (r) =>
-        (r.grain === "building" || r.grain === "parcelle") && r.footprintSumM2 >= lo && r.footprintSumM2 <= hi
-    );
+    return matchingV5Rows.filter((r) => {
+      if (r.grain !== "building" && r.grain !== "parcelle") return false;
+      /** Même sens que le pipeline V5 : `footprint_sum > min_required` (slider à 0 = pas de plancher). */
+      if (lo > 0 && !(r.footprintSumM2 > lo)) return false;
+      return r.footprintSumM2 <= hi;
+    });
   }, [matchingV5Rows, appliedSurfaceRange]);
 
   /**
