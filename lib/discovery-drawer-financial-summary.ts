@@ -37,6 +37,7 @@ export type DiscoveryDrawerFinancialSummary = {
   selfConsumptionDirectKwhTotal: number;
   selfConsumptionViaBatteryKwhTotal: number;
   injectionReseauKwhTotal: number;
+  batteryByMonth?: { selfConsumptionDirectKwh: number; selfConsumptionViaBatteryKwh: number; injectionBatteryKwh: number; injectionReseauKwh: number; excessKwh: number; gridDrawKwh: number }[];
 };
 
 export function computeDiscoveryDrawerFinancialSummary(params: {
@@ -70,6 +71,7 @@ export function computeDiscoveryDrawerFinancialSummary(params: {
   let selfConsumptionDirectKwhTotal = 0;
   let selfConsumptionViaBatteryKwhTotal = 0;
   let injectionReseauKwhTotal = 0;
+  let batteryByMonth: DiscoveryDrawerFinancialSummary["batteryByMonth"];
 
   if (canUseProfiles && annualProductionKWh > 0 && totalConsumptionKwh > 0) {
     breakdownFromHourlySim = true;
@@ -99,6 +101,7 @@ export function computeDiscoveryDrawerFinancialSummary(params: {
     selfConsumptionDirectKwhTotal = simulationResult.selfConsumptionDirectKwh;
     selfConsumptionViaBatteryKwhTotal = simulationResult.selfConsumptionViaBatteryKwh;
     injectionReseauKwhTotal = simulationResult.excessKwh;
+    batteryByMonth = simulationResult.byMonth;
   } else {
     annualSavings = estimateAnnualSavingsEur(annualProductionKWh, undefined, totalConsumptionKwh);
     equipmentEur = estimateInstallationPriceEur(panelCount, inverterCount, panelRef, inverterRef);
@@ -118,5 +121,6 @@ export function computeDiscoveryDrawerFinancialSummary(params: {
     selfConsumptionDirectKwhTotal,
     selfConsumptionViaBatteryKwhTotal,
     injectionReseauKwhTotal,
+    batteryByMonth,
   };
 }
