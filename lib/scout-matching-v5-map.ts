@@ -301,13 +301,30 @@ export type V5GoogleNearbyRankedEntry = {
   lng?: number | null;
 };
 
-export function parseGoogleNearbyRankedJson(raw: string): V5GoogleNearbyRankedEntry[] {
-  const s = String(raw || "").trim();
+/**
+ * Lit `google_nearby_ranked_json` depuis Postgres / pipeline : souvent une chaîne JSON,
+ * parfois un tableau JSONB natif après mise à jour client (`jsonb_set`).
+ */
+export function parseGoogleNearbyRankedJson(raw: unknown): V5GoogleNearbyRankedEntry[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.filter((x) => x && typeof x === "object") as V5GoogleNearbyRankedEntry[];
+  }
+  if (typeof raw === "object") {
+    return [raw as V5GoogleNearbyRankedEntry];
+  }
+  if (typeof raw !== "string") return [];
+  const s = raw.trim();
   if (!s) return [];
   try {
     const v = JSON.parse(s) as unknown;
-    if (!Array.isArray(v)) return [];
-    return v.filter((x) => x && typeof x === "object") as V5GoogleNearbyRankedEntry[];
+    if (Array.isArray(v)) {
+      return v.filter((x) => x && typeof x === "object") as V5GoogleNearbyRankedEntry[];
+    }
+    if (v && typeof v === "object") {
+      return [v as V5GoogleNearbyRankedEntry];
+    }
+    return [];
   } catch {
     return [];
   }
@@ -387,6 +404,127 @@ export function mergeOsmPoisFromParcelleRows(rows: ScoutMatchingV5Row[]): V5OsmP
     return an.localeCompare(bn, "fr");
   });
   return out;
+}
+
+function uniqueTrimmedPropStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    const t = strProp(raw);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
+function matchingV5SourceRowsForPoiDiscovery(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): ScoutMatchingV5Row[] {
+  const out: ScoutMatchingV5Row[] = [];
+  if (parcelleCluster.length > 0) {
+    out.push(...parcelleCluster);
+  }
+  if (row.grain === "building") {
+    out.push(row);
+  }
+  if (parcelleCluster.length === 0 && row.grain === "parcelle") {
+    out.push(row);
+  }
+  return out;
+}
+
+function cadastreParcelHeroLabels(rows: ScoutMatchingV5Row[]): string {
+  const parts = uniqueTrimmedPropStrings(
+    rows
+      .filter((r) => r.grain === "parcelle")
+      .map((r) =>
+        r.section && r.numeroNorm
+          ? `Parcelle ${r.section} ${r.numeroNorm} · ${r.codeInsee || "—"}`
+          : r.codeInsee
+            ? `Parcelle ${r.codeInsee}`
+            : ""
+      )
+  );
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0]!;
+  return parts.join(" · ");
+}
+
+/**
+ * Ligne d’adresse sous le titre Découverte : adresse du POI Google (Place Details / Nearby),
+ * sinon adresse taguée d’un POI OSM, sinon adresses passerelle (PPM), sinon libellé cadastral.
+ */
+export function formatDiscoveryDrawerHeroAddress(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): string {
+  const poiSources = matchingV5SourceRowsForPoiDiscovery(row, parcelleCluster);
+
+  const googleAnchors = uniqueTrimmedPropStrings(
+    poiSources.map((r) => strProp(r.properties?.google_anchor_address))
+  );
+  if (googleAnchors.length === 1) return googleAnchors[0]!;
+  if (googleAnchors.length > 1) return googleAnchors.join(" · ");
+
+  const winnerIds = new Set(
+    poiSources.map((r) => strProp(r.properties?.google_winner_place_id)).filter(Boolean)
+  );
+  const ranked: V5GoogleNearbyRankedEntry[] = [];
+  for (const r of poiSources) {
+    ranked.push(...parseGoogleNearbyRankedJson(r.properties?.google_nearby_ranked_json));
+  }
+  ranked.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  if (winnerIds.size > 0) {
+    for (const e of ranked) {
+      const pid = strProp(e.place_id);
+      if (!pid || !winnerIds.has(pid)) continue;
+      const vic = strProp(e.vicinity);
+      if (vic) return vic;
+    }
+  }
+  for (const e of ranked) {
+    const vic = strProp(e.vicinity);
+    if (vic) return vic;
+  }
+
+  const parcellesForOsm =
+    parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [];
+  for (const poi of mergeOsmPoisFromParcelleRows(parcellesForOsm)) {
+    const a = strProp(poi.address);
+    if (a) return a;
+  }
+
+  const passerelleRows =
+    parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [];
+  const passerelleParts: string[] = [];
+  const pushPasserelle = (s: string) => {
+    const t = strProp(s);
+    if (!t || passerelleParts.includes(t)) return;
+    passerelleParts.push(t);
+  };
+  for (const pr of passerelleRows) {
+    pushPasserelle(pr.passerelleAddress);
+    for (const p of parsePasserelleAddressesJson(pr.passerelleAddressesJson)) {
+      pushPasserelle(strProp(p.address));
+    }
+  }
+  if (row.grain === "building") {
+    pushPasserelle(row.passerelleAddress);
+    for (const p of parsePasserelleAddressesJson(row.passerelleAddressesJson)) {
+      pushPasserelle(strProp(p.address));
+    }
+  }
+  if (passerelleParts.length === 1) return passerelleParts[0]!;
+  if (passerelleParts.length > 1) return passerelleParts.join(" · ");
+
+  const cadastreRows =
+    passerelleRows.length > 0 ? passerelleRows : row.grain === "parcelle" ? [row] : [];
+  const cad = cadastreParcelHeroLabels(cadastreRows);
+  if (cad) return cad;
+
+  return "Adresse non renseignée";
 }
 
 /** Identifiants `batiment_construction_id` avec `matching_status === "partage"` dans buildings_json. */
@@ -680,6 +818,31 @@ export function parseSiretsMatchJson(raw: string): V5MatchedSiret[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Adresses textuelles utiles pour un rapprochement Enedis (passerelle, PPM, SIRENE).
+ * Ordre : adresse agrégée parcelle, puis PPM, puis établissements matchés (dédoublonné).
+ */
+export function collectV5AddressHintsForEnedis(row: ScoutMatchingV5Row): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string | null | undefined) => {
+    const t = String(s ?? "").trim();
+    if (t.length < 3) return;
+    const k = t.toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(t);
+  };
+  push(row.passerelleAddress);
+  for (const p of parsePasserelleAddressesJson(row.passerelleAddressesJson)) {
+    push(p.address);
+  }
+  for (const e of parseSiretsMatchJson(row.siretsJson)) {
+    push(e.adresse_etablissement);
+  }
+  return out;
 }
 
 function tryParseSirensJsonArray(raw: string): string[] {

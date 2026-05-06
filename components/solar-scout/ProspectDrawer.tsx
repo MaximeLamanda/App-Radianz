@@ -1,6 +1,12 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
+import { GoogleMapsLoader } from "@/components/solar-scout/GoogleMapsLoader";
+import {
+  buildParcelUnionGeometry,
+  fetchNearbyRankedInParcel,
+  waitForGoogleMapsReady,
+} from "@/lib/discovery-google-nearby-live";
 import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -120,6 +126,7 @@ import {
   centroidWeightedFromParcelleRowGeometries,
   collectSirensFromMatchingV5Row,
   collectSirensFromMatchingV5Rows,
+  formatDiscoveryDrawerHeroAddress,
   mergeOsmPoisFromParcelleRows,
   parseGoogleNearbyRankedJson,
   parseMatchingV5BuildingsJson,
@@ -175,16 +182,42 @@ function googlePoiTypeLabel(types: V5GoogleNearbyRankedEntry["types"]): string {
 function DiscoveryDrawerMergedPoiBlock({
   pois,
   showTitle = true,
+  onNearbySearch,
+  nearbySearchPending = false,
 }: {
   pois: DiscoveryDrawerMergedPoiEntry[];
   showTitle?: boolean;
+  /** Si défini et liste vide : bouton pour lancer une recherche Google Nearby (client). */
+  onNearbySearch?: () => void | Promise<void>;
+  nearbySearchPending?: boolean;
 }) {
   return (
     <div className="space-y-3">
       {showTitle ? <p className="drawer-discovery-subpanel-title">Lieux à proximité</p> : null}
       {pois.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
-          Aucun lieu avec nom n’est disponible pour ce site. Cette liste peut se compléter lors des prochaines mises à jour des données.
+        <div className="space-y-3 rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
+          <p className="m-0">
+            Aucun lieu avec nom n’est disponible pour ce site. Cette liste peut se compléter lors des prochaines mises à jour des données.
+          </p>
+          {onNearbySearch ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 w-full text-xs font-medium"
+              disabled={nearbySearchPending}
+              onClick={() => void onNearbySearch()}
+            >
+              {nearbySearchPending ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
+                  Recherche Google…
+                </>
+              ) : (
+                "Rechercher des établissements (Google) dans la parcelle"
+              )}
+            </Button>
+          ) : null}
         </div>
       ) : (
         <div className="drawer-discovery-table-wrap">
@@ -360,6 +393,7 @@ function ProspectDrawerDiscoverySection({
   onDiscoveryIncludeBatteryChange,
   discoverySimulationSummary,
   discoveryDailySimulationBattery,
+  onDiscoveryMatchingV5Persisted,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
@@ -376,6 +410,7 @@ function ProspectDrawerDiscoverySection({
   discoverySimulationSummary: DiscoveryDrawerFinancialSummary | null;
   /** Même pack batterie que le résumé, pour la vue journalière. */
   discoveryDailySimulationBattery: { ref: BatteryReference; count: number } | null;
+  onDiscoveryMatchingV5Persisted?: () => void;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -384,16 +419,34 @@ function ProspectDrawerDiscoverySection({
     return [];
   }, [linkedParcelleRows, row]);
 
+  const [liveGoogleNearbyOverride, setLiveGoogleNearbyOverride] = useState<V5GoogleNearbyRankedEntry[] | null>(null);
+  const [nearbyLivePending, setNearbyLivePending] = useState(false);
+
   const discoveryOsmPoisNamed = useMemo(
     () => mergeOsmPoisFromParcelleRows(parcelleCluster).filter((p) => p.name.trim() !== ""),
     [parcelleCluster]
   );
   const discoveryGooglePoisNamed = useMemo(() => {
+    if (liveGoogleNearbyOverride !== null) {
+      const outLive: V5GoogleNearbyRankedEntry[] = [];
+      const seenLive = new Set<string>();
+      for (const entry of liveGoogleNearbyOverride) {
+        const name = String(entry.name || "").trim();
+        if (!name) continue;
+        const placeId = String(entry.place_id || "").trim();
+        const dedupeKey = placeId ? `pid:${placeId}` : `name:${name.toLowerCase()}:${entry.rank ?? -1}`;
+        if (seenLive.has(dedupeKey)) continue;
+        seenLive.add(dedupeKey);
+        outLive.push(entry);
+      }
+      return outLive;
+    }
     const out: V5GoogleNearbyRankedEntry[] = [];
     const seen = new Set<string>();
     const addFromRow = (r: ScoutMatchingV5Row) => {
-      const rawFromProps = String((r.properties?.google_nearby_ranked_json as string | undefined) || "").trim();
-      if (!rawFromProps) return;
+      const rawFromProps = r.properties?.google_nearby_ranked_json;
+      if (rawFromProps == null || rawFromProps === "") return;
+      if (typeof rawFromProps === "string" && !String(rawFromProps).trim()) return;
       for (const entry of parseGoogleNearbyRankedJson(rawFromProps)) {
         const name = String(entry.name || "").trim();
         if (!name) continue;
@@ -408,7 +461,7 @@ function ProspectDrawerDiscoverySection({
     if (row.grain === "building") addFromRow(row);
     if (out.length === 0 && row.grain === "parcelle" && parcelleCluster.length === 0) addFromRow(row);
     return out;
-  }, [parcelleCluster, row]);
+  }, [parcelleCluster, row, liveGoogleNearbyOverride]);
   const discoveryMergedPois = useMemo<DiscoveryDrawerMergedPoiEntry[]>(() => {
     const osmRows: DiscoveryDrawerMergedPoiEntry[] = discoveryOsmPoisNamed.map((poi) => ({
       key: `osm:${poi.osm_type}:${poi.osm_id}`,
@@ -453,7 +506,59 @@ function ProspectDrawerDiscoverySection({
     matchingV5ApiNomFetchedRef.current.clear();
     setMatchingV5ApiNomBySiren({});
     setShowAllEstablishments(false);
+    setLiveGoogleNearbyOverride(null);
   }, [discoveryClusterKey]);
+
+  const handleDiscoveryLiveNearbySearch = useCallback(async () => {
+    const geom = buildParcelUnionGeometry(parcelleCluster);
+    if (!geom) {
+      toast.error("Aucune emprise parcelle pour lancer la recherche.");
+      return;
+    }
+    setNearbyLivePending(true);
+    try {
+      const ready = await waitForGoogleMapsReady({ timeoutMs: 25000 });
+      if (!ready) {
+        toast.error("Google Maps n’est pas prêt. Vérifiez la clé API et réessayez.");
+        return;
+      }
+      const result = await fetchNearbyRankedInParcel({ parcelGeometry: geom });
+      if (!result.ok) {
+        toast.error(result.message);
+        return;
+      }
+      setLiveGoogleNearbyOverride(result.entries);
+      if (result.entries.length === 0) {
+        toast.info("Aucun établissement Google dans l’emprise de cette parcelle.");
+      }
+      try {
+        const persistRes = await fetchWithAuth("/api/matching-v5/features/google-nearby", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scoutV5Id: row.id,
+            googleNearbyRanked: result.entries,
+          }),
+        });
+        if (!persistRes.ok) {
+          const desc =
+            persistRes.status === 404
+              ? "Ligne introuvable en base."
+              : persistRes.status === 401
+                ? "Reconnectez-vous pour enregistrer."
+                : `HTTP ${persistRes.status}`;
+          toast.error("Enregistrement des POI impossible.", { description: desc });
+        } else {
+          toast.success("POI Google enregistrés.");
+          onDiscoveryMatchingV5Persisted?.();
+        }
+      } catch {
+        toast.error("Erreur réseau lors de l’enregistrement des POI.");
+      }
+    } finally {
+      setNearbyLivePending(false);
+    }
+  }, [parcelleCluster, row.id, onDiscoveryMatchingV5Persisted]);
 
   const sirensForApiNom = useMemo(() => {
     if (parcelleCluster.length > 0) return collectSirensFromMatchingV5Rows(parcelleCluster);
@@ -1039,15 +1144,10 @@ function ProspectDrawerDiscoverySection({
   }, [parcelleCluster, row.matchingConfidence]);
   const opScoreLetter = operationalScoreLetterFromMatching(opConfidenceForLetter);
 
-  const heroAddress = useMemo(() => {
-    const addrs = parcelleCluster
-      .map((p) => p.passerelleAddress?.trim())
-      .filter((x): x is string => Boolean(x));
-    const uniq = Array.from(new Set(addrs));
-    if (uniq.length === 1) return uniq[0]!;
-    if (uniq.length > 1) return uniq.join(" · ");
-    return row.passerelleAddress?.trim() || "Pas d’adresse passerelle";
-  }, [parcelleCluster, row.passerelleAddress]);
+  const heroAddress = useMemo(
+    () => formatDiscoveryDrawerHeroAddress(row, parcelleCluster),
+    [row, parcelleCluster]
+  );
 
   const discoveryRecapShowBdnb = Number.isFinite(footprintSumTotal) && footprintSumTotal > 0;
   const discoveryRecapShowParcel = Number.isFinite(cartePolygonAreaM2) && cartePolygonAreaM2 > 0;
@@ -1077,6 +1177,7 @@ function ProspectDrawerDiscoverySection({
   const kwcRounded = `${Math.round(kwpEst)} kWc`;
 
   return (
+    <GoogleMapsLoader blockingLoad={false}>
     <Tabs
       value={discoveryMainTab}
       onValueChange={setDiscoveryMainTab}
@@ -1243,7 +1344,12 @@ function ProspectDrawerDiscoverySection({
               {discoveryMergedPois.length}
             </span>
           </h4>
-          <DiscoveryDrawerMergedPoiBlock pois={discoveryMergedPois} showTitle={false} />
+          <DiscoveryDrawerMergedPoiBlock
+            pois={discoveryMergedPois}
+            showTitle={false}
+            onNearbySearch={discoveryMergedPois.length === 0 ? handleDiscoveryLiveNearbySearch : undefined}
+            nearbySearchPending={nearbyLivePending}
+          />
         </section>
 
         <section aria-labelledby="discovery-terrain-ppm" className="space-y-3 border-t border-border pt-5">
@@ -1525,7 +1631,7 @@ function ProspectDrawerDiscoverySection({
               includeBattery={discoveryIncludeBattery}
               onIncludeBatteryChange={onDiscoveryIncludeBatteryChange}
             />
-            <div className="flex flex-col items-center justify-center gap-4 sm:flex-row sm:items-start sm:justify-start">
+            <div className="flex w-full flex-col gap-4">
               <RadianzBillReductionCard
                 periodLabel={discoveryBillReductionCard.periodLabel}
                 initialBillAnnualEur={estimateEnergyBillEur(discoveryAnnualConsumptionKwh)}
@@ -1681,6 +1787,7 @@ function ProspectDrawerDiscoverySection({
       </TabsContent>
 
     </Tabs>
+    </GoogleMapsLoader>
   );
 }
 
@@ -1703,6 +1810,8 @@ interface ProspectDrawerProps {
   discoveryExistingPipelineProspect?: Prospect | null;
   /** Après ajout pipeline depuis Discovery : invalider la liste (ex. `mutate` SWR côté page). */
   onDiscoveryPipelineAdded?: () => void;
+  /** Après enregistrement POI Google live en base (Découverte) : ex. forcer un refetch des features. */
+  onDiscoveryMatchingV5Persisted?: () => void;
 }
 
 export function ProspectDrawer({
@@ -1718,6 +1827,7 @@ export function ProspectDrawer({
   discoveryLinkedParcelleRows = null,
   discoveryExistingPipelineProspect = null,
   onDiscoveryPipelineAdded,
+  onDiscoveryMatchingV5Persisted,
 }: ProspectDrawerProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -2933,6 +3043,7 @@ export function ProspectDrawer({
               onDiscoveryIncludeBatteryChange={setDiscoveryIncludeBattery}
               discoverySimulationSummary={discoveryFinancialSummary}
               discoveryDailySimulationBattery={discoveryDailySimulationBattery}
+              onDiscoveryMatchingV5Persisted={onDiscoveryMatchingV5Persisted}
             />
           ) : prospect ? (
             <>

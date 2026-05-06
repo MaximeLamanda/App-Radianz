@@ -31,6 +31,7 @@ import { DiscoveryMapView } from "@/components/discovery/DiscoveryMapView";
 import { DiscoveryFiltersPanel } from "@/components/discovery/DiscoveryFiltersPanel";
 import { DISCOVERY_FOCUS_QUERY } from "@/lib/discovery-focus-href";
 import { MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2 } from "@/lib/discovery-surface-defaults";
+import { isParcIndustrielIris } from "@/lib/matching-v5-iris-zones";
 
 /** Pessac — centre carte par défaut (hors Google). */
 const DEFAULT_MAP_CENTER = { lat: 44.8067, lng: -0.6311 };
@@ -61,6 +62,11 @@ function DiscoveryContent() {
     });
   }, [user?.uid]);
 
+  const onDiscoveryMatchingV5Persisted = useCallback(() => {
+    forceMatchingV5FeaturesRefetchRef.current = true;
+    setMatchingV5FeaturesBust((n) => n + 1);
+  }, []);
+
   const [matchingV5Rows, setMatchingV5Rows] = useState<ScoutMatchingV5Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +85,7 @@ function DiscoveryContent() {
   }, []);
   const [surfaceMinM2, setSurfaceMinM2] = useState(MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2);
   const [surfaceMaxM2, setSurfaceMaxM2] = useState(50_000);
+  const [onlyParcIndustrielIris, setOnlyParcIndustrielIris] = useState(false);
   const [appliedSurfaceRange, setAppliedSurfaceRange] = useState<{ min: number; max: number }>({
     min: MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2,
     max: 50_000,
@@ -98,6 +105,9 @@ function DiscoveryContent() {
 
   /** Bbox réellement demandée à l’API après le dernier succès (viewport élargi) — hysteresis pour éviter refetch inutiles au pan. */
   const lastSuccessfulQueryBoundsRef = useRef<MapBounds | null>(null);
+  /** Après PATCH POI Google : refetch même si le viewport est encore couvert par la dernière bbox. */
+  const forceMatchingV5FeaturesRefetchRef = useRef(false);
+  const [matchingV5FeaturesBust, setMatchingV5FeaturesBust] = useState(0);
 
   useEffect(() => {
     lastSuccessfulQueryBoundsRef.current = null;
@@ -183,13 +193,18 @@ function DiscoveryContent() {
       discoveryDebug("page", "matching-v5/features : attente viewBounds (pas de requête)");
       return;
     }
-    const covered = lastSuccessfulQueryBoundsRef.current;
-    if (covered != null && viewportContainedInQueryBounds(viewBounds, covered)) {
-      discoveryDebug("page", "matching-v5/features : skip (viewport couvert par dernière requête)", {
-        viewportKey: discoveryBoundsKey(viewBounds),
-        coveredKey: discoveryBoundsKey(covered),
-      });
-      return;
+    const forceRefetch = forceMatchingV5FeaturesRefetchRef.current;
+    if (forceRefetch) {
+      forceMatchingV5FeaturesRefetchRef.current = false;
+    } else {
+      const covered = lastSuccessfulQueryBoundsRef.current;
+      if (covered != null && viewportContainedInQueryBounds(viewBounds, covered)) {
+        discoveryDebug("page", "matching-v5/features : skip (viewport couvert par dernière requête)", {
+          viewportKey: discoveryBoundsKey(viewBounds),
+          coveredKey: discoveryBoundsKey(covered),
+        });
+        return;
+      }
     }
     let cancelled = false;
     setLoading(true);
@@ -248,7 +263,7 @@ function DiscoveryContent() {
       cancelled = true;
       discoveryDebug("page", "matching-v5/features : cleanup (effet annulé / deps changées)");
     };
-  }, [user, viewBounds]);
+  }, [user, viewBounds, matchingV5FeaturesBust]);
 
   /** Postgres exporte surtout des parcelles (empreinte Σ bâtiments) ; les lignes `building` sont optionnelles (pipeline --include-building-grain). */
   const filteredFootprints = useMemo(() => {
@@ -257,9 +272,11 @@ function DiscoveryContent() {
       if (r.grain !== "building" && r.grain !== "parcelle") return false;
       /** Même sens que le pipeline V5 : `footprint_sum > min_required` (slider à 0 = pas de plancher). */
       if (lo > 0 && !(r.footprintSumM2 > lo)) return false;
-      return r.footprintSumM2 <= hi;
+      if (r.footprintSumM2 > hi) return false;
+      if (onlyParcIndustrielIris && !isParcIndustrielIris(r.nomIris)) return false;
+      return true;
     });
-  }, [matchingV5Rows, appliedSurfaceRange]);
+  }, [matchingV5Rows, appliedSurfaceRange, onlyParcIndustrielIris]);
 
   /**
    * Bâtiments BDNB : plafond d’ids global sur tout l’export → sans filtre viewport, une zone restait sans
@@ -427,6 +444,7 @@ function DiscoveryContent() {
         onOpenChange={handleDiscoveryDrawerOpenChange}
         voirHref={(_prospectId) => "/discovery"}
         onDiscoveryPipelineAdded={onDiscoveryPipelineAdded}
+        onDiscoveryMatchingV5Persisted={onDiscoveryMatchingV5Persisted}
       />
     );
   }, [
@@ -437,6 +455,7 @@ function DiscoveryContent() {
     setDrawerContent,
     handleDiscoveryDrawerOpenChange,
     onDiscoveryPipelineAdded,
+    onDiscoveryMatchingV5Persisted,
   ]);
 
   if (authLoading || !user) {
@@ -470,6 +489,8 @@ function DiscoveryContent() {
               surfaceMaxM2={surfaceMaxM2}
               onSurfaceMinChange={setSurfaceMinM2}
               onSurfaceMaxChange={setSurfaceMaxM2}
+              onlyParcIndustrielIris={onlyParcIndustrielIris}
+              onOnlyParcIndustrielIrisChange={setOnlyParcIndustrielIris}
               rowCount={filteredFootprints.length}
               loading={loading}
               error={error}

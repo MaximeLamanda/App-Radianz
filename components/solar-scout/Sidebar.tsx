@@ -48,6 +48,7 @@ import {
   parseSiretsMatchJson,
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
+import { isParcIndustrielIris } from "@/lib/matching-v5-iris-zones";
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
 import type {
   AddressCoordinates,
@@ -1050,8 +1051,9 @@ export function Sidebar({
     const seen = new Set<string>();
     const out: DiscoveryPoiTableRow[] = [];
     for (const row of matchingV5OsmParcelleRows) {
-      const raw = String(row.properties?.google_nearby_ranked_json ?? "").trim();
-      if (!raw) continue;
+      const raw = row.properties?.google_nearby_ranked_json;
+      if (raw == null || raw === "") continue;
+      if (typeof raw === "string" && !raw.trim()) continue;
       for (const p of parseGoogleNearbyRankedJson(raw)) {
         const placeId = String(p.place_id ?? "").trim();
         const name = String(p.name ?? "").trim();
@@ -1107,7 +1109,7 @@ export function Sidebar({
   const matchingV5ShowGooglePoiTest = useMemo(() => {
     if (!selectedMatchingV5Row) return false;
     const hasParcIndustriel = matchingV5OsmParcelleRows.some(
-      (r) => (r.nomIris || "").trim().toLowerCase() === "parc industriel"
+      (r) => isParcIndustrielIris(r.nomIris)
     );
     if (!hasParcIndustriel) return false;
     const hasOsmWebsite = matchingV5OsmPois.some((poi) => String(poi.website || "").trim().length > 0);

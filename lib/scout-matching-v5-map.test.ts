@@ -8,6 +8,7 @@ import {
   findMatchingV5LinkedParcelleRowsTransitive,
   findMatchingV5ParcelleRowsForBuilding,
   findMatchingV5RowIdForBatimentFootprint,
+  formatDiscoveryDrawerHeroAddress,
   formatV5OsmPoiTypeLabelForDisplay,
   mergeOsmPoisFromParcelleRows,
   parseGoogleNearbyRankedJson,
@@ -119,6 +120,84 @@ describe("formatV5OsmPoiTypeLabelForDisplay", () => {
   });
 });
 
+describe("formatDiscoveryDrawerHeroAddress", () => {
+  it("priorise google_anchor_address à la passerelle", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HC",
+      numeroNorm: "0045",
+      passerelleAddress: "12 rue PPM 33600 Pessac",
+      properties: { google_anchor_address: "8 avenue du POI 33600 Pessac" },
+    });
+    expect(formatDiscoveryDrawerHeroAddress(p, [p])).toBe("8 avenue du POI 33600 Pessac");
+  });
+
+  it("utilise la vicinity du place_id gagnant si pas d’ancre", () => {
+    const ranked = JSON.stringify([
+      { rank: 0, place_id: "ChIJwin", name: "Café", vicinity: "10 rue X, Pessac", types: ["cafe"] },
+    ]);
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33",
+      section: "A",
+      numeroNorm: "1",
+      properties: {
+        google_winner_place_id: "ChIJwin",
+        google_nearby_ranked_json: ranked,
+      },
+    });
+    expect(formatDiscoveryDrawerHeroAddress(p, [p])).toBe("10 rue X, Pessac");
+  });
+
+  it("utilise l’adresse OSM si pas de Google utilisable", () => {
+    const osm = JSON.stringify([
+      {
+        osm_type: "n",
+        osm_id: 1,
+        name: "Shop",
+        address: "5 rue OSM 33600 Pessac",
+        website: "",
+        phone: "",
+        poi_type_label: "Magasin",
+        osm_url: "",
+        lat: 44.8,
+        lng: -0.63,
+      },
+    ]);
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33",
+      section: "B",
+      numeroNorm: "2",
+      osmPoisJson: osm,
+      passerelleAddress: "",
+    });
+    expect(formatDiscoveryDrawerHeroAddress(p, [p])).toBe("5 rue OSM 33600 Pessac");
+  });
+
+  it("repli passerelle puis cadastre", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HC",
+      numeroNorm: "0999",
+      passerelleAddress: "Adresse ppm seule",
+    });
+    expect(formatDiscoveryDrawerHeroAddress(p, [p])).toBe("Adresse ppm seule");
+
+    const p2 = parcelle({
+      id: "p2",
+      codeInsee: "33318",
+      section: "ZZ",
+      numeroNorm: "0001",
+      passerelleAddress: "",
+      passerelleAddressesJson: "",
+    });
+    expect(formatDiscoveryDrawerHeroAddress(p2, [p2])).toBe("Parcelle ZZ 0001 · 33318");
+  });
+});
+
 describe("parseOsmPoisJson", () => {
   it("parse un tableau JSON valide", () => {
     const raw = JSON.stringify([
@@ -204,6 +283,17 @@ describe("parseGoogleNearbyRankedJson", () => {
   it("retourne vide si invalide", () => {
     expect(parseGoogleNearbyRankedJson("")).toEqual([]);
     expect(parseGoogleNearbyRankedJson("{")).toEqual([]);
+  });
+
+  it("accepte un tableau JSONB déjà parsé", () => {
+    const arr = [{ rank: 0, place_id: "ChIJy", name: "Café", vicinity: null, types: ["cafe"], lat: 44.2, lng: -0.6 }];
+    expect(parseGoogleNearbyRankedJson(arr)).toHaveLength(1);
+    expect(parseGoogleNearbyRankedJson(arr)[0]?.place_id).toBe("ChIJy");
+  });
+
+  it("accepte un objet unique (défensif)", () => {
+    const one = { rank: 1, place_id: "ChIJz", name: "Shop" };
+    expect(parseGoogleNearbyRankedJson(one)).toEqual([one]);
   });
 });
 
