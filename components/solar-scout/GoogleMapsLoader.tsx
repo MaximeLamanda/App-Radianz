@@ -4,9 +4,14 @@ import { useEffect, useState } from "react";
 
 interface GoogleMapsLoaderProps {
   children: React.ReactNode;
+  /**
+   * Si `false`, affiche toujours les enfants pendant le chargement (ex. drawer Découverte sans carte).
+   * Comportement historique : `true` (écran « Chargement de la carte… » jusqu’à `isLoaded`).
+   */
+  blockingLoad?: boolean;
 }
 
-export function GoogleMapsLoader({ children }: GoogleMapsLoaderProps) {
+export function GoogleMapsLoader({ children, blockingLoad = true }: GoogleMapsLoaderProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,7 +121,7 @@ export function GoogleMapsLoader({ children }: GoogleMapsLoaderProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (error) {
+  if (blockingLoad && error) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-muted">
         <div className="text-center max-w-md p-6">
@@ -138,7 +143,7 @@ export function GoogleMapsLoader({ children }: GoogleMapsLoaderProps) {
     );
   }
 
-  if (!isLoaded) {
+  if (blockingLoad && !isLoaded) {
     return (
       <div className="h-full w-full flex items-center justify-center bg-muted">
         <div className="text-center">
