@@ -71,7 +71,6 @@ import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { DiscoveryShareReadingTabPanel } from "./DiscoveryShareReadingTabPanel";
-import { ProspectShareReadingKpisPanel } from "./ProspectShareReadingKpisPanel";
 import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
 import { RadianzBillReductionCard, type RadianzBillReductionSegment } from "./RadianzBillReductionCard";
 import { RadianzCo2AvoidanceRadial } from "./RadianzCo2AvoidanceRadial";
@@ -3939,14 +3938,7 @@ export function ProspectDrawer({
         {!discoveryRow ? (
           <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl">
             {prospect?.id && (
-              <>
-                <ProspectShareReadingKpisPanel
-                  prospectId={prospect.id}
-                  shareTokenHint={prospect.shareToken}
-                  isOpen={isOpen}
-                  user={user}
-                />
-                <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2">
                 {!isOnDiscovery && !voirHref(prospect.id).includes("/solar-scout") && (
                   <Link href={voirHref(prospect.id)}>
                     <Button
@@ -3988,7 +3980,6 @@ export function ProspectDrawer({
                   {isSaving ? "Enregistrement..." : "Enregistrer"}
                 </Button>
               </div>
-              </>
             )}
             {prospect && onAddToPipeline && !prospect.id && (
               <div className="flex gap-2">
@@ -4007,14 +3998,7 @@ export function ProspectDrawer({
         ) : (
           <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl border-t border-border">
             {discoveryExistingPipelineProspect?.id ? (
-              <>
-                <ProspectShareReadingKpisPanel
-                  prospectId={discoveryExistingPipelineProspect.id}
-                  shareTokenHint={discoveryExistingPipelineProspect.shareToken}
-                  isOpen={isOpen}
-                  user={user}
-                />
-                <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2">
                 {discoveryPipelineMapHref && !isOnDiscovery ? (
                   <Button
                     type="button"
@@ -4052,7 +4036,6 @@ export function ProspectDrawer({
                   <Link href="/">Ouvrir le pipeline</Link>
                 </Button>
               </div>
-              </>
             ) : (
               <Button
                 type="button"
