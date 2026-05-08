@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateProspectShareRegisterViewDecision } from "@/lib/prospect-share-view-eligibility";
+import {
+  evaluateProspectShareRegisterViewDecision,
+  evaluateProspectShareSessionStartDecision,
+} from "@/lib/prospect-share-view-eligibility";
+
+describe("evaluateProspectShareSessionStartDecision", () => {
+  it("record_session si deja ouvert (relecture KPI)", () => {
+    expect(
+      evaluateProspectShareSessionStartDecision({
+        viewerIp: "203.0.113.2",
+        shareLinkCreatorIp: "198.51.100.1",
+        pipelineStatus: "ouvert",
+      })
+    ).toEqual({ action: "record_session" });
+  });
+
+  it("skip terminal pour session aussi", () => {
+    expect(
+      evaluateProspectShareSessionStartDecision({
+        viewerIp: "203.0.113.2",
+        shareLinkCreatorIp: "198.51.100.1",
+        pipelineStatus: "converti",
+      })
+    ).toEqual({ action: "skip", skipped: "terminal" });
+  });
+});
 
 describe("evaluateProspectShareRegisterViewDecision", () => {
   it("skip no_ip si viewerIp absent ou vide", () => {

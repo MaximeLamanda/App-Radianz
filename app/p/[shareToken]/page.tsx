@@ -93,6 +93,10 @@ import type {
   ProspectConfigurationMode,
 } from "@/types";
 import { toast } from "sonner";
+import {
+  registerProspectSharePageView,
+  startProspectShareSession,
+} from "@/lib/prospect-share-client";
 import { RoiComboChart, getRoiCumulativeNetEurAfterHorizon } from "@/components/solar-scout/RoiChart";
 import { ElectricityTariffEscalationChart } from "@/components/solar-scout/ElectricityTariffEscalationChart";
 import { RadianzBillReductionCard } from "@/components/solar-scout/RadianzBillReductionCard";
@@ -204,6 +208,21 @@ export default function ProspectSharePage() {
   const params = useParams();
   const { user } = useAuth();
   const shareToken = (params?.shareToken as string) ?? null;
+  useEffect(() => {
+    if (!shareToken) return;
+    void registerProspectSharePageView(shareToken);
+    try {
+      const storageKey = `radianzShareSession:${shareToken}`;
+      let sessionId = sessionStorage.getItem(storageKey);
+      if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        sessionStorage.setItem(storageKey, sessionId);
+      }
+      void startProspectShareSession(shareToken, sessionId);
+    } catch {
+      void startProspectShareSession(shareToken, crypto.randomUUID());
+    }
+  }, [shareToken]);
   const { data: prospectData } = useProspectByShareToken(shareToken);
   const prospect = prospectData ?? null;
   const ownerUserId = prospect?.userId ?? null;
