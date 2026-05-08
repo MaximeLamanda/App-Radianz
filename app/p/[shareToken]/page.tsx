@@ -94,6 +94,7 @@ import type {
 } from "@/types";
 import { toast } from "sonner";
 import {
+  endProspectShareSession,
   registerProspectSharePageView,
   startProspectShareSession,
 } from "@/lib/prospect-share-client";
@@ -211,17 +212,55 @@ export default function ProspectSharePage() {
   useEffect(() => {
     if (!shareToken) return;
     void registerProspectSharePageView(shareToken);
+
+    let sessionId: string;
     try {
       const storageKey = `radianzShareSession:${shareToken}`;
-      let sessionId = sessionStorage.getItem(storageKey);
+      sessionId = sessionStorage.getItem(storageKey) ?? "";
       if (!sessionId) {
         sessionId = crypto.randomUUID();
         sessionStorage.setItem(storageKey, sessionId);
       }
-      void startProspectShareSession(shareToken, sessionId);
     } catch {
-      void startProspectShareSession(shareToken, crypto.randomUUID());
+      sessionId = crypto.randomUUID();
     }
+
+    void startProspectShareSession(shareToken, sessionId);
+
+    const openedAt = Date.now();
+    let maxScrollDepth01 = 0;
+    const endedSentRef = { current: false };
+
+    const updateMaxScroll = () => {
+      const sh = document.documentElement.scrollHeight;
+      if (sh <= 0) return;
+      const visibleBottom = window.scrollY + window.innerHeight;
+      const depth = Math.min(1, Math.max(0, visibleBottom / sh));
+      maxScrollDepth01 = Math.max(maxScrollDepth01, depth);
+    };
+
+    updateMaxScroll();
+    window.addEventListener("scroll", updateMaxScroll, { passive: true });
+
+    const sendEnd = () => {
+      if (endedSentRef.current) return;
+      endedSentRef.current = true;
+      const durationMs = Math.max(0, Date.now() - openedAt);
+      void endProspectShareSession(shareToken, sessionId, durationMs, maxScrollDepth01);
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") sendEnd();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", sendEnd);
+
+    return () => {
+      window.removeEventListener("scroll", updateMaxScroll);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", sendEnd);
+      sendEnd();
+    };
   }, [shareToken]);
   const { data: prospectData } = useProspectByShareToken(shareToken);
   const prospect = prospectData ?? null;

@@ -47,3 +47,20 @@ export async function startProspectShareSession(
     console.warn("[prospect-share] share-session/start failed", res.status, t);
   }
 }
+
+export async function endProspectShareSession(
+  shareToken: string,
+  sessionId: string,
+  durationMs: number,
+  maxScrollDepth01: number
+): Promise<void> {
+  const res = await fetch("/api/prospect-share/share-session/end", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shareToken, sessionId, durationMs, maxScrollDepth01 }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    console.warn("[prospect-share] share-session/end failed", res.status, t);
+  }
+}

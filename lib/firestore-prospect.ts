@@ -6,6 +6,7 @@
 import { Timestamp } from "firebase/firestore";
 import { getSatelliteImageUrl } from "./satellite-image";
 import { getMapboxStaticUrl, hasMapboxToken } from "./mapbox-static";
+import { normalizeProspectPipelineStatus } from "./prospect-pipeline-status";
 import type {
   Prospect,
   ProspectPipelineStatus,
@@ -58,6 +59,9 @@ export interface ProspectDocument {
   companyTrancheEffectif?: string;
   companyEnrichmentApiUrl?: string;
   shareToken?: string;
+  shareLinkCreatorIp?: string;
+  shareSessionCount?: number;
+  shareLastSessionAt?: Timestamp;
   commercialReferent?: CommercialReferent;
   annualConsumptionKwhOverride?: number;
   monthlyConsumptionKwhOverride?: number[];
@@ -200,7 +204,7 @@ export function prepareProspectForFirestore(
   if (prospect.contact) doc.contact = prospect.contact;
   if (thumbnailUrl) doc.thumbnailUrl = thumbnailUrl;
 
-  doc.pipelineStatus = prospect.pipelineStatus ?? "nouveau";
+  doc.pipelineStatus = prospect.pipelineStatus ?? "cree";
   if (prospect.configurationMode) doc.configurationMode = prospect.configurationMode;
 
   // Stocker les valeurs passées par le drawer (même méthode que l'affichage, pas de recalcul)
@@ -218,6 +222,7 @@ export function prepareProspectForFirestore(
   if (prospect.companyTrancheEffectif) doc.companyTrancheEffectif = prospect.companyTrancheEffectif;
   if (prospect.companyEnrichmentApiUrl) doc.companyEnrichmentApiUrl = prospect.companyEnrichmentApiUrl;
   if (prospect.shareToken) doc.shareToken = prospect.shareToken;
+  if (prospect.shareLinkCreatorIp) doc.shareLinkCreatorIp = prospect.shareLinkCreatorIp;
   if (prospect.commercialReferent) {
     const cr = prospect.commercialReferent as unknown as Record<string, unknown>;
     doc.commercialReferent = Object.fromEntries(
@@ -305,7 +310,16 @@ export function prospectFromFirestore(
   if (data.poiCandidates?.length) result.poiCandidates = data.poiCandidates;
   if (data.poiCandidateIndex != null) result.poiCandidateIndex = data.poiCandidateIndex;
   if (data.poiCoordinates) result.poiCoordinates = data.poiCoordinates;
-  if (data.pipelineStatus) result.pipelineStatus = data.pipelineStatus;
+  if (data.pipelineStatus) {
+    result.pipelineStatus = normalizeProspectPipelineStatus(data.pipelineStatus);
+  }
+  if (data.shareLinkCreatorIp) result.shareLinkCreatorIp = data.shareLinkCreatorIp;
+  if (typeof data.shareSessionCount === "number" && Number.isFinite(data.shareSessionCount)) {
+    result.shareSessionCount = Math.max(0, Math.floor(data.shareSessionCount));
+  }
+  if (data.shareLastSessionAt?.toDate) {
+    result.shareLastSessionAt = data.shareLastSessionAt.toDate();
+  }
   if (data.configurationMode) result.configurationMode = data.configurationMode;
   if (data.priceRangeMinEur != null) result.priceRangeMinEur = data.priceRangeMinEur;
   if (data.priceRangeMaxEur != null) result.priceRangeMaxEur = data.priceRangeMaxEur;

@@ -83,9 +83,9 @@ export type ProspectConfigurationMode = "perfect_fit" | "highest_production";
 
 /** Statut du prospect dans le pipeline */
 export type ProspectPipelineStatus =
-  | "nouveau"
-  | "en_cours"
-  | "devis_envoye"
+  | "cree"
+  | "envoye"
+  | "ouvert"
   | "converti"
   | "perdu";
 
@@ -134,6 +134,12 @@ export interface Prospect {
   companyEnrichmentApiUrl?: string;
   /** Token pour lien partagé prospect */
   shareToken?: string;
+  /** IP (telle que vue par le serveur) enregistrée quand le commercial génère / actualise le lien — pour détecter une ouverture « externe ». */
+  shareLinkCreatorIp?: string;
+  /** Nombre de sessions page partagée terminées (KPI lecture). */
+  shareSessionCount?: number;
+  /** Horodatage de la dernière session terminée. */
+  shareLastSessionAt?: Date;
   /** Référent commercial (mock pour l'instant) */
   commercialReferent?: CommercialReferent;
   /** Consommation annuelle override saisie par le prospect (kWh) */
