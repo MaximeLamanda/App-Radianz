@@ -64,3 +64,35 @@ export async function endProspectShareSession(
     console.warn("[prospect-share] share-session/end failed", res.status, t);
   }
 }
+
+export type ProspectShareSessionRow = {
+  id: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  maxScrollDepth01: number | null;
+  status: string | null;
+};
+
+export type ProspectShareSessionsPayload = {
+  shareToken: string | null;
+  shareSessionCount: number;
+  shareLastSessionAt: string | null;
+  sessions: ProspectShareSessionRow[];
+};
+
+export async function fetchProspectShareSessions(
+  idToken: string,
+  prospectId: string
+): Promise<ProspectShareSessionsPayload> {
+  const url = `/api/prospect-share/share-sessions?prospectId=${encodeURIComponent(prospectId)}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(t || `Erreur ${res.status}`);
+  }
+  return res.json() as Promise<ProspectShareSessionsPayload>;
+}

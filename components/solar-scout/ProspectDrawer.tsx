@@ -48,6 +48,7 @@ import {
 } from "lucide-react";
 import { PieChart, Pie, Cell } from "recharts";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
+import { recordShareLinkCreatorIp } from "@/lib/prospect-share-client";
 import {
   computeDiscoveryDrawerFinancialSummary,
   type DiscoveryDrawerFinancialInputs,
@@ -69,6 +70,7 @@ import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 /** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
 const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
+import { ProspectShareReadingKpisPanel } from "./ProspectShareReadingKpisPanel";
 import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
 import { RadianzBillReductionCard, type RadianzBillReductionSegment } from "./RadianzBillReductionCard";
 import { RadianzCo2AvoidanceRadial } from "./RadianzCo2AvoidanceRadial";
@@ -127,6 +129,7 @@ import {
   collectSirensFromMatchingV5Row,
   collectSirensFromMatchingV5Rows,
   formatDiscoveryDrawerHeroAddress,
+  mergeOsmBuildingContactsFromRows,
   mergeOsmPoisFromParcelleRows,
   parseGoogleNearbyRankedJson,
   parseMatchingV5BuildingsJson,
@@ -139,6 +142,7 @@ import {
   type V5PasserellePpmEntry,
 } from "@/lib/scout-matching-v5-map";
 import { DiscoverySolaireProjectCards } from "@/components/discovery/DiscoverySolaireProjectCards";
+import { DiscoveryDrawerEquipmentPanel } from "@/components/discovery/DiscoveryDrawerEquipmentPanel";
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
 import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
 import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
@@ -155,7 +159,7 @@ function websiteHref(raw: string): string {
 /** Bloc OSM (Découverte) : réutilisé dans l’onglet Entreprises, avant les établissements SIRET. */
 type DiscoveryDrawerMergedPoiEntry = {
   key: string;
-  source: "osm" | "google";
+  source: "osm" | "google" | "osm_building";
   name: string;
   typeLabel: string;
   phone: string;
@@ -179,6 +183,27 @@ function googlePoiTypeLabel(types: V5GoogleNearbyRankedEntry["types"]): string {
     .join(" ");
 }
 
+/** Clé de dédup par nom : minuscules, sans accents, espaces collapsés. Vide si pas de nom. */
+function mergedPoiNameDedupeKey(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Score « richesse d'informations » : nb de champs renseignés (téléphone, site, lien externe, type). */
+function mergedPoiInfoScore(entry: DiscoveryDrawerMergedPoiEntry): number {
+  let score = 0;
+  if (entry.phone.trim() !== "") score += 1;
+  if (entry.website.trim() !== "") score += 1;
+  if (entry.externalUrl.trim() !== "") score += 1;
+  const typeLabel = entry.typeLabel.trim();
+  if (typeLabel !== "" && typeLabel !== "—") score += 1;
+  return score;
+}
+
 function DiscoveryDrawerMergedPoiBlock({
   pois,
   showTitle = true,
@@ -195,26 +220,26 @@ function DiscoveryDrawerMergedPoiBlock({
     <div className="space-y-3">
       {showTitle ? <p className="drawer-discovery-subpanel-title">Lieux à proximité</p> : null}
       {pois.length === 0 ? (
-        <div className="space-y-3 rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
-          <p className="m-0">
-            Aucun lieu avec nom n’est disponible pour ce site. Cette liste peut se compléter lors des prochaines mises à jour des données.
+        <div className="flex min-h-[132px] flex-col items-center justify-center gap-4 rounded-2xl border border-border/70 bg-muted/20 px-5 py-5 text-center text-sm text-muted-foreground">
+          <p className="m-0 text-center">
+            Aucun lieu détecté pour ce site.
           </p>
           {onNearbySearch ? (
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               size="sm"
-              className="h-8 w-full text-xs font-medium"
+              className="h-9 w-fit min-w-0 shrink-0 px-4 text-sm font-medium"
               disabled={nearbySearchPending}
               onClick={() => void onNearbySearch()}
             >
               {nearbySearchPending ? (
                 <>
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
-                  Recherche Google…
+                  Analyse...
                 </>
               ) : (
-                "Rechercher des établissements (Google) dans la parcelle"
+                "Analyser"
               )}
             </Button>
           ) : null}
@@ -237,7 +262,8 @@ function DiscoveryDrawerMergedPoiBlock({
                 const phone = (poi.phone || "").trim() || "—";
                 const websiteRaw = (poi.website || "").trim();
                 const externalRaw = (poi.externalUrl || "").trim();
-                const sourceBadgeLabel = poi.source === "google" ? "Google" : "OSM";
+                const sourceBadgeLabel =
+                  poi.source === "google" ? "Google" : poi.source === "osm_building" ? "OSM Building" : "OSM";
                 return (
                   <TableRow key={poi.key} className="border-0">
                     <TableCell className="min-w-0 align-top">
@@ -389,6 +415,7 @@ function ProspectDrawerDiscoverySection({
   isOpen,
   onPipelineFinanceInputsChange,
   pipelineProject,
+  discoveryEquipment,
   discoveryIncludeBattery,
   onDiscoveryIncludeBatteryChange,
   discoverySimulationSummary,
@@ -401,8 +428,10 @@ function ProspectDrawerDiscoverySection({
   isOpen: boolean;
   /** Données PV + surface pour estimer prix / B-E dans le pied du drawer (pipeline). */
   onPipelineFinanceInputsChange?: (payload: DiscoveryDrawerFinancialInputs | null) => void;
-  /** Résumé projet (onglet Solaire, sous le graphe) + surface pour la facture ref. */
-  pipelineProject?: { summary: DiscoveryDrawerFinancialSummary; surfaceM2: number } | null;
+  /** Résumé projet (onglet Solaire, sous le graphe). */
+  pipelineProject?: { summary: DiscoveryDrawerFinancialSummary } | null;
+  /** Carte équipement (même UI que la page partagée). */
+  discoveryEquipment?: ReactNode;
   /** Switch batterie (aligné simulation / page partagée). */
   discoveryIncludeBattery: boolean;
   onDiscoveryIncludeBatteryChange: (checked: boolean) => void;
@@ -422,9 +451,14 @@ function ProspectDrawerDiscoverySection({
   const [liveGoogleNearbyOverride, setLiveGoogleNearbyOverride] = useState<V5GoogleNearbyRankedEntry[] | null>(null);
   const [nearbyLivePending, setNearbyLivePending] = useState(false);
 
+  const discoveryOsmSourceRows = useMemo(() => {
+    if (parcelleCluster.length > 0) return parcelleCluster;
+    if (row.grain === "parcelle") return [row];
+    return [row];
+  }, [parcelleCluster, row]);
   const discoveryOsmPoisNamed = useMemo(
-    () => mergeOsmPoisFromParcelleRows(parcelleCluster).filter((p) => p.name.trim() !== ""),
-    [parcelleCluster]
+    () => mergeOsmPoisFromParcelleRows(discoveryOsmSourceRows).filter((p) => p.name.trim() !== ""),
+    [discoveryOsmSourceRows]
   );
   const discoveryGooglePoisNamed = useMemo(() => {
     if (liveGoogleNearbyOverride !== null) {
@@ -462,8 +496,17 @@ function ProspectDrawerDiscoverySection({
     if (out.length === 0 && row.grain === "parcelle" && parcelleCluster.length === 0) addFromRow(row);
     return out;
   }, [parcelleCluster, row, liveGoogleNearbyOverride]);
+  const discoveryOsmBuildingNamed = useMemo(() => {
+    const buildingSourceRows =
+      parcelleCluster.length > 0
+        ? row.grain === "building"
+          ? [row, ...parcelleCluster]
+          : parcelleCluster
+        : [row];
+    return mergeOsmBuildingContactsFromRows(buildingSourceRows);
+  }, [parcelleCluster, row]);
   const discoveryMergedPois = useMemo<DiscoveryDrawerMergedPoiEntry[]>(() => {
-    const osmRows: DiscoveryDrawerMergedPoiEntry[] = discoveryOsmPoisNamed.map((poi) => ({
+    const osmRowsRaw: DiscoveryDrawerMergedPoiEntry[] = discoveryOsmPoisNamed.map((poi) => ({
       key: `osm:${poi.osm_type}:${poi.osm_id}`,
       source: "osm",
       name: poi.name.trim(),
@@ -481,13 +524,39 @@ function ProspectDrawerDiscoverySection({
       website: "",
       externalUrl: googlePlaceHref(String(poi.place_id || "")),
     }));
-    return [...osmRows, ...googleRows].sort((a, b) => {
+    const osmBuildingRows: DiscoveryDrawerMergedPoiEntry[] = discoveryOsmBuildingNamed.map((entry) => ({
+        key: `osm_building:${entry.osm_building_id}`,
+        source: "osm_building",
+        name: entry.name,
+        typeLabel: entry.typeLabel || "—",
+        phone: entry.phone || "",
+        website: entry.website || "",
+        externalUrl: entry.externalUrl || "",
+      }));
+    const osmRows = osmRowsRaw;
+    const allRows = [...osmRows, ...googleRows, ...osmBuildingRows];
+
+    const bestByName = new Map<string, DiscoveryDrawerMergedPoiEntry>();
+    const noNameEntries: DiscoveryDrawerMergedPoiEntry[] = [];
+    for (const entry of allRows) {
+      const dedupeKey = mergedPoiNameDedupeKey(entry.name);
+      if (!dedupeKey) {
+        noNameEntries.push(entry);
+        continue;
+      }
+      const existing = bestByName.get(dedupeKey);
+      if (!existing || mergedPoiInfoScore(entry) > mergedPoiInfoScore(existing)) {
+        bestByName.set(dedupeKey, entry);
+      }
+    }
+
+    return [...bestByName.values(), ...noNameEntries].sort((a, b) => {
       const byName = a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
       if (byName !== 0) return byName;
-      if (a.source !== b.source) return a.source === "google" ? -1 : 1;
+      if (a.source !== b.source) return a.source.localeCompare(b.source, "fr");
       return a.key.localeCompare(b.key, "fr");
     });
-  }, [discoveryOsmPoisNamed, discoveryGooglePoisNamed]);
+  }, [discoveryOsmPoisNamed, discoveryGooglePoisNamed, discoveryOsmBuildingNamed]);
 
   const discoveryClusterKey = useMemo(
     () => `${row.id}|${parcelleCluster.map((p) => p.id).sort().join(",")}`,
@@ -722,7 +791,6 @@ function ProspectDrawerDiscoverySection({
       return a.batimentConstructionId.localeCompare(b.batimentConstructionId, "fr");
     });
   }, [row, parcelleCluster]);
-
   /** Uniquement les établissements issus du matching adresse (SIRET), pas la liste PPM brute. */
   const discoverySiretRows = useMemo(
     () => sirets.map((e) => ({ key: e.siret, e })),
@@ -737,7 +805,8 @@ function ProspectDrawerDiscoverySection({
   }, [parcelleCluster, row.footprintSumM2]);
 
   const panelRef = typeof window !== "undefined" ? getRecommendedPanelReferenceSync() : null;
-  const kwpEst = surfaceToKwp(footprintSumTotal, undefined, undefined, panelRef);
+  /** Plafond kWp (toute la surface utilisable) — « Highest production ». */
+  const kwpMaxDiscovery = surfaceToKwp(footprintSumTotal, undefined, undefined, panelRef);
   const cartePolygonAreaM2 = useMemo(() => {
     if (parcelleCluster.length === 0) return polygonAreaM2ApproxWgs84(row.geometry);
     return parcelleCluster.reduce((sum, p) => sum + polygonAreaM2ApproxWgs84(p.geometry), 0);
@@ -769,6 +838,22 @@ function ProspectDrawerDiscoverySection({
   const [discoveryPvgis, setDiscoveryPvgis] = useState<PVGISData | null>(null);
   const [discoveryPvgisLoading, setDiscoveryPvgisLoading] = useState(false);
   const [discoveryPvgisError, setDiscoveryPvgisError] = useState<string | null>(null);
+
+  /**
+   * kWp affiché par défaut dans l’onglet Solaire (graphe + pipeline) : Perfect fit
+   * (même cible 70 % que les cartes prospect), plafonné au kWp toit. Avant retour PVGIS : plafond toit.
+   */
+  const kwpEst = useMemo(() => {
+    if (kwpMaxDiscovery <= 0) return 0;
+    if (!discoveryPvgis || discoveryPvgis.annualProduction <= 0) return kwpMaxDiscovery;
+    const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7;
+    const consoAnnuelleKwh = getEnergyConsumption(discoveryPlaceType) * footprintSumTotal;
+    const targetKwp =
+      (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / discoveryPvgis.annualProduction;
+    if (!Number.isFinite(targetKwp) || targetKwp <= 0) return kwpMaxDiscovery;
+    return Math.round(Math.min(targetKwp, kwpMaxDiscovery) * 100) / 100;
+  }, [discoveryPvgis, kwpMaxDiscovery, footprintSumTotal, discoveryPlaceType]);
+
   /** Complète NAF / effectifs via `/api/recherche-entreprises` (api.gouv) quand absents de sirets_json. */
   const [discoveryGouvEtabBySiret, setDiscoveryGouvEtabBySiret] = useState<
     Record<
@@ -1644,10 +1729,10 @@ function ProspectDrawerDiscoverySection({
               />
             </div>
             {pipelineProject ? (
-              <DiscoverySolaireProjectCards
-                summary={pipelineProject.summary}
-                surfaceM2={pipelineProject.surfaceM2}
-              />
+              <div className="grid grid-cols-1 gap-3">
+                <DiscoverySolaireProjectCards summary={pipelineProject.summary} />
+                {discoveryEquipment}
+              </div>
             ) : null}
           </div>
         ) : (
@@ -1691,33 +1776,42 @@ function ProspectDrawerDiscoverySection({
                     <TableHead className="whitespace-nowrap">N°</TableHead>
                     <TableHead className="whitespace-nowrap">Année</TableHead>
                     <TableHead className="whitespace-nowrap">Empreinte</TableHead>
+                    <TableHead className="min-w-[10rem]">Nom OSM</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {buildingDetailRows.map((b, i) => (
-                    <TableRow key={`${b.batimentConstructionId}-${i}`} className="border-0">
-                      <TableCell
-                        className="min-w-0 whitespace-nowrap font-mono tabular-nums"
-                        title={
-                          b.batimentConstructionId && b.batimentConstructionId !== "—"
-                            ? `Rang ${i + 1} · construction BDNB : ${b.batimentConstructionId}${
-                                b.batimentGroupeId ? ` · groupe : ${b.batimentGroupeId}` : ""
-                              }`
-                            : `Rang ${i + 1}`
-                        }
-                      >
-                        {i + 1}
-                      </TableCell>
-                      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
-                        {b.anneeConstruction != null ? b.anneeConstruction : "—"}
-                      </TableCell>
-                      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
-                        {b.footprintM2 != null
-                          ? `${b.footprintM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
-                          : "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {buildingDetailRows.map((b, i) => {
+                    const osmName = (b.osmName || "").trim();
+                    return (
+                      <TableRow key={`${b.batimentConstructionId}-${i}`} className="border-0">
+                        <TableCell
+                          className="min-w-0 whitespace-nowrap font-mono tabular-nums"
+                          title={
+                            b.batimentConstructionId && b.batimentConstructionId !== "—"
+                              ? `Rang ${i + 1} · construction BDNB : ${b.batimentConstructionId}${
+                                  b.batimentGroupeId ? ` · groupe : ${b.batimentGroupeId}` : ""
+                                }`
+                              : `Rang ${i + 1}`
+                          }
+                        >
+                          {i + 1}
+                        </TableCell>
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
+                          {b.anneeConstruction != null ? b.anneeConstruction : "—"}
+                        </TableCell>
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
+                          {b.footprintM2 != null
+                            ? `${b.footprintM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="min-w-0 align-top text-muted-foreground">
+                          <span className="block truncate" title={osmName || undefined}>
+                            {osmName || "—"}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
@@ -1847,7 +1941,7 @@ export function ProspectDrawer({
     prospect?.batteryCount != null && prospect.batteryCount >= 1 ? prospect.batteryCount : 1
   );
   /** "highest_production" = max surface utilisée | "perfect_fit" = production ≈ consommation */
-  const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("highest_production");
+  const [configurationMode, setConfigurationMode] = useState<"highest_production" | "perfect_fit">("perfect_fit");
   const [companyEnrichmentLoading, setCompanyEnrichmentLoading] = useState(false);
   const [phase2Scoring, setPhase2Scoring] = useState<ScoredCandidate[] | null>(null);
   const [phase2ScoringLoading, setPhase2ScoringLoading] = useState(false);
@@ -2158,13 +2252,13 @@ export function ProspectDrawer({
 
   // Mode Perfect fit / Highest production : ne dépendre que de l'id et du champ persisté.
   // Avant : [prospect] réexécutait l'effet à chaque merge (batterie, PVGIS…) et le `else` forçait
-  // "highest_production" quand configurationMode était encore absent du document — les boutons ne suivaient pas le clic.
+  // un mode par défaut quand configurationMode était encore absent du document — les boutons ne suivaient pas le clic.
   useEffect(() => {
     if (!isOpen || !prospect) return;
     if (prospect.configurationMode) {
       setConfigurationMode(prospect.configurationMode);
     } else {
-      setConfigurationMode("highest_production");
+      setConfigurationMode("perfect_fit");
     }
   }, [isOpen, prospect?.id, prospect?.configurationMode]);
 
@@ -2503,6 +2597,14 @@ export function ProspectDrawer({
       };
 
       if (target.shareToken) {
+        if (target.id && user) {
+          try {
+            const idToken = await user.getIdToken();
+            await recordShareLinkCreatorIp(idToken, target.id);
+          } catch {
+            /* lien déjà connu : IP créateur best-effort */
+          }
+        }
         openTab(target.shareToken);
         return;
       }
@@ -2524,6 +2626,10 @@ export function ProspectDrawer({
         }
 
         await updateProspect(target.id, { shareToken, commercialReferent });
+        if (user) {
+          const idToken = await user.getIdToken();
+          await recordShareLinkCreatorIp(idToken, target.id);
+        }
         if (prospect?.id === target.id) {
           onProspectUpdate?.({ shareToken, commercialReferent });
         }
@@ -2747,6 +2853,23 @@ export function ProspectDrawer({
     ? choiceCardsConfig.perfectFit.inverterCount
     : choiceCardsConfig.highestProduction.inverterCount;
   const inverterCountExceedsLimit = effectiveInverterCount > MAX_INVERTER_COUNT;
+
+  const discoveryEquipmentCounts = useMemo(() => {
+    if (!discoveryPipelineFinanceInputs) return { panelCount: 0, inverterCount: 0 };
+    const panelRef = usedPanelRef ?? getRecommendedPanelReferenceSync();
+    const inverterRef = usedInverterRef ?? getRecommendedInverterReferenceSync();
+    if (!panelRef || !inverterRef) return { panelCount: 0, inverterCount: 0 };
+    const kwp = discoveryPipelineFinanceInputs.kwp;
+    const surfaceM2 = discoveryPipelineFinanceInputs.footprintM2;
+    if (kwp <= 0 || surfaceM2 <= 0) return { panelCount: 0, inverterCount: 0 };
+    const usableArea = getUsableRoofAreaM2(surfaceM2);
+    const maxPanelCount = calculatePanelCount(usableArea, undefined, panelRef);
+    const panelCount = Math.min(Math.floor((kwp * 1000) / panelRef.powerW), maxPanelCount);
+    const inverterCount = calculateInverterCount(kwp, inverterRef);
+    return { panelCount, inverterCount };
+  }, [discoveryPipelineFinanceInputs, usedPanelRef, usedInverterRef]);
+
+  const discoveryInverterCountExceedsLimit = discoveryEquipmentCounts.inverterCount > MAX_INVERTER_COUNT;
 
   const includeBatteryEffective = prospect?.includeBatteryOverride ?? getSolarEquipmentSettings().includeBattery ?? true;
 
@@ -3033,11 +3156,36 @@ export function ProspectDrawer({
               onPipelineFinanceInputsChange={setDiscoveryPipelineFinanceInputs}
               pipelineProject={
                 discoveryFinancialSummary && discoveryPipelineFinanceInputs
-                  ? {
-                      summary: discoveryFinancialSummary,
-                      surfaceM2: discoveryPipelineFinanceInputs.footprintM2,
-                    }
+                  ? { summary: discoveryFinancialSummary }
                   : null
+              }
+              discoveryEquipment={
+                discoveryPipelineFinanceInputs ? (
+                  <DiscoveryDrawerEquipmentPanel
+                    panelsData={panelsData}
+                    invertersData={invertersData}
+                    batteriesData={batteriesData}
+                    usedPanelRef={usedPanelRef}
+                    onPanelChange={setUsedPanelRef}
+                    usedInverterRef={usedInverterRef}
+                    onInverterChange={setUsedInverterRef}
+                    usedBatteryRef={usedBatteryRef}
+                    onBatteryChange={(b) => {
+                      setUsedBatteryRef(b);
+                      if (b) {
+                        const maxForNew = b.maxBatteriesPerRack ?? 20;
+                        setBatteryCount((prev) => Math.min(maxForNew, Math.max(1, prev)));
+                      }
+                    }}
+                    batteryCount={batteryCount}
+                    onBatteryCountChange={setBatteryCount}
+                    panelCountBadge={discoveryEquipmentCounts.panelCount}
+                    inverterCountBadge={discoveryEquipmentCounts.inverterCount}
+                    inverterCountExceedsLimit={discoveryInverterCountExceedsLimit}
+                    includeBattery={discoveryIncludeBattery}
+                    recommendedBatteryComposition={discoveryRecommendedBatteryComposition}
+                  />
+                ) : null
               }
               discoveryIncludeBattery={discoveryIncludeBattery}
               onDiscoveryIncludeBatteryChange={setDiscoveryIncludeBattery}
@@ -3776,7 +3924,14 @@ export function ProspectDrawer({
         {!discoveryRow ? (
           <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl">
             {prospect?.id && (
-              <div className="flex flex-wrap gap-2">
+              <>
+                <ProspectShareReadingKpisPanel
+                  prospectId={prospect.id}
+                  shareTokenHint={prospect.shareToken}
+                  isOpen={isOpen}
+                  user={user}
+                />
+                <div className="flex flex-wrap gap-2">
                 {!isOnDiscovery && !voirHref(prospect.id).includes("/solar-scout") && (
                   <Link href={voirHref(prospect.id)}>
                     <Button
@@ -3818,6 +3973,7 @@ export function ProspectDrawer({
                   {isSaving ? "Enregistrement..." : "Enregistrer"}
                 </Button>
               </div>
+              </>
             )}
             {prospect && onAddToPipeline && !prospect.id && (
               <div className="flex gap-2">
@@ -3836,7 +3992,14 @@ export function ProspectDrawer({
         ) : (
           <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl border-t border-border">
             {discoveryExistingPipelineProspect?.id ? (
-              <div className="flex flex-wrap gap-2">
+              <>
+                <ProspectShareReadingKpisPanel
+                  prospectId={discoveryExistingPipelineProspect.id}
+                  shareTokenHint={discoveryExistingPipelineProspect.shareToken}
+                  isOpen={isOpen}
+                  user={user}
+                />
+                <div className="flex flex-wrap gap-2">
                 {discoveryPipelineMapHref && !isOnDiscovery ? (
                   <Button
                     type="button"
@@ -3874,6 +4037,7 @@ export function ProspectDrawer({
                   <Link href="/">Ouvrir le pipeline</Link>
                 </Button>
               </div>
+              </>
             ) : (
               <Button
                 type="button"
