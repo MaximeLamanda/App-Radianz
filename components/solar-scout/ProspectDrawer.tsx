@@ -70,6 +70,7 @@ import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 /** Activer les logs détaillés d'autoconsommation. Désactivé par défaut. */
 const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
+import { DiscoveryShareReadingTabPanel } from "./DiscoveryShareReadingTabPanel";
 import { ProspectShareReadingKpisPanel } from "./ProspectShareReadingKpisPanel";
 import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
 import { RadianzBillReductionCard, type RadianzBillReductionSegment } from "./RadianzBillReductionCard";
@@ -415,6 +416,7 @@ function ProspectDrawerDiscoverySection({
   isOpen,
   onPipelineFinanceInputsChange,
   pipelineProject,
+  pipelineProspectForShareKpis,
   discoveryEquipment,
   discoveryIncludeBattery,
   onDiscoveryIncludeBatteryChange,
@@ -430,6 +432,8 @@ function ProspectDrawerDiscoverySection({
   onPipelineFinanceInputsChange?: (payload: DiscoveryDrawerFinancialInputs | null) => void;
   /** Résumé projet (onglet Solaire, sous le graphe). */
   pipelineProject?: { summary: DiscoveryDrawerFinancialSummary } | null;
+  /** Prospect pipeline associé (KPI lectures page partagée, onglet Lectures). */
+  pipelineProspectForShareKpis?: Prospect | null;
   /** Carte équipement (même UI que la page partagée). */
   discoveryEquipment?: ReactNode;
   /** Switch batterie (aligné simulation / page partagée). */
@@ -1406,6 +1410,7 @@ function ProspectDrawerDiscoverySection({
             {discoveryMergedPois.length}
           </span>
         </TabsTrigger>
+        <TabsTrigger value="lectures">Lectures</TabsTrigger>
       </TabsList>
 
       <TabsContent value="terrain" className="drawer-discovery-panel space-y-4">
@@ -1878,6 +1883,15 @@ function ProspectDrawerDiscoverySection({
             </div>
           )}
         </section>
+      </TabsContent>
+
+      <TabsContent value="lectures" className="drawer-discovery-panel space-y-4">
+        <DiscoveryShareReadingTabPanel
+          pipelineProspectId={pipelineProspectForShareKpis?.id ?? null}
+          shareTokenHint={pipelineProspectForShareKpis?.shareToken}
+          drawerOpen={isOpen}
+          tabActive={discoveryMainTab === "lectures"}
+        />
       </TabsContent>
 
     </Tabs>
@@ -3159,6 +3173,7 @@ export function ProspectDrawer({
                   ? { summary: discoveryFinancialSummary }
                   : null
               }
+              pipelineProspectForShareKpis={discoveryExistingPipelineProspect}
               discoveryEquipment={
                 discoveryPipelineFinanceInputs ? (
                   <DiscoveryDrawerEquipmentPanel

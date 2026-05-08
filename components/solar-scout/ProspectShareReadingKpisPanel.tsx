@@ -17,27 +17,11 @@ import {
   fetchProspectShareSessions,
   type ProspectShareSessionsPayload,
 } from "@/lib/prospect-share-client";
-
-function formatDurationMs(ms: number | null): string {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s} s`;
-  const m = Math.floor(s / 60);
-  const rs = s % 60;
-  return `${m} min ${rs} s`;
-}
-
-function formatScrollPct(v: number | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return `${Math.round(Math.min(1, Math.max(0, v)) * 100)} %`;
-}
-
-function formatDateFr(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
-}
+import {
+  formatShareSessionDateFr,
+  formatShareSessionDurationMs,
+  formatShareSessionScrollPct,
+} from "@/lib/share-reading-session-format";
 
 type ProspectShareReadingKpisPanelProps = {
   prospectId: string;
@@ -134,7 +118,7 @@ export function ProspectShareReadingKpisPanel({
               </span>
               <span>
                 <span className="text-muted-foreground">Dernière fin :</span>{" "}
-                <span className="font-medium text-foreground">{formatDateFr(lastAt)}</span>
+                <span className="font-medium text-foreground">{formatShareSessionDateFr(lastAt)}</span>
               </span>
             </div>
           )}
@@ -180,10 +164,10 @@ export function ProspectShareReadingKpisPanel({
               {sessions.map((row) => (
                 <TableRow key={row.id} className="text-xs">
                   <TableCell className="py-2 tabular-nums whitespace-nowrap">
-                    {formatDateFr(row.startedAt)}
+                    {formatShareSessionDateFr(row.startedAt)}
                   </TableCell>
-                  <TableCell className="py-2 tabular-nums">{formatDurationMs(row.durationMs)}</TableCell>
-                  <TableCell className="py-2 tabular-nums">{formatScrollPct(row.maxScrollDepth01)}</TableCell>
+                  <TableCell className="py-2 tabular-nums">{formatShareSessionDurationMs(row.durationMs)}</TableCell>
+                  <TableCell className="py-2 tabular-nums">{formatShareSessionScrollPct(row.maxScrollDepth01)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
