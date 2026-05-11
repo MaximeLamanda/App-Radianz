@@ -27,18 +27,16 @@ export async function POST(request: NextRequest) {
     const prospectRef = q.docs[0].ref;
     const sessionRef = prospectRef.collection("shareSessions").doc(sessionId);
 
-    let outcome: "closed" | "no_session" | "already_closed" = "closed";
+    type EndOutcome = "closed" | "no_session" | "already_closed";
 
-    await db.runTransaction(async (tx) => {
+    const outcome: EndOutcome = await db.runTransaction(async (tx) => {
       const sessionSnap = await tx.get(sessionRef);
       if (!sessionSnap.exists) {
-        outcome = "no_session";
-        return;
+        return "no_session";
       }
       const s = sessionSnap.data() as { status?: string };
       if (s.status !== "open") {
-        outcome = "already_closed";
-        return;
+        return "already_closed";
       }
 
       tx.update(sessionRef, {
@@ -53,6 +51,8 @@ export async function POST(request: NextRequest) {
         shareLastSessionAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
+
+      return "closed";
     });
 
     if (outcome === "no_session") {

@@ -567,7 +567,7 @@ function ProspectDrawerDiscoverySection({
       }
     }
 
-    return [...bestByName.values(), ...noNameEntries].sort((a, b) => {
+    return [...Array.from(bestByName.values()), ...noNameEntries].sort((a, b) => {
       const byName = a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
       if (byName !== 0) return byName;
       if (a.source !== b.source) return a.source.localeCompare(b.source, "fr");
