@@ -39,6 +39,8 @@
     "neon:drop-discovery-artifacts": "node scripts/neon-drop-discovery-artifact-tables.mjs",
     "neon:drop-bdnb-after-v5-enrichment:dry": "DRY_RUN=1 node scripts/neon-drop-bdnb-after-v5-enrichment.mjs",
     "neon:drop-bdnb-after-v5-enrichment": "node scripts/neon-drop-bdnb-after-v5-enrichment.mjs",
+    "neon:transfer:v5-features:dry": "DRY_RUN=1 node scripts/neon-transfer-scout-v5-features-by-insee.mjs",
+    "neon:transfer:v5-features": "node scripts/neon-transfer-scout-v5-features-by-insee.mjs",
     "neon:sync-v5-building-geometries:dry": "DRY_RUN=1 node scripts/sync-scout-v5-building-geometries-json.mjs",
     "neon:sync-v5-building-geometries": "node scripts/sync-scout-v5-building-geometries-json.mjs",
     "postgres:local:up": "PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\" docker compose up -d",
@@ -48,6 +50,10 @@
     "pipeline:matching-v5:backfill-building-geometries": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/backfill_building_geometries_v5.py'",
     "pipeline:osm-poi:schema": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_poi.py --ensure-schema'",
     "pipeline:osm-poi:import": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_poi.py --input datasource/osm/aquitaine-260406.osm.pbf --truncate'",
+    "pipeline:osm-buildings:schema": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_buildings.py --ensure-schema'",
+    "pipeline:osm-buildings:import": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_buildings.py --input datasource/osm/aquitaine-260406.osm.pbf --truncate'",
+    "pipeline:osm-landuse:schema": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_landuse.py --ensure-schema'",
+    "pipeline:osm-landuse:import": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_osm_landuse.py --input datasource/osm/aquitaine-260406.osm.pbf --truncate'",
     "import:bdnb-constructions:local": "node scripts/import-bdnb-constructions-local.mjs --data-dir=datasource/bdnb/dep33_extract"
   },
   "dependencies": {

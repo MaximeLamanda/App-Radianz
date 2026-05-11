@@ -1,5 +1,7 @@
 # Pipeline données leads
 
+> **Ajout d'une commune à Discovery / Matching V5 ?** Référence unique : [`docs/PROCEDURE-AJOUT-COMMUNE.md`](../docs/PROCEDURE-AJOUT-COMMUNE.md). Ce README couvre les imports techniques (BDNB, OSM POI, ETL, FastAPI) appelés par cette procédure.
+
 Le dossier **`out/`** ne contient dans git que des **`.gitkeep`** : `.geojson`, **`.parquet`** et les **CSV** de matching générés sont ignorés (`.gitignore` à la racine). Régénère en local (`npm run build:bdnb-poi-sample`, extractions OSM, `npm run pipeline:matching-v5:run`, etc.) ou utilise Postgres.
 
 ## Échantillon Solar Scout : BDNB → POI Google → SIRENE (Pessac INSEE 33318)
@@ -93,11 +95,7 @@ Supprimer les groupes **résidentiel individuel** (usage BDNB / FFO) et les lign
 
 - **`SCOUT_PIPELINE_API_URL`** — URL du serveur FastAPI (ex. `http://127.0.0.1:8787`), utilisée par [`app/api/scout-pipeline/[...path]/route.ts`](../app/api/scout-pipeline/%5B...path%5D/route.ts). **En local, tu peux t’en passer** : après `npm run build:bdnb-poi-sample`, Next lit directement `data-pipeline/out/scout_bdnb_poi_pessac.geojson`. Ne définis `SCOUT_PIPELINE_API_URL` que si tu lances **uvicorn** (section « API FastAPI » ci-dessus) avec `SCOUT_BDNB_POI_SAMPLE_GEOJSON` pointant vers ce GeoJSON.
 
-```bash
-export BDNB_BUILDINGS_TABLE=public.bdnb_buildings
-node scripts/import-bdnb-neon.mjs --data-dir=chemin/vers/csv_bdnb --commune=33063
-# ou --all --departements=33
-```
+> Pour l'enchaînement complet d'ajout d'une commune (extraction CSV, imports support, matching, transfert Neon), suivre [`docs/PROCEDURE-AJOUT-COMMUNE.md`](../docs/PROCEDURE-AJOUT-COMMUNE.md).
 
 ## ETL Python
 
@@ -129,7 +127,7 @@ python3 -m scout_pipeline.osm_poi_extract \
 
 ## Matching V5 (export local)
 
-Voir [`docs/MATCHING-V5.md`](../docs/MATCHING-V5.md) et [`matching/README.md`](matching/README.md). Commande typique : `npm run pipeline:matching-v5:run`.
+Voir [`docs/MATCHING-V5.md`](../docs/MATCHING-V5.md) (référence pipeline) et [`matching/README.md`](matching/README.md). Commande typique : `npm run pipeline:matching-v5:run`. Pour ajouter une nouvelle commune au flux Discovery, utiliser [`docs/PROCEDURE-AJOUT-COMMUNE.md`](../docs/PROCEDURE-AJOUT-COMMUNE.md) plutôt que d'invoquer ces commandes manuellement.
 
 ### POI OpenStreetMap (table `public.osm_poi`)
 
@@ -147,6 +145,24 @@ npm run pipeline:osm-poi:import
 `--truncate` exécute `TRUNCATE` sur la table cible avant chargement. Surcharge du nom qualifié : variable **`OSM_POI_TABLE`** (défaut `public.osm_poi`). Puis relancer le matching V5 ; options **`--no-osm-poi`** et **`--osm-poi-max N`** sur [`matching_v5/run_matching_v5.py`](matching_v5/run_matching_v5.py).
 
 La colonne **`tags`** ne stocke qu’un **sous-ensemble** des clés OSM (types POI `shop` / `amenity` / …, `name`, `brand`, `website`, `phone`, etc.) — pas `building`, `source`, `wikidata`, adresses complètes, etc. Voir `tags_stored_for_postgres` dans [`matching_v5/osm_poi_v5.py`](matching_v5/osm_poi_v5.py).
+
+### Footprints bâtiments OSM (table `public.osm_building_footprints`)
+
+Pour exécuter le matching V5 avec **géométrie OSM prioritaire** (`--building-source osm`), charger d’abord les footprints :
+
+```bash
+npm run pipeline:osm-buildings:schema
+npm run pipeline:osm-buildings:import
+```
+
+Table cible surchargeable via `OSM_BUILDINGS_TABLE` (défaut `public.osm_building_footprints`).  
+Puis exécuter :
+
+```bash
+npm run pipeline:matching-v5:run -- --building-source osm
+```
+
+Seuils disponibles côté script Python : `--osm-parcel-intersection-min-m2` et `--osm-bdnb-match-min-m2`.
 
 ## API FastAPI (lecture locale)
 

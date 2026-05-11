@@ -45,6 +45,7 @@ import {
   ExternalLink,
   ChevronLeft,
   ChevronRight,
+  Sparkles,
 } from "lucide-react";
 import { PieChart, Pie, Cell } from "recharts";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
@@ -146,7 +147,8 @@ import { DiscoveryDrawerEquipmentPanel } from "@/components/discovery/DiscoveryD
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
 import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
 import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
-import type { Prospect, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
+import type { Prospect, ProspectContact, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
+import { DiscoveryDrawerPoiContactsDialogCell } from "@/components/discovery/DiscoveryDrawerPoiContactsSheet";
 
 /** Config des lignes données prospect : liste fixe, une entrée par ligne (skeleton / valeur / "No data"). */
 function websiteHref(raw: string): string {
@@ -165,6 +167,8 @@ type DiscoveryDrawerMergedPoiEntry = {
   phone: string;
   website: string;
   externalUrl: string;
+  /** Identifiant `place_id` Google (uniquement quand `source === "google"`). */
+  placeId?: string;
 };
 
 function googlePlaceHref(placeId: string): string {
@@ -173,14 +177,31 @@ function googlePlaceHref(placeId: string): string {
   return `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(id)}`;
 }
 
-function googlePoiTypeLabel(types: V5GoogleNearbyRankedEntry["types"]): string {
-  const first = Array.isArray(types) && types.length > 0 ? String(types[0] || "").trim() : "";
-  if (!first) return "—";
-  return first
+function isPointOfInterestTypeLabel(label: string): boolean {
+  const collapsed = label
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/_/g, " ")
-    .split(/\s+/)
-    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : ""))
-    .join(" ");
+    .replace(/[''`´]/g, "")
+    .replace(/\s+/g, " ");
+  return collapsed === "point of interest" || collapsed === "point dinteret";
+}
+
+function googlePoiTypeLabel(types: V5GoogleNearbyRankedEntry["types"]): string {
+  if (!Array.isArray(types) || types.length === 0) return "—";
+  for (const raw of types) {
+    const first = String(raw || "").trim();
+    if (!first) continue;
+    if (first.replace(/_/g, "").toLowerCase() === "pointofinterest") continue;
+    return first
+      .replace(/_/g, " ")
+      .split(/\s+/)
+      .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : ""))
+      .join(" ");
+  }
+  return "—";
 }
 
 /** Clé de dédup par nom : minuscules, sans accents, espaces collapsés. Vide si pas de nom. */
@@ -200,49 +221,35 @@ function mergedPoiInfoScore(entry: DiscoveryDrawerMergedPoiEntry): number {
   if (entry.website.trim() !== "") score += 1;
   if (entry.externalUrl.trim() !== "") score += 1;
   const typeLabel = entry.typeLabel.trim();
-  if (typeLabel !== "" && typeLabel !== "—") score += 1;
+  if (typeLabel !== "" && typeLabel !== "—" && !isPointOfInterestTypeLabel(typeLabel)) score += 1;
   return score;
 }
 
 function DiscoveryDrawerMergedPoiBlock({
   pois,
   showTitle = true,
-  onNearbySearch,
-  nearbySearchPending = false,
+  prospectId,
+  existingContacts,
+  onContactsPersisted,
 }: {
   pois: DiscoveryDrawerMergedPoiEntry[];
   showTitle?: boolean;
-  /** Si défini et liste vide : bouton pour lancer une recherche Google Nearby (client). */
-  onNearbySearch?: () => void | Promise<void>;
-  nearbySearchPending?: boolean;
+  /** ID du prospect Firestore associé (active la persistance des contacts). */
+  prospectId?: string;
+  /** Contacts déjà persistés sur le prospect (pour fusion à la sauvegarde). */
+  existingContacts?: ProspectContact[];
+  /** Callback après persistance réussie. */
+  onContactsPersisted?: (contacts: ProspectContact[]) => void;
 }) {
   return (
     <div className="space-y-3">
       {showTitle ? <p className="drawer-discovery-subpanel-title">Lieux à proximité</p> : null}
       {pois.length === 0 ? (
-        <div className="flex min-h-[132px] flex-col items-center justify-center gap-4 rounded-2xl border border-border/70 bg-muted/20 px-5 py-5 text-center text-sm text-muted-foreground">
-          <p className="m-0 text-center">
-            Aucun lieu détecté pour ce site.
+        <div className="flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-2xl border border-border/70 bg-muted/20 px-5 py-5 text-center text-sm text-muted-foreground">
+          <p className="m-0 text-center">Aucun lieu détecté pour ce site.</p>
+          <p className="m-0 text-center text-[11px]">
+            Cliquez sur <span className="font-medium text-foreground">Enrichir</span> pour lancer une recherche Google Places.
           </p>
-          {onNearbySearch ? (
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="h-9 w-fit min-w-0 shrink-0 px-4 text-sm font-medium"
-              disabled={nearbySearchPending}
-              onClick={() => void onNearbySearch()}
-            >
-              {nearbySearchPending ? (
-                <>
-                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin shrink-0" aria-hidden />
-                  Analyse...
-                </>
-              ) : (
-                "Analyser"
-              )}
-            </Button>
-          ) : null}
         </div>
       ) : (
         <div className="drawer-discovery-table-wrap">
@@ -250,53 +257,48 @@ function DiscoveryDrawerMergedPoiBlock({
             <TableHeader>
               <TableRow className="border-0 hover:bg-transparent">
                 <TableHead className="min-w-[11rem]">Nom</TableHead>
-                <TableHead className="whitespace-nowrap">Source</TableHead>
                 <TableHead className="min-w-[6rem]">Type</TableHead>
                 <TableHead className="whitespace-nowrap">Tel</TableHead>
-                <TableHead className="min-w-[4rem]">Web</TableHead>
+                <TableHead className="w-12 whitespace-nowrap text-right">Contacts</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {pois.map((poi) => {
-                const typeLabel = (poi.typeLabel || "").trim() || "—";
+                const typeLabelRaw = (poi.typeLabel || "").trim() || "—";
+                const hideType = isPointOfInterestTypeLabel(typeLabelRaw);
+                const typeLabel = hideType ? "" : typeLabelRaw;
                 const phone = (poi.phone || "").trim() || "—";
-                const websiteRaw = (poi.website || "").trim();
                 const externalRaw = (poi.externalUrl || "").trim();
-                const sourceBadgeLabel =
-                  poi.source === "google" ? "Google" : poi.source === "osm_building" ? "OSM Building" : "OSM";
+                const hasWebsite = poi.website.trim() !== "";
+                const canEnrich = hasWebsite || (poi.source === "google" && Boolean(poi.placeId));
+                const enrichTitle = hasWebsite
+                  ? "Rechercher décisionnaires (Apollo)"
+                  : "Rechercher décisionnaires (résolution domaine via Google Place Details puis Apollo)";
                 return (
                   <TableRow key={poi.key} className="border-0">
                     <TableCell className="min-w-0 align-top">
-                      <span className="line-clamp-2 break-words text-xs leading-relaxed" title={poi.name.trim()}>
-                        {poi.name.trim()}
-                      </span>
-                    </TableCell>
-                    <TableCell className="min-w-0 align-top whitespace-nowrap font-mono">
                       {externalRaw ? (
-                        <a href={externalRaw} target="_blank" rel="noopener noreferrer" title="Voir la fiche">
-                          <Badge
-                            variant="solid"
-                            className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
-                          >
-                            {sourceBadgeLabel}
-                            <ChevronRight className="h-2.5 w-2.5 opacity-90" />
-                          </Badge>
+                        <a
+                          href={externalRaw}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Voir la fiche"
+                          className="line-clamp-2 break-words text-xs leading-relaxed text-foreground underline-offset-2 hover:underline"
+                        >
+                          {poi.name.trim()}
                         </a>
                       ) : (
-                        <Badge
-                          variant="solid"
-                          className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)]"
-                        >
-                          {sourceBadgeLabel}
-                        </Badge>
+                        <span className="line-clamp-2 break-words text-xs leading-relaxed" title={poi.name.trim()}>
+                          {poi.name.trim()}
+                        </span>
                       )}
                     </TableCell>
                     <TableCell className="min-w-0 align-top text-muted-foreground">
                       <span
                         className="block truncate text-xs leading-relaxed"
-                        title={typeLabel !== "—" ? typeLabel : undefined}
+                        title={typeLabel !== "" && typeLabel !== "—" ? typeLabel : undefined}
                       >
-                        {typeLabel}
+                        {typeLabel || "\u00a0"}
                       </span>
                     </TableCell>
                     <TableCell className="min-w-0 align-top font-mono text-xs tabular-nums">
@@ -304,18 +306,19 @@ function DiscoveryDrawerMergedPoiBlock({
                         {phone}
                       </span>
                     </TableCell>
-                    <TableCell className="min-w-0 align-top text-xs">
-                      {websiteRaw ? (
-                        <a
-                          href={websiteHref(websiteRaw)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline-offset-2 hover:underline"
-                        >
-                          lien
-                        </a>
+                    <TableCell className="w-12 align-top text-right">
+                      {canEnrich ? (
+                        <DiscoveryDrawerPoiContactsDialogCell
+                          poi={poi}
+                          prospectId={prospectId}
+                          existingContacts={existingContacts}
+                          onContactsPersisted={onContactsPersisted}
+                          enrichTitle={enrichTitle}
+                        />
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span aria-hidden className="text-muted-foreground/60">
+                          —
+                        </span>
                       )}
                     </TableCell>
                   </TableRow>
@@ -407,6 +410,13 @@ function getConfidenceBadgeProps(level: "high" | "medium" | "low") {
 }
 
 type DiscoveryApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
+
+/** Même clé que `passerelleFlat[].parcelleLabel` pour rattacher les PPM à une ligne parcelle. */
+function discoveryParcellePasserelleLabel(pr: ScoutMatchingV5Row): string {
+  return pr.section && pr.numeroNorm
+    ? `${pr.section} ${pr.numeroNorm} · ${pr.codeInsee || "—"}`
+    : pr.id;
+}
 
 /** Contenu du drawer en mode découverte PostgreSQL (matching V5), même tiroir que Solar Scout. */
 function ProspectDrawerDiscoverySection({
@@ -518,15 +528,19 @@ function ProspectDrawerDiscoverySection({
       website: (poi.website || "").trim(),
       externalUrl: (poi.osm_url || "").trim(),
     }));
-    const googleRows: DiscoveryDrawerMergedPoiEntry[] = discoveryGooglePoisNamed.map((poi) => ({
-      key: `google:${String(poi.place_id || "").trim() || poi.rank}`,
-      source: "google",
-      name: String(poi.name || "").trim(),
-      typeLabel: googlePoiTypeLabel(poi.types),
-      phone: "",
-      website: "",
-      externalUrl: googlePlaceHref(String(poi.place_id || "")),
-    }));
+    const googleRows: DiscoveryDrawerMergedPoiEntry[] = discoveryGooglePoisNamed.map((poi) => {
+      const placeId = String(poi.place_id || "").trim();
+      return {
+        key: `google:${placeId || poi.rank}`,
+        source: "google",
+        name: String(poi.name || "").trim(),
+        typeLabel: googlePoiTypeLabel(poi.types),
+        phone: "",
+        website: "",
+        externalUrl: googlePlaceHref(placeId),
+        placeId: placeId || undefined,
+      };
+    });
     const osmBuildingRows: DiscoveryDrawerMergedPoiEntry[] = discoveryOsmBuildingNamed.map((entry) => ({
         key: `osm_building:${entry.osm_building_id}`,
         source: "osm_building",
@@ -599,17 +613,51 @@ function ProspectDrawerDiscoverySection({
         toast.error(result.message);
         return;
       }
-      setLiveGoogleNearbyOverride(result.entries);
+
+      const previousEntries = discoveryGooglePoisNamed;
+      const previousKeys = new Set<string>();
+      for (const entry of previousEntries) {
+        const placeId = String(entry.place_id || "").trim();
+        previousKeys.add(placeId || `name:${String(entry.name || "").toLowerCase()}`);
+      }
+
+      const merged: V5GoogleNearbyRankedEntry[] = [];
+      const seen = new Set<string>();
+      let addedCount = 0;
+      for (const entry of [...result.entries, ...previousEntries]) {
+        const placeId = String(entry.place_id || "").trim();
+        const dedupeKey = placeId || `name:${String(entry.name || "").toLowerCase()}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        merged.push(entry);
+        if (!previousKeys.has(dedupeKey)) addedCount += 1;
+      }
+      const reranked: V5GoogleNearbyRankedEntry[] = merged.map((entry, index) => ({
+        ...entry,
+        rank: index,
+      }));
+
+      setLiveGoogleNearbyOverride(reranked);
+
       if (result.entries.length === 0) {
         toast.info("Aucun établissement Google dans l’emprise de cette parcelle.");
+      } else if (addedCount === 0) {
+        toast.info("Aucun nouvel établissement (les POI déjà présents sont à jour).");
+      } else {
+        toast.success(
+          `${addedCount} nouvel${addedCount > 1 ? "s" : ""} établissement${
+            addedCount > 1 ? "s" : ""
+          } ajouté${addedCount > 1 ? "s" : ""}.`
+        );
       }
+
       try {
         const persistRes = await fetchWithAuth("/api/matching-v5/features/google-nearby", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             scoutV5Id: row.id,
-            googleNearbyRanked: result.entries,
+            googleNearbyRanked: reranked,
           }),
         });
         if (!persistRes.ok) {
@@ -621,7 +669,6 @@ function ProspectDrawerDiscoverySection({
                 : `HTTP ${persistRes.status}`;
           toast.error("Enregistrement des POI impossible.", { description: desc });
         } else {
-          toast.success("POI Google enregistrés.");
           onDiscoveryMatchingV5Persisted?.();
         }
       } catch {
@@ -630,7 +677,7 @@ function ProspectDrawerDiscoverySection({
     } finally {
       setNearbyLivePending(false);
     }
-  }, [parcelleCluster, row.id, onDiscoveryMatchingV5Persisted]);
+  }, [parcelleCluster, row.id, discoveryGooglePoisNamed, onDiscoveryMatchingV5Persisted]);
 
   const sirensForApiNom = useMemo(() => {
     if (parcelleCluster.length > 0) return collectSirensFromMatchingV5Rows(parcelleCluster);
@@ -639,7 +686,7 @@ function ProspectDrawerDiscoverySection({
 
   useEffect(() => {
     if (!isOpen) return;
-    if (discoveryMainTab !== "terrain") return;
+    if (discoveryMainTab !== "batiments") return;
     const sirens = sirensForApiNom.slice(0, 10);
     for (const siren of sirens) {
       if (matchingV5ApiNomFetchedRef.current.has(siren)) continue;
@@ -715,6 +762,82 @@ function ProspectDrawerDiscoverySection({
       ),
     [passerelleFlat]
   );
+
+  const passerelleSirensUnique = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const { ppm } of passerelleFlat) {
+      const s = String(ppm.siren || "").trim();
+      if (!/^\d{9}$/.test(s)) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out;
+  }, [passerelleFlat]);
+
+  useEffect(() => {
+    if (!isOpen || discoveryMainTab !== "batiments") return;
+    let cancelled = false;
+    const sirensToResetOnCleanup: string[] = [];
+    for (const siren of passerelleSirensUnique) {
+      sirensToResetOnCleanup.push(siren);
+      setDiscoveryGouvUlBySiren((prev) => {
+        const cur = prev[siren];
+        if (cur?.status === "loading" || cur?.status === "ok") return prev;
+        return { ...prev, [siren]: { status: "loading" } };
+      });
+      void (async () => {
+        try {
+          const res = await fetch(`/api/recherche-entreprises?q=${encodeURIComponent(siren)}&per_page=1`);
+          if (cancelled) return;
+          if (!res.ok) {
+            setDiscoveryGouvUlBySiren((p) => ({ ...p, [siren]: { status: "err" } }));
+            return;
+          }
+          const data = (await res.json()) as {
+            result?: {
+              siret?: string;
+              companyNaf?: string;
+              companyTrancheEffectif?: string;
+              companyAnneeTrancheEffectif?: string;
+              companyManagerName?: string;
+            } | null;
+          };
+          if (cancelled) return;
+          const r = data.result;
+          setDiscoveryGouvUlBySiren((p) => ({
+            ...p,
+            [siren]: {
+              status: "ok",
+              naf: r?.companyNaf?.trim() || undefined,
+              tranche: r?.companyTrancheEffectif?.trim() || undefined,
+              annee: r?.companyAnneeTrancheEffectif?.trim() || undefined,
+              manager: r?.companyManagerName?.trim() || undefined,
+              siret: r?.siret?.trim() || undefined,
+            },
+          }));
+        } catch {
+          if (!cancelled) {
+            setDiscoveryGouvUlBySiren((p) => ({ ...p, [siren]: { status: "err" } }));
+          }
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+      if (sirensToResetOnCleanup.length > 0) {
+        setDiscoveryGouvUlBySiren((prev) => {
+          const next = { ...prev };
+          for (const s of sirensToResetOnCleanup) {
+            if (next[s]?.status === "loading") delete next[s];
+          }
+          return next;
+        });
+      }
+    };
+  }, [isOpen, discoveryMainTab, passerelleSirensUnique]);
+
   const multiEntreprises = useMemo(() => {
     const anyShared =
       parcelleCluster.some((p) => p.statusMetier === "shared") ||
@@ -871,8 +994,24 @@ function ProspectDrawerDiscoverySection({
     >
   >({});
 
+  /** Enrichissement unité légale (SIREN seul) pour les lignes Passerelle PPM. */
+  const [discoveryGouvUlBySiren, setDiscoveryGouvUlBySiren] = useState<
+    Record<
+      string,
+      {
+        status: "loading" | "ok" | "err";
+        naf?: string;
+        tranche?: string;
+        annee?: string;
+        manager?: string;
+        siret?: string;
+      }
+    >
+  >({});
+
   useEffect(() => {
     setDiscoveryGouvEtabBySiret({});
+    setDiscoveryGouvUlBySiren({});
   }, [discoveryClusterKey]);
 
   const discoverySiretRowsToEnrich = useMemo(
@@ -884,7 +1023,7 @@ function ProspectDrawerDiscoverySection({
   );
 
   useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "terrain") return;
+    if (!isOpen || discoveryMainTab !== "batiments") return;
     let cancelled = false;
     const siretsToResetOnCleanup: string[] = [];
     for (const { e } of discoverySiretRowsToEnrich) {
@@ -1129,8 +1268,6 @@ function ProspectDrawerDiscoverySection({
     };
   }, [discoveryChartMonthlyData, discoveryAnnualConsumptionKwh, discoverySimulationSummary]);
 
-  const discoveryBatimentsCount = buildingDetailRows.length;
-  const discoveryEntreprisesCount = discoverySiretRows.length;
   const discoveryDisplayedSiretRows = useMemo(
     () =>
       showAllEstablishments
@@ -1189,6 +1326,126 @@ function ProspectDrawerDiscoverySection({
     );
   };
 
+  /** Colonnes Passerelle (sans réf. parcelle, déjà dans les 3 premières colonnes du tableau Parcelle). */
+  const renderDiscoveryPasserellePpmCells = (p: V5PasserellePpmEntry) => {
+    const sirenKey = /^\d{9}$/.test(String(p.siren || "").trim())
+      ? String(p.siren || "").trim()
+      : "";
+    const gouvUl = sirenKey ? discoveryGouvUlBySiren[sirenKey] : undefined;
+    const ulLoading = Boolean(sirenKey && (!gouvUl || gouvUl.status === "loading"));
+    const siren = String(p.siren || "").trim() || "—";
+    const sirenHref =
+      /^\d{9}$/.test(siren) ? `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}` : null;
+    const addrPpm = (p.address || "").trim() || "—";
+    const naf = gouvUl?.status === "ok" ? (gouvUl.naf || "").trim() : "";
+    const trancheCode = gouvUl?.status === "ok" ? (gouvUl.tranche || "").trim() : "";
+    const effYear = gouvUl?.status === "ok" ? (gouvUl.annee || "").trim() : "";
+    const effLib = labelTrancheEffectifs(trancheCode || undefined);
+    const effectifsCell =
+      ulLoading && !trancheCode ? (
+        <Skeleton className="h-3.5 w-[min(100%,7.5rem)] max-w-full" aria-hidden />
+      ) : gouvUl?.status === "err" ? (
+        "—"
+      ) : effLib === "—" && !effYear ? (
+        "—"
+      ) : effYear ? (
+        `${effLib} (${effYear})`
+      ) : (
+        effLib
+      );
+    const nafCell =
+      ulLoading && !naf ? (
+        <Skeleton className="h-3.5 w-[min(100%,6rem)] max-w-full" aria-hidden />
+      ) : (
+        naf || "—"
+      );
+    const siretFromApi = gouvUl?.status === "ok" ? (gouvUl.siret || "").trim() : "";
+    const siretCell = ulLoading ? (
+      <Skeleton className="h-3.5 w-[min(100%,6.5rem)] max-w-full" aria-hidden />
+    ) : siretFromApi ? (
+      <span title={siretFromApi}>{siretFromApi}</span>
+    ) : (
+      "—"
+    );
+    const manager =
+      gouvUl?.status === "ok" ? (gouvUl.manager || "").trim() || "—" : ulLoading ? "" : "—";
+    const managerCell = ulLoading ? (
+      <Skeleton className="h-3.5 w-[min(100%,6rem)] max-w-full" aria-hidden />
+    ) : (
+      <span className="block truncate" title={manager !== "—" ? manager : undefined}>
+        {manager}
+      </span>
+    );
+    return (
+      <>
+        <TableCell className="min-w-0 align-top">
+          <span
+            className="line-clamp-2 break-words text-[11px]"
+            title={String(p.denomination || "").trim() || undefined}
+          >
+            {discoveryRaisonSocialeDisplay(p.siren, p.denomination)}
+          </span>
+        </TableCell>
+        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
+          {sirenHref ? (
+            <a
+              href={sirenHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Voir la fiche État (${siren})`}
+            >
+              <Badge
+                variant="solid"
+                className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
+              >
+                {siren}
+                <ChevronRight className="h-2.5 w-2.5 opacity-90" />
+              </Badge>
+            </a>
+          ) : (
+            <span title={siren !== "—" ? siren : undefined}>{siren}</span>
+          )}
+        </TableCell>
+        <TableCell className="min-w-[6.5rem] align-top text-muted-foreground">{managerCell}</TableCell>
+        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top text-[11px]">{siretCell}</TableCell>
+        <TableCell className="min-w-0 align-top font-mono text-[11px]">
+          <span className="block truncate" title={typeof nafCell === "string" ? nafCell : undefined}>
+            {nafCell}
+          </span>
+        </TableCell>
+        <TableCell className="min-w-0 align-top text-[11px]">
+          <span
+            className="block truncate"
+            title={typeof effectifsCell === "string" ? effectifsCell : undefined}
+          >
+            {effectifsCell}
+          </span>
+        </TableCell>
+        <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">
+          <span className="block truncate" title={addrPpm !== "—" ? addrPpm : undefined}>
+            {addrPpm}
+          </span>
+        </TableCell>
+        <TableCell className="min-w-0 whitespace-nowrap text-right font-mono tabular-nums text-[11px]">
+          {p.rows != null && Number.isFinite(Number(p.rows)) ? String(p.rows) : "—"}
+        </TableCell>
+      </>
+    );
+  };
+
+  const discoveryPasserellePpmEmptyCells = () => (
+    <>
+      <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-[6.5rem] align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-0 align-top text-muted-foreground text-[11px]">—</TableCell>
+      <TableCell className="min-w-0 text-right text-muted-foreground text-[11px]">—</TableCell>
+    </>
+  );
+
   const discoveryValueTd = (
     value: string,
     monoOrOpts?: boolean | { mono?: boolean; singleLine?: boolean }
@@ -1225,6 +1482,32 @@ function ProspectDrawerDiscoverySection({
       }),
     [terrainDetailParcelles]
   );
+
+  const parcellePasserelleLabels = useMemo(
+    () => new Set(informationParcellesRows.map(discoveryParcellePasserelleLabel)),
+    [informationParcellesRows]
+  );
+
+  const passerellePpmByLabel = useMemo(() => {
+    const m = new Map<string, V5PasserellePpmEntry[]>();
+    for (const { parcelleLabel, ppm } of passerelleFlat) {
+      const arr = m.get(parcelleLabel) ?? [];
+      arr.push(ppm);
+      m.set(parcelleLabel, arr);
+    }
+    return m;
+  }, [passerelleFlat]);
+
+  const passerelleOrphanGroups = useMemo(() => {
+    const out = new Map<string, V5PasserellePpmEntry[]>();
+    for (const { parcelleLabel, ppm } of passerelleFlat) {
+      if (parcellePasserelleLabels.has(parcelleLabel)) continue;
+      const arr = out.get(parcelleLabel) ?? [];
+      arr.push(ppm);
+      out.set(parcelleLabel, arr);
+    }
+    return Array.from(out.entries()) as [string, V5PasserellePpmEntry[]][];
+  }, [passerelleFlat, parcellePasserelleLabels]);
 
   const opConfidenceForLetter = useMemo(() => {
     if (parcelleCluster.length === 0) return row.matchingConfidence;
@@ -1390,25 +1673,9 @@ function ProspectDrawerDiscoverySection({
       </div>
 
       <TabsList className="w-full min-w-0">
-        <TabsTrigger value="batiments" className="inline-flex items-center gap-1.5">
-          <span>Informations</span>
-          <span
-            className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
-            aria-label={`${discoveryBatimentsCount} bâtiment${discoveryBatimentsCount !== 1 ? "s" : ""}`}
-          >
-            {discoveryBatimentsCount}
-          </span>
-        </TabsTrigger>
+        <TabsTrigger value="batiments">Informations</TabsTrigger>
         <TabsTrigger value="solaire">Solaire</TabsTrigger>
-        <TabsTrigger value="terrain" className="inline-flex items-center gap-1.5">
-          <span>Contact</span>
-          <span
-            className="rounded px-1 py-px text-[0.625rem] font-medium tabular-nums text-muted-foreground"
-            aria-label={`${discoveryMergedPois.length} point${discoveryMergedPois.length !== 1 ? "s" : ""} d'intérêt détecté${discoveryMergedPois.length !== 1 ? "s" : ""}`}
-          >
-            {discoveryMergedPois.length}
-          </span>
-        </TabsTrigger>
+        <TabsTrigger value="terrain">Contact</TabsTrigger>
         <TabsTrigger value="lectures">Lectures</TabsTrigger>
       </TabsList>
 
@@ -1418,281 +1685,35 @@ function ProspectDrawerDiscoverySection({
             id="discovery-terrain-poi"
             className="drawer-discovery-section-title flex items-center justify-between gap-3"
           >
-            <span className="flex min-w-0 items-center gap-3">
-              <Image
-                src="/layericon.svg"
-                alt=""
-                width={44}
-                height={44}
-                className="size-11 shrink-0"
-                aria-hidden
-              />
-              <span className="truncate text-base uppercase tracking-tight text-black">POI à proximité</span>
+            <span className="min-w-0 flex-1 truncate text-base uppercase tracking-tight text-black">
+              POI à proximité
             </span>
-            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
-              {discoveryMergedPois.length}
-            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="ml-auto h-7 shrink-0 gap-2 px-3 text-xs"
+              disabled={nearbyLivePending}
+              onClick={() => void handleDiscoveryLiveNearbySearch()}
+              title="Lancer une recherche Google Places et fusionner avec les POI existants"
+            >
+              {nearbyLivePending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" aria-hidden />
+              )}
+              <span>Enrichir</span>
+              <span className="font-mono text-[0.65rem] tabular-nums text-muted-foreground">
+                {discoveryMergedPois.length}
+              </span>
+            </Button>
           </h4>
           <DiscoveryDrawerMergedPoiBlock
             pois={discoveryMergedPois}
             showTitle={false}
-            onNearbySearch={discoveryMergedPois.length === 0 ? handleDiscoveryLiveNearbySearch : undefined}
-            nearbySearchPending={nearbyLivePending}
+            prospectId={pipelineProspectForShareKpis?.id}
+            existingContacts={pipelineProspectForShareKpis?.contacts}
           />
-        </section>
-
-        <section aria-labelledby="discovery-terrain-ppm" className="space-y-3 border-t border-border pt-5">
-          <h4
-            id="discovery-terrain-ppm"
-            className="drawer-discovery-section-title flex items-center justify-between gap-3"
-          >
-            <span className="flex min-w-0 items-center gap-3">
-              <Image
-                src="/Topoicon.svg"
-                alt=""
-                width={44}
-                height={44}
-                className="size-11 shrink-0"
-                aria-hidden
-              />
-              <span className="truncate text-base uppercase tracking-tight text-black">Passerelle</span>
-            </span>
-            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
-              {passerelleFlat.length}
-            </span>
-          </h4>
-          {passerelleFlat.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-[0.6875rem] text-muted-foreground">
-              Aucune information Passerelle disponible pour{" "}
-              {parcelleCluster.length > 1 ? "ces parcelles" : "cette parcelle"} pour le moment.
-            </div>
-          ) : (
-            <div className="drawer-discovery-table-wrap">
-              <Table className="text-[11px]">
-                <TableHeader>
-                  <TableRow className="border-0 hover:bg-transparent">
-                    <TableHead className="min-w-[11rem]">Nom</TableHead>
-                    <TableHead className="whitespace-nowrap">SIREN</TableHead>
-                    <TableHead className="whitespace-nowrap">Parcelle</TableHead>
-                    <TableHead className="min-w-[10rem]">Adresse</TableHead>
-                    <TableHead className="whitespace-nowrap text-right">N</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {passerelleFlat.map(({ parcelleLabel, ppm: p }, i) => {
-                    const siren = String(p.siren || "").trim() || "—";
-                    const sirenHref =
-                      /^\d{9}$/.test(siren) ? `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}` : null;
-                    const key = `${parcelleLabel}-${siren}-${i}`;
-                    const addrPpm = (p.address || "").trim() || "—";
-                    return (
-                      <TableRow key={key} className="border-0">
-                        <TableCell className="min-w-0 align-top">
-                          <span className="line-clamp-2 break-words" title={String(p.denomination || "").trim() || undefined}>
-                            {discoveryRaisonSocialeDisplay(p.siren, p.denomination)}
-                          </span>
-                        </TableCell>
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
-                          {sirenHref ? (
-                            <a
-                              href={sirenHref}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title={`Voir la fiche État (${siren})`}
-                            >
-                              <Badge
-                                variant="solid"
-                                className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
-                              >
-                                {siren}
-                                <ChevronRight className="h-2.5 w-2.5 opacity-90" />
-                              </Badge>
-                            </a>
-                          ) : (
-                            <span title={siren !== "—" ? siren : undefined}>{siren}</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top text-muted-foreground">
-                          {parcelleLabel}
-                        </TableCell>
-                        <TableCell className="min-w-0 align-top text-muted-foreground">
-                          <span
-                            className="block truncate"
-                            title={addrPpm !== "—" ? addrPpm : undefined}
-                          >
-                            {addrPpm}
-                          </span>
-                        </TableCell>
-                        <TableCell className="min-w-0 whitespace-nowrap text-right font-mono tabular-nums">
-                          {p.rows != null && Number.isFinite(Number(p.rows)) ? String(p.rows) : "—"}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </section>
-
-        <section aria-labelledby="discovery-terrain-entreprises" className="space-y-3 border-t border-border pt-5">
-          <h4
-            id="discovery-terrain-entreprises"
-            className="drawer-discovery-section-title flex items-center justify-between gap-3"
-          >
-            <span className="flex min-w-0 items-center gap-3">
-              <Image
-                src="/houseicon.svg"
-                alt=""
-                width={44}
-                height={44}
-                className="size-11 shrink-0"
-                aria-hidden
-              />
-              <span className="truncate text-base uppercase tracking-tight text-black">Établissements</span>
-            </span>
-            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
-              {discoverySiretRows.length}
-            </span>
-          </h4>
-          <div className="drawer-discovery-table-wrap">
-            <div className="drawer-entity-list">
-              {discoverySiretRows.length === 0 ? (
-                <div className="drawer-entity-list-empty">
-                  Aucun établissement trouvé pour cette adresse pour le moment.
-                </div>
-              ) : (
-                <>
-                  <div className="drawer-entity-plain-table-wrap">
-                    <Table className="drawer-entity-plain-table text-[11px]">
-                      <TableHeader>
-                        <TableRow className="border-0 hover:bg-transparent">
-                          <TableHead className="min-w-[11rem]">Nom</TableHead>
-                          <TableHead className="whitespace-nowrap">SIREN</TableHead>
-                          <TableHead className="min-w-[6.5rem]">Gérant</TableHead>
-                          <TableHead className="whitespace-nowrap">SIRET</TableHead>
-                          <TableHead className="whitespace-nowrap">NAF</TableHead>
-                          <TableHead className="whitespace-nowrap">Effectifs</TableHead>
-                          <TableHead className="min-w-[8rem]">Adresse</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {discoveryDisplayedSiretRows.map((r) => {
-                          const e = r.e;
-                          const gouv = discoveryGouvEtabBySiret[e.siret];
-                          const nafFromJson = (e.activite_principale || "").trim();
-                          const nafFromApi = gouv?.status === "ok" ? (gouv.naf || "").trim() : "";
-                          const naf = nafFromJson || nafFromApi;
-                          const trancheCode =
-                            (e.tranche_effectifs || "").trim() ||
-                            (gouv?.status === "ok" ? gouv.tranche || "" : "");
-                          const effYearJson = (e.annee_effectifs || "").trim();
-                          const effYearApi = gouv?.status === "ok" ? (gouv.annee || "").trim() : "";
-                          const effYear = effYearJson || effYearApi;
-                          const effLib = labelTrancheEffectifs(trancheCode || undefined);
-                          const effectifsCell =
-                            gouv?.status === "loading" && !trancheCode ? (
-                              <Skeleton className="h-3.5 w-[min(100%,7.5rem)] max-w-full" aria-hidden />
-                            ) : effLib === "—" && !effYear ? (
-                              "—"
-                            ) : effYear ? (
-                              `${effLib} (${effYear})`
-                            ) : (
-                              effLib
-                            );
-                          const nafCell =
-                            gouv?.status === "loading" && !naf ? (
-                              <Skeleton className="h-3.5 w-[min(100%,6rem)] max-w-full" aria-hidden />
-                            ) : (
-                              naf || "—"
-                            );
-                          const manager =
-                            (gouv?.status === "ok" ? gouv.manager || "" : "").trim() || "—";
-                          const siren = (e.siren || "").trim();
-                          const sirenHref =
-                            /^\d{9}$/.test(siren)
-                              ? `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}`
-                              : null;
-                          const addr = (e.adresse_etablissement || "").trim() || "—";
-                          return (
-                            <TableRow key={r.key} className="border-0">
-                              <TableCell className="min-w-[11rem] align-top">
-                                <span
-                                  className="block truncate"
-                                  title={String(e.denomination || "").trim() || undefined}
-                                >
-                                  {discoveryRaisonSocialeDisplay(e.siren, e.denomination)}
-                                </span>
-                              </TableCell>
-                              <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
-                                {sirenHref ? (
-                                  <a
-                                    href={sirenHref}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    title={`Voir la fiche État (${siren})`}
-                                  >
-                                    <Badge
-                                      variant="solid"
-                                      className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
-                                    >
-                                      {siren}
-                                      <ChevronRight className="h-3 w-3 opacity-90" />
-                                    </Badge>
-                                  </a>
-                                ) : (
-                                  <span title={siren || undefined}>{siren || "—"}</span>
-                                )}
-                              </TableCell>
-                              <TableCell className="min-w-[6.5rem] align-top text-muted-foreground">
-                                <span className="block truncate" title={manager !== "—" ? manager : undefined}>
-                                  {manager}
-                                </span>
-                              </TableCell>
-                              <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
-                                <span title={e.siret}>{e.siret}</span>
-                              </TableCell>
-                              <TableCell className="min-w-0 align-top font-mono">
-                                <span className="block truncate" title={typeof nafCell === "string" ? nafCell : undefined}>
-                                  {nafCell}
-                                </span>
-                              </TableCell>
-                              <TableCell className="min-w-0 align-top">
-                                <span
-                                  className="block truncate"
-                                  title={typeof effectifsCell === "string" ? effectifsCell : undefined}
-                                >
-                                  {effectifsCell}
-                                </span>
-                              </TableCell>
-                              <TableCell className="min-w-[8rem] align-top text-muted-foreground">
-                                <span className="block truncate" title={addr !== "—" ? addr : undefined}>
-                                  {addr}
-                                </span>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </div>
-                  {discoverySiretRows.length > initialDiscoveryEstablishmentsVisible ? (
-                    <div className="px-3 pb-3">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 rounded-md px-2.5 font-mono text-[10px] uppercase tracking-[0.08em]"
-                        onClick={() => setShowAllEstablishments((prev) => !prev)}
-                      >
-                        {showAllEstablishments ? "View less" : `View all (${discoverySiretRows.length})`}
-                      </Button>
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </div>
-          </div>
         </section>
       </TabsContent>
 
@@ -1842,45 +1863,236 @@ function ProspectDrawerDiscoverySection({
               {informationParcellesRows.length}
             </span>
           </h4>
-          {informationParcellesRows.length === 0 ? (
+          {informationParcellesRows.length === 0 && passerelleOrphanGroups.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
               Aucune parcelle liée.
             </div>
           ) : (
             <div className="drawer-discovery-table-wrap">
-              <Table className="text-xs">
+              <Table className="text-[11px]">
                 <TableHeader>
                   <TableRow className="border-0 hover:bg-transparent">
                     <TableHead className="whitespace-nowrap">N°</TableHead>
                     <TableHead className="whitespace-nowrap">Numéro</TableHead>
                     <TableHead className="whitespace-nowrap">Surface</TableHead>
+                    <TableHead className="min-w-[11rem]">Nom</TableHead>
+                    <TableHead className="whitespace-nowrap">SIREN</TableHead>
+                    <TableHead className="min-w-[6.5rem]">Gérant</TableHead>
+                    <TableHead className="whitespace-nowrap">SIRET</TableHead>
+                    <TableHead className="whitespace-nowrap">NAF</TableHead>
+                    <TableHead className="whitespace-nowrap">Effectifs</TableHead>
+                    <TableHead className="min-w-[10rem]">Adresse</TableHead>
+                    <TableHead className="whitespace-nowrap text-right" title="Lignes PPM sur la parcelle">
+                      N
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {informationParcellesRows.map((parcelle, i) => {
+                  {informationParcellesRows.flatMap((parcelle, parcelIdx) => {
+                    const plLabel = discoveryParcellePasserelleLabel(parcelle);
+                    const ppmList = passerellePpmByLabel.get(plLabel) ?? [];
                     const numero = `${parcelle.section || "—"} ${parcelle.numeroNorm || "—"}`.trim();
                     const surfaceM2 = polygonAreaM2ApproxWgs84(parcelle.geometry);
                     const surfaceLabel = `${surfaceM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
-                    return (
-                      <TableRow key={`${parcelle.id}-${i}`} className="border-0">
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums">
-                          {i + 1}
+                    const rowPpms = ppmList.length > 0 ? ppmList : [null];
+                    return rowPpms.map((p, j) => (
+                      <TableRow key={`${parcelle.id}-${parcelIdx}-${j}`} className="border-0">
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums align-top">
+                          {parcelIdx + 1}
                         </TableCell>
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono">
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
                           {numero}
                         </TableCell>
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums text-muted-foreground">
+                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums text-muted-foreground align-top">
                           <span className="block min-w-0 text-foreground" title={surfaceLabel}>
                             {surfaceLabel}
                           </span>
                         </TableCell>
+                        {p ? renderDiscoveryPasserellePpmCells(p) : discoveryPasserellePpmEmptyCells()}
                       </TableRow>
-                    );
+                    ));
                   })}
+                  {passerelleOrphanGroups.flatMap(([label, ppms]) =>
+                    ppms.map((p, j) => (
+                      <TableRow key={`orphan-${label}-${j}`} className="border-0">
+                        <TableCell className="align-top text-muted-foreground">—</TableCell>
+                        <TableCell
+                          className="min-w-0 max-w-[10rem] align-top font-mono text-muted-foreground"
+                          title={label}
+                        >
+                          <span className="block truncate">{label}</span>
+                        </TableCell>
+                        <TableCell className="align-top text-muted-foreground">—</TableCell>
+                        {renderDiscoveryPasserellePpmCells(p)}
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>
           )}
+        </section>
+
+        <section aria-labelledby="discovery-info-etablissements" className="space-y-3 border-t border-border pt-5">
+          <h4
+            id="discovery-info-etablissements"
+            className="drawer-discovery-section-title flex items-center justify-between gap-3"
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <Image
+                src="/houseicon.svg"
+                alt=""
+                width={44}
+                height={44}
+                className="size-11 shrink-0"
+                aria-hidden
+              />
+              <span className="truncate text-base uppercase tracking-tight text-black">Établissements</span>
+            </span>
+            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {discoverySiretRows.length}
+            </span>
+          </h4>
+          <div className="drawer-discovery-table-wrap">
+            <div className="drawer-entity-list">
+              {discoverySiretRows.length === 0 ? (
+                <div className="drawer-entity-list-empty">
+                  Aucun établissement trouvé pour cette adresse pour le moment.
+                </div>
+              ) : (
+                <>
+                  <div className="drawer-entity-plain-table-wrap">
+                    <Table className="drawer-entity-plain-table text-[11px]">
+                      <TableHeader>
+                        <TableRow className="border-0 hover:bg-transparent">
+                          <TableHead className="min-w-[11rem]">Nom</TableHead>
+                          <TableHead className="whitespace-nowrap">SIREN</TableHead>
+                          <TableHead className="min-w-[6.5rem]">Gérant</TableHead>
+                          <TableHead className="whitespace-nowrap">SIRET</TableHead>
+                          <TableHead className="whitespace-nowrap">NAF</TableHead>
+                          <TableHead className="whitespace-nowrap">Effectifs</TableHead>
+                          <TableHead className="min-w-[8rem]">Adresse</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {discoveryDisplayedSiretRows.map((r) => {
+                          const e = r.e;
+                          const gouv = discoveryGouvEtabBySiret[e.siret];
+                          const nafFromJson = (e.activite_principale || "").trim();
+                          const nafFromApi = gouv?.status === "ok" ? (gouv.naf || "").trim() : "";
+                          const naf = nafFromJson || nafFromApi;
+                          const trancheCode =
+                            (e.tranche_effectifs || "").trim() ||
+                            (gouv?.status === "ok" ? gouv.tranche || "" : "");
+                          const effYearJson = (e.annee_effectifs || "").trim();
+                          const effYearApi = gouv?.status === "ok" ? (gouv.annee || "").trim() : "";
+                          const effYear = effYearJson || effYearApi;
+                          const effLib = labelTrancheEffectifs(trancheCode || undefined);
+                          const effectifsCell =
+                            gouv?.status === "loading" && !trancheCode ? (
+                              <Skeleton className="h-3.5 w-[min(100%,7.5rem)] max-w-full" aria-hidden />
+                            ) : effLib === "—" && !effYear ? (
+                              "—"
+                            ) : effYear ? (
+                              `${effLib} (${effYear})`
+                            ) : (
+                              effLib
+                            );
+                          const nafCell =
+                            gouv?.status === "loading" && !naf ? (
+                              <Skeleton className="h-3.5 w-[min(100%,6rem)] max-w-full" aria-hidden />
+                            ) : (
+                              naf || "—"
+                            );
+                          const manager =
+                            (gouv?.status === "ok" ? gouv.manager || "" : "").trim() || "—";
+                          const siren = (e.siren || "").trim();
+                          const sirenHref =
+                            /^\d{9}$/.test(siren)
+                              ? `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}`
+                              : null;
+                          const addr = (e.adresse_etablissement || "").trim() || "—";
+                          return (
+                            <TableRow key={r.key} className="border-0">
+                              <TableCell className="min-w-[11rem] align-top">
+                                <span
+                                  className="block truncate"
+                                  title={String(e.denomination || "").trim() || undefined}
+                                >
+                                  {discoveryRaisonSocialeDisplay(e.siren, e.denomination)}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
+                                {sirenHref ? (
+                                  <a
+                                    href={sirenHref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title={`Voir la fiche État (${siren})`}
+                                  >
+                                    <Badge
+                                      variant="solid"
+                                      className="h-5 min-h-5 rounded-md border-0 bg-foreground px-1.5 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-background shadow-[0_1px_0_rgb(0_0_0/0.1)] transition-[box-shadow] duration-200 hover:bg-foreground/90 hover:shadow-xs cursor-pointer"
+                                    >
+                                      {siren}
+                                      <ChevronRight className="h-3 w-3 opacity-90" />
+                                    </Badge>
+                                  </a>
+                                ) : (
+                                  <span title={siren || undefined}>{siren || "—"}</span>
+                                )}
+                              </TableCell>
+                              <TableCell className="min-w-[6.5rem] align-top text-muted-foreground">
+                                <span className="block truncate" title={manager !== "—" ? manager : undefined}>
+                                  {manager}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
+                                <span title={e.siret}>{e.siret}</span>
+                              </TableCell>
+                              <TableCell className="min-w-0 align-top font-mono">
+                                <span className="block truncate" title={typeof nafCell === "string" ? nafCell : undefined}>
+                                  {nafCell}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-0 align-top">
+                                <span
+                                  className="block truncate"
+                                  title={typeof effectifsCell === "string" ? effectifsCell : undefined}
+                                >
+                                  {effectifsCell}
+                                </span>
+                              </TableCell>
+                              <TableCell className="min-w-[8rem] align-top text-muted-foreground">
+                                <span className="block truncate" title={addr !== "—" ? addr : undefined}>
+                                  {addr}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {discoverySiretRows.length > initialDiscoveryEstablishmentsVisible ? (
+                    <div className="px-3 pb-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 rounded-md px-2.5 font-mono text-[10px] uppercase tracking-[0.08em]"
+                        onClick={() => setShowAllEstablishments((prev) => !prev)}
+                      >
+                        {showAllEstablishments
+                          ? "Voir moins"
+                          : `Voir tout (${discoverySiretRows.length})`}
+                      </Button>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
         </section>
       </TabsContent>
 

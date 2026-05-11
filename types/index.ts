@@ -81,6 +81,28 @@ export interface CommercialReferent {
 /** Mode de configuration : Perfect fit (prod ≈ conso) ou Highest production (max surface) */
 export type ProspectConfigurationMode = "perfect_fit" | "highest_production";
 
+/** Contact décisionnaire enrichi (Apollo people search). */
+export interface ProspectContact {
+  /** Identifiant Apollo (`person_id`) quand disponible. Sert à la déduplication forte. */
+  id?: string;
+  firstName?: string;
+  lastName?: string;
+  fullName: string;
+  /** Intitulé de poste (ex. "Directeur Technique"). */
+  title?: string;
+  email?: string;
+  /** Statut Apollo de l'email (verified, unverified, guessed). */
+  emailStatus?: "verified" | "unverified" | "guessed";
+  linkedinUrl?: string;
+  phone?: string;
+  /** Source de l'enrichissement (pour l'instant uniquement Apollo). */
+  source: "apollo";
+  /** Horodatage de récupération (sert au cache / refresh). */
+  fetchedAt?: Date;
+  organizationName?: string;
+  organizationDomain?: string;
+}
+
 /** Statut du prospect dans le pipeline */
 export type ProspectPipelineStatus =
   | "cree"
@@ -110,6 +132,8 @@ export interface Prospect {
   poiCoordinates?: AddressCoordinates;
   qualityScore: number; // 0-100
   contact?: Contact;
+  /** Contacts décisionnaires enrichis (Apollo people search par domaine). */
+  contacts?: ProspectContact[];
   thumbnailUrl?: string;
   solarPotential?: SolarPotential;
   pipelineStatus?: ProspectPipelineStatus;

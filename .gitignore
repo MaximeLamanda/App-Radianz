@@ -72,7 +72,11 @@ open_data_millesime_*/
 /var/
 
 
+# Claude Code : worktrees locales (ne pas versionner)
+.claude/worktrees/
+
 # datasource/ : binaires et CSV lourds — chemins documentés dans datasource/README.md
+datasource/**/*.geojsonseq
 datasource/**/*.osm.pbf
 datasource/**/*.zip
 datasource/**/*.json.gz

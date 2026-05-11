@@ -11,6 +11,8 @@ import {
   collectBatimentIdsForMatchingV5BuildingsApi,
   findMatchingV5LinkedParcelleRowsTransitive,
   findMatchingV5ParcelleRowsForBuilding,
+  formatV5ZoneTagLabel,
+  parseMatchingV5BuildingsJson,
   parseMatchingV5GeoJsonFeatureCollection,
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
@@ -32,6 +34,11 @@ import { DiscoveryFiltersPanel } from "@/components/discovery/DiscoveryFiltersPa
 import { DISCOVERY_FOCUS_QUERY } from "@/lib/discovery-focus-href";
 import { MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2 } from "@/lib/discovery-surface-defaults";
 import { isParcIndustrielIris } from "@/lib/matching-v5-iris-zones";
+import {
+  DISCOVERY_CONSTRUCTION_YEAR_SLIDER_MIN,
+  getDiscoveryConstructionYearSliderMax,
+  rowMatchesDiscoveryConstructionYearRange,
+} from "@/lib/discovery-construction-year-filter";
 
 /** Pessac — centre carte par défaut (hors Google). */
 const DEFAULT_MAP_CENTER = { lat: 44.8067, lng: -0.6311 };
@@ -86,10 +93,19 @@ function DiscoveryContent() {
   const [surfaceMinM2, setSurfaceMinM2] = useState(MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2);
   const [surfaceMaxM2, setSurfaceMaxM2] = useState(50_000);
   const [onlyParcIndustrielIris, setOnlyParcIndustrielIris] = useState(false);
+  const [selectedOsmActivityTag, setSelectedOsmActivityTag] = useState<string | null>(null);
   const [appliedSurfaceRange, setAppliedSurfaceRange] = useState<{ min: number; max: number }>({
     min: MATCHING_V5_DEFAULT_MIN_PARCELLE_FOOTPRINT_SUM_M2,
     max: 50_000,
   });
+  const [constructionYearMin, setConstructionYearMin] = useState(DISCOVERY_CONSTRUCTION_YEAR_SLIDER_MIN);
+  const [constructionYearMax, setConstructionYearMax] = useState(() =>
+    getDiscoveryConstructionYearSliderMax()
+  );
+  const [appliedConstructionYearRange, setAppliedConstructionYearRange] = useState(() => ({
+    min: DISCOVERY_CONSTRUCTION_YEAR_SLIDER_MIN,
+    max: getDiscoveryConstructionYearSliderMax(),
+  }));
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number; zoom?: number } | null>(null);
   const [bdnbBuildingFeatures, setBdnbBuildingFeatures] = useState<GeoJSON.Feature[]>([]);
@@ -188,6 +204,17 @@ function DiscoveryContent() {
   }, [surfaceMinM2, surfaceMaxM2]);
 
   useEffect(() => {
+    const lo = Math.min(constructionYearMin, constructionYearMax);
+    const hi = Math.max(constructionYearMin, constructionYearMax);
+    const tid = setTimeout(() => {
+      setAppliedConstructionYearRange((prev) =>
+        prev.min === lo && prev.max === hi ? prev : { min: lo, max: hi }
+      );
+    }, 150);
+    return () => clearTimeout(tid);
+  }, [constructionYearMin, constructionYearMax]);
+
+  useEffect(() => {
     if (!user) return;
     if (viewBounds == null) {
       discoveryDebug("page", "matching-v5/features : attente viewBounds (pas de requête)");
@@ -265,18 +292,63 @@ function DiscoveryContent() {
     };
   }, [user, viewBounds, matchingV5FeaturesBust]);
 
+  const getRowOsmActivityTags = useCallback((r: ScoutMatchingV5Row): string[] => {
+    const isSelectableZoneTag = (tag: string) =>
+      tag === "industrial" || tag === "commercial" || tag === "retail" || tag === "residential";
+    const out = new Set<string>();
+    const push = (raw: unknown) => {
+      const tag = String(raw ?? "").trim().toLowerCase();
+      if (isSelectableZoneTag(tag)) out.add(tag);
+    };
+    push(r.properties?.zone_tag);
+    push(r.properties?.osm_zone_tag);
+    for (const b of parseMatchingV5BuildingsJson(r.buildingsJson)) {
+      push(b.zoneTag);
+    }
+    return Array.from(out);
+  }, []);
+
   /** Postgres exporte surtout des parcelles (empreinte Σ bâtiments) ; les lignes `building` sont optionnelles (pipeline --include-building-grain). */
-  const filteredFootprints = useMemo(() => {
+  const baseFilteredFootprints = useMemo(() => {
     const { min: lo, max: hi } = appliedSurfaceRange;
+    const { min: yMin, max: yMax } = appliedConstructionYearRange;
+    const constructionSliderMaxYear = getDiscoveryConstructionYearSliderMax();
     return matchingV5Rows.filter((r) => {
       if (r.grain !== "building" && r.grain !== "parcelle") return false;
       /** Même sens que le pipeline V5 : `footprint_sum > min_required` (slider à 0 = pas de plancher). */
       if (lo > 0 && !(r.footprintSumM2 > lo)) return false;
       if (r.footprintSumM2 > hi) return false;
       if (onlyParcIndustrielIris && !isParcIndustrielIris(r.nomIris)) return false;
+      if (!rowMatchesDiscoveryConstructionYearRange(r, yMin, yMax, constructionSliderMaxYear))
+        return false;
       return true;
     });
-  }, [matchingV5Rows, appliedSurfaceRange, onlyParcIndustrielIris]);
+  }, [matchingV5Rows, appliedSurfaceRange, onlyParcIndustrielIris, appliedConstructionYearRange]);
+
+  const osmActivityOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of baseFilteredFootprints) {
+      for (const tag of getRowOsmActivityTags(row)) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts.entries())
+      .map(([tag, count]) => ({ tag, count, label: formatV5ZoneTagLabel(tag) || tag }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "fr"));
+  }, [baseFilteredFootprints, getRowOsmActivityTags]);
+
+  const filteredFootprints = useMemo(() => {
+    if (!selectedOsmActivityTag) return baseFilteredFootprints;
+    return baseFilteredFootprints.filter((row) =>
+      getRowOsmActivityTags(row).includes(selectedOsmActivityTag)
+    );
+  }, [baseFilteredFootprints, selectedOsmActivityTag, getRowOsmActivityTags]);
+
+  useEffect(() => {
+    if (!selectedOsmActivityTag) return;
+    if (osmActivityOptions.some((o) => o.tag === selectedOsmActivityTag)) return;
+    setSelectedOsmActivityTag(null);
+  }, [selectedOsmActivityTag, osmActivityOptions]);
 
   /**
    * Bâtiments BDNB : plafond d’ids global sur tout l’export → sans filtre viewport, une zone restait sans
@@ -489,8 +561,15 @@ function DiscoveryContent() {
               surfaceMaxM2={surfaceMaxM2}
               onSurfaceMinChange={setSurfaceMinM2}
               onSurfaceMaxChange={setSurfaceMaxM2}
+              constructionYearMin={constructionYearMin}
+              constructionYearMax={constructionYearMax}
+              onConstructionYearMinChange={setConstructionYearMin}
+              onConstructionYearMaxChange={setConstructionYearMax}
               onlyParcIndustrielIris={onlyParcIndustrielIris}
               onOnlyParcIndustrielIrisChange={setOnlyParcIndustrielIris}
+              osmActivityOptions={osmActivityOptions}
+              selectedOsmActivityTag={selectedOsmActivityTag}
+              onSelectedOsmActivityTagChange={setSelectedOsmActivityTag}
               rowCount={filteredFootprints.length}
               loading={loading}
               error={error}

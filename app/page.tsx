@@ -34,10 +34,13 @@ import {
 } from "@/lib/swr-hooks";
 import { getEnergyConsumption } from "@/lib/building-energy-consumption";
 import { updateProspect } from "@/lib/firestore";
+import { recordShareLinkCreatorIp } from "@/lib/prospect-share-client";
+import { normalizeProspectPipelineStatus } from "@/lib/prospect-pipeline-status";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import { getSolarEquipmentSettings } from "@/lib/solar-settings";
 import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference, BatteryReference } from "@/types";
+import { cn } from "@/lib/utils";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell, PieChart, Pie, Cell as PieCell } from "recharts";
 import {
   ChartContainer,
@@ -97,40 +100,40 @@ function ScoreGauge({ score }: { score: number }) {
 }
 
 const STATUS_LABELS: Record<ProspectPipelineStatus, string> = {
-  nouveau: "Nouveau",
-  en_cours: "En cours",
-  devis_envoye: "Devis envoyé",
+  cree: "Créé",
+  envoye: "Envoyé",
+  ouvert: "Ouvert",
   converti: "Converti",
-  perdu: "Perdu",
+  perdu: "Décliné",
 };
 
 const STATUS_COLORS: Record<ProspectPipelineStatus, string> = {
-  nouveau: "hsl(217, 91%, 60%)",
-  en_cours: "hsl(38, 92%, 50%)",
-  devis_envoye: "hsl(142, 76%, 36%)",
+  cree: "hsl(217, 91%, 60%)",
+  envoye: "hsl(38, 92%, 50%)",
+  ouvert: "hsl(142, 76%, 36%)",
   converti: "hsl(142, 71%, 45%)",
   perdu: "hsl(0, 84%, 60%)",
 };
 
 const chartConfig = {
-  nouveau: {
-    label: "Nouveau",
-    color: STATUS_COLORS.nouveau,
+  cree: {
+    label: "Créé",
+    color: STATUS_COLORS.cree,
   },
-  en_cours: {
-    label: "En cours",
-    color: STATUS_COLORS.en_cours,
+  envoye: {
+    label: "Envoyé",
+    color: STATUS_COLORS.envoye,
   },
-  devis_envoye: {
-    label: "Devis envoyé",
-    color: STATUS_COLORS.devis_envoye,
+  ouvert: {
+    label: "Ouvert",
+    color: STATUS_COLORS.ouvert,
   },
   converti: {
     label: "Converti",
     color: STATUS_COLORS.converti,
   },
   perdu: {
-    label: "Perdu",
+    label: "Décliné",
     color: STATUS_COLORS.perdu,
   },
 } satisfies ChartConfig;
@@ -268,7 +271,7 @@ function HomePage() {
   // Calcul des prospects filtrés
   const filteredProspects = useMemo(() => {
     return prospects.filter((prospect) => {
-      const status = prospect.pipelineStatus ?? "nouveau";
+      const status = normalizeProspectPipelineStatus(prospect.pipelineStatus);
       const matchesStatus = filterStatus === "all" || status === filterStatus;
       const isDiscovery = prospect.pipelineEntrySource === "discovery_v5";
       const matchesSource =
@@ -425,14 +428,14 @@ function HomePage() {
   const [viewingPageId, setViewingPageId] = useState<string | null>(null);
   const handleGenerateLink = async (prospect: Prospect, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!prospect?.id) return;
+    if (!prospect?.id || !user) return;
     setGeneratingLinkId(prospect.id);
     try {
       const shareToken = prospect.shareToken ?? crypto.randomUUID();
-      const commercialReferent = user
-        ? buildCommercialReferentFromUser(user, await getUserProfile(user.uid))
-        : getCommercialReferent();
+      const commercialReferent = buildCommercialReferentFromUser(user, await getUserProfile(user.uid));
       await updateProspect(prospect.id, { shareToken, commercialReferent });
+      const idToken = await user.getIdToken();
+      await recordShareLinkCreatorIp(idToken, prospect.id);
       const updated = { ...prospect, shareToken, commercialReferent };
       mutateProspects((prev) =>
         prev ? prev.map((x) => (x.id === prospect.id ? updated : x)) : prev
@@ -449,14 +452,14 @@ function HomePage() {
 
   const handleViewProspectPage = async (prospect: Prospect, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!prospect?.id) return;
+    if (!prospect?.id || !user) return;
     setViewingPageId(prospect.id);
     try {
       const shareToken = prospect.shareToken ?? crypto.randomUUID();
-      const commercialReferent = user
-        ? buildCommercialReferentFromUser(user, await getUserProfile(user.uid))
-        : getCommercialReferent();
+      const commercialReferent = buildCommercialReferentFromUser(user, await getUserProfile(user.uid));
       await updateProspect(prospect.id, { shareToken, commercialReferent });
+      const idToken = await user.getIdToken();
+      await recordShareLinkCreatorIp(idToken, prospect.id);
       const updated = { ...prospect, shareToken, commercialReferent };
       mutateProspects((prev) =>
         prev ? prev.map((x) => (x.id === prospect.id ? updated : x)) : prev
@@ -469,6 +472,23 @@ function HomePage() {
       setViewingPageId(null);
     }
   };
+
+  const handlePipelineStatusChange = useCallback(
+    async (prospect: Prospect, value: ProspectPipelineStatus) => {
+      if (!prospect.id) return;
+      try {
+        await updateProspect(prospect.id, { pipelineStatus: value });
+        mutateProspects((prev) =>
+          prev
+            ? prev.map((x) => (x.id === prospect.id ? { ...x, pipelineStatus: value } : x))
+            : prev
+        );
+      } catch {
+        toast.error("Impossible de mettre à jour le statut");
+      }
+    },
+    [mutateProspects]
+  );
 
   if (authLoading || (user && prospectsLoading)) {
     return (
@@ -673,7 +693,7 @@ function HomePage() {
                     ? prospect.annualConsumptionKwhOverride ??
                       (totalArea > 0 ? getEnergyConsumption(prospect.placeType) * totalArea : 0)
                     : 0;
-                  const status = prospect.pipelineStatus ?? "nouveau";
+                  const status = normalizeProspectPipelineStatus(prospect.pipelineStatus);
                   const priceMin = isDiscovery ? prospect.priceRangeMinEur : undefined;
                   const priceMax = isDiscovery ? prospect.priceRangeMaxEur : undefined;
                   const breakEvenMin = isDiscovery ? prospect.breakEvenMinYears : undefined;
@@ -751,13 +771,47 @@ function HomePage() {
                           {isDiscovery ? "Découverte" : "—"}
                         </span>
                       </TableCell>
-                      <TableCell className="p-2.5 min-w-[95px]">
-                        <Badge
-                          variant="default"
-                          className="text-[11px] px-2 py-0.5 h-5 font-medium shrink-0"
+                      <TableCell
+                        className="p-2.5 min-w-[120px]"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Select
+                          value={status}
+                          onValueChange={(v) =>
+                            void handlePipelineStatusChange(prospect, v as ProspectPipelineStatus)
+                          }
                         >
-                          {STATUS_LABELS[status]}
-                        </Badge>
+                          <SelectTrigger
+                            className={cn(
+                              "h-9 min-w-[8.75rem] max-w-[11rem] w-full gap-2 border border-input bg-background px-0 pl-3.5 pr-2",
+                              "font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-foreground shadow-none",
+                              "transition-[border-color,box-shadow] duration-150",
+                              "hover:border-muted-foreground/45",
+                              "focus:border-foreground focus:ring-2 focus:ring-foreground/10 focus:ring-offset-0",
+                              "[&>svg]:size-2.5 [&>svg]:shrink-0 [&>svg]:text-muted-foreground [&>svg]:opacity-90"
+                            )}
+                          >
+                            <span className="flex min-w-0 flex-1 items-center gap-2">
+                              <span
+                                className="size-1.5 shrink-0 rounded-full ring-1 ring-border/60"
+                                style={{ backgroundColor: STATUS_COLORS[status] }}
+                                aria-hidden
+                              />
+                              <SelectValue />
+                            </span>
+                          </SelectTrigger>
+                          <SelectContent className="rounded-lg border-border font-mono shadow-md">
+                            {(Object.keys(STATUS_LABELS) as ProspectPipelineStatus[]).map((key) => (
+                              <SelectItem
+                                key={key}
+                                value={key}
+                                className="py-2 pl-8 pr-3 text-[11px] font-medium uppercase tracking-[0.08em]"
+                              >
+                                {STATUS_LABELS[key]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </TableCell>
                       <TableCell className="text-right p-2.5 whitespace-nowrap text-muted-foreground">
                         {isDiscovery && kwp > 0 ? `${kwp.toFixed(1)}` : "—"}

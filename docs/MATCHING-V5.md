@@ -1,5 +1,7 @@
 # Matching V5 (discovery) — Cadastre × IRIS × BDNB × Passerelle (PPM)
 
+> **Pour ajouter une commune** à Discovery / Matching V5, suivre la procédure unique [`docs/PROCEDURE-AJOUT-COMMUNE.md`](PROCEDURE-AJOUT-COMMUNE.md). Le présent document reste la **référence technique** du pipeline (tables, options, sorties) et ne doit pas être suivi pas-à-pas pour ajouter une nouvelle commune.
+
 Ce document décrit le **Matching V5** (mode discovery) implémenté dans `data-pipeline/matching_v5/run_matching_v5.py` et visualisable dans **Solar Scout** via un onglet dédié.
 
 ## Objectif
@@ -31,6 +33,7 @@ Toutes les tables listées ci-dessous servent à **produire** l’export V5 sur 
 - **Référentiel établissements** : `public.scout_etablissements` (configurable via `SCOUT_ETABLISSEMENTS_TABLE`)
   - colonnes de match : `numero_norm`, `voie_norm`, `commune_norm`, `code_postal`
   - identifiants : `siret`, `siren`
+  - utilisé pour le rapprochement adresse → SIRET/SIREN sur les lignes parcelle, y compris en mode `--building-source osm`.
 
 - **BDNB** : table configurable via `BDNB_BUILDINGS_TABLE` (défaut `public.bdnb_buildings`)
   - attendue : `batiment_groupe_id`, `geom_groupe` (EPSG:2154), `annee_construction`, `surface_habitable_logement`, `code_commune_insee`
@@ -43,9 +46,20 @@ Toutes les tables listées ci-dessous servent à **produire** l’export V5 sur 
 
 - **POI OpenStreetMap (optionnel)** : `public.osm_poi` (schéma [`data-pipeline/sql/004_osm_poi.sql`](../data-pipeline/sql/004_osm_poi.sql))
   - remplissage : script [`data-pipeline/matching_v5/import_osm_poi.py`](../data-pipeline/matching_v5/import_osm_poi.py) à partir d’un extrait `.osm.pbf` (voir [`data-pipeline/README.md`](../data-pipeline/README.md) section « POI OpenStreetMap »). Le schéma est **appliqué automatiquement** au lancement de l’import (inutile d’exécuter `psql` à la main si `psql` n’est pas installé).
-  - jointure : pour chaque **parcelle retenue** à l’export, les points `osm_poi` avec `ST_Within(geom, parcelle.geom)` (EPSG:4326), tri par distance au `PointOnSurface` de la parcelle, plafond **`--osm-poi-max`** (défaut 50).
+  - jointure : pour chaque **parcelle retenue** à l’export (source bâtiment `bdnb` ou `osm`), les points `osm_poi` avec `ST_Within(geom, parcelle.geom)` (EPSG:4326), tri par distance au `PointOnSurface` de la parcelle, plafond **`--osm-poi-max`** (défaut 50).
   - attributs exportés (dérivés des tags OSM) : nom (`name` / `brand` / …), site (`website` / `contact:website`), téléphone (`phone` / `contact:phone`), type (`shop`, `amenity`, `craft`, etc. → `poi_type_label` avec libellés FR partiels).
   - désactivation : **`--no-osm-poi`** sur `run_matching_v5.py`. Table surchargée : variable d’environnement **`OSM_POI_TABLE`** (identifiants SQL validés).
+
+- **Footprints bâtiments OpenStreetMap (optionnel, source géométrique V5)** : `public.osm_building_footprints` (schéma [`data-pipeline/sql/005_osm_building_footprints.sql`](../data-pipeline/sql/005_osm_building_footprints.sql))
+  - remplissage : script [`data-pipeline/matching_v5/import_osm_buildings.py`](../data-pipeline/matching_v5/import_osm_buildings.py) à partir d’un extrait `.osm.pbf`.
+  - activation dans V5 : `--building-source osm`.
+  - matching OSM→BNDB : sélection du `batiment_construction` avec **plus grande aire d’intersection** (Approche A), auditée via `osm_match_status` (`matched` | `low_overlap` | `unmatched`) et `osm_bdnb_intersection_area_m2`.
+  - seuils : `--osm-parcel-intersection-min-m2` (jointure OSM↔parcelle) et `--osm-bdnb-match-min-m2` (validation enrichissement BNDB).
+
+- **Polygones landuse OpenStreetMap (recommandé avec `--building-source osm`)** : `public.osm_landuse_areas` (schéma [`data-pipeline/sql/006_osm_landuse_areas.sql`](../data-pipeline/sql/006_osm_landuse_areas.sql))
+  - remplissage : [`data-pipeline/matching_v5/import_osm_landuse.py`](../data-pipeline/matching_v5/import_osm_landuse.py) sur le même `.osm.pbf` que les footprints ; scripts npm `pipeline:osm-landuse:schema` et `pipeline:osm-landuse:import`.
+  - la table peut être **vide** (aucune zone retenue), mais le **schéma doit exister** pour lancer V5 en mode OSM (jointure spatiale ; valeurs `landuse` filtrées à l’import selon une liste configurable, voir `--allowed-landuse`).
+  - surcharge : variable d’environnement **`OSM_LANDUSE_TABLE`** (identifiants SQL validés, comme `OSM_BUILDINGS_TABLE`).
 
 ## Règles de matching (building ↔ parcelle)
 
@@ -143,6 +157,7 @@ Champs clés (properties) :
 - `matching_siren_selected` : SIREN retenu pour un cas `partage` avec SIREN commun
 - `matching_debug_json` : détails de la décision (`winner_parcelle`, SIREN communs, scores d'intersection)
 - `buildings_json` : liste des buildings associés (dont `batiment_construction_id`, `batiment_groupe_id`, `annee_construction`, `footprint_m2`, etc.)
+- `buildings_json` / `building_geometries_json` incluent aussi (si `--building-source osm`) : `osm_building_id`, `osm_match_status`, `osm_bdnb_intersection_area_m2`, `osm_address_text`, `bdnb_batiment_construction_id`, ainsi que **`zone_tag`** (valeur OSM brute), **`zone_source`** (`landuse` \| `building_use` \| `building` \| `none`) et **`landuse_intersection_area_m2`** (aire d’intersection empreinte × polygone `landuse` en m², EPSG:2154) lorsque la jointure spatiale avec `osm_landuse_areas` est disponible.
 - champs d’audit **fallback Google** (si activé) : `google_fallback_attempted`, `google_fallback_success`, `google_fallback_group_id`, `google_anchor_address`, compteurs / traces (`google_nearby_status`, …)
 - **POI OSM** (si table `osm_poi` présente et non `--no-osm-poi`) : `osm_pois_json` (tableau JSON normalisé), `osm_poi_count`, `osm_pois_status` (`ok` \| `skipped_no_table` \| `error` \| `disabled`), `osm_poi_truncated`, `osm_data_as_of` (max `imported_at` de `osm_poi` au moment du run). Lignes `grain=building` : `osm_pois_status=not_applicable`.
 

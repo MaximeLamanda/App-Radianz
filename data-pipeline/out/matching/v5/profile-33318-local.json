@@ -1,0 +1,22 @@
+{
+  "steps_seconds": {
+    "load_iris": 0.581835,
+    "fetch_osm_pairs": 10.464505,
+    "fetch_parcel_geometries": 0.120315,
+    "load_ppm": 0.285239,
+    "fetch_etablissements": 1.791663,
+    "match_etablissements": 3.376427,
+    "parcel_row_context": 1.435213,
+    "write_csv": 0.090589,
+    "write_geojson": 0.070598
+  },
+  "metrics": {
+    "iris_polygons": 22,
+    "pairs_count": 1304,
+    "parcels_with_pairs": 912,
+    "buildings_count": 1040,
+    "exported_parcels": 850,
+    "out_rows": 850,
+    "building_source": "osm"
+  }
+}

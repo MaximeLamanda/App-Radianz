@@ -10,13 +10,30 @@ import {
   findMatchingV5RowIdForBatimentFootprint,
   formatDiscoveryDrawerHeroAddress,
   formatV5OsmPoiTypeLabelForDisplay,
+  mergeOsmBuildingContactsFromRows,
   mergeOsmPoisFromParcelleRows,
+  osmBrowseUrlFromBuildingId,
+  isV5OsmActivityZoneTag,
   parseGoogleNearbyRankedJson,
   parseMatchingV5BuildingGeometriesJson,
   parseMatchingV5BuildingsJson,
   parseOsmPoisJson,
   parseSiretsMatchJson,
 } from "./scout-matching-v5-map";
+
+describe("isV5OsmActivityZoneTag", () => {
+  it("retourne true pour industrial/commercial/retail", () => {
+    expect(isV5OsmActivityZoneTag("industrial")).toBe(true);
+    expect(isV5OsmActivityZoneTag(" commercial ")).toBe(true);
+    expect(isV5OsmActivityZoneTag("RETAIL")).toBe(true);
+  });
+
+  it("retourne false pour les autres valeurs", () => {
+    expect(isV5OsmActivityZoneTag("residential")).toBe(false);
+    expect(isV5OsmActivityZoneTag("")).toBe(false);
+    expect(isV5OsmActivityZoneTag(null)).toBe(false);
+  });
+});
 
 function parcelle(
   partial: Pick<ScoutMatchingV5Row, "id" | "section" | "numeroNorm" | "codeInsee"> & {
@@ -340,6 +357,23 @@ describe("collectBatimentIdsForMatchingV5BuildingsApi", () => {
     const rows = [p, buildingRow("b1", "[]")];
     expect(collectBatimentIdsForMatchingV5BuildingsApi(rows)).toEqual(["bdnb-bg-A:1", "bdnb-bg-B:1", "bc-1"]);
   });
+
+  it("préfère bdnb_batiment_construction_id quand présent (source OSM)", () => {
+    const p = parcelle({
+      id: "p-osm",
+      section: "ET",
+      numeroNorm: "0002",
+      codeInsee: "33318",
+      buildingsJson: JSON.stringify([
+        {
+          batiment_construction_id: "w:123456",
+          bdnb_batiment_construction_id: "bdnb-bg-C:3",
+          osm_building_id: "w:123456",
+        },
+      ]),
+    });
+    expect(collectBatimentIdsForMatchingV5BuildingsApi([p])).toEqual(["bdnb-bg-C:3"]);
+  });
 });
 
 describe("findMatchingV5RowIdForBatimentFootprint", () => {
@@ -524,6 +558,168 @@ describe("parseMatchingV5BuildingGeometriesJson", () => {
     expect(rows[0]!.batimentConstructionId).toBe("bdnb-bg-A:1");
     expect(rows[0]!.geometry.type).toBe("Polygon");
     expect(rows[0]!.anneeConstruction).toBe(2017);
+  });
+
+  it("parse les champs contact OSM building enrichis", () => {
+    const raw = JSON.stringify([
+      {
+        batiment_construction_id: "bdnb-bg-A:2",
+        osm_building_id: "w:321",
+        osm_name: "Atelier Delta",
+        osm_website: "atelier-delta.fr",
+        osm_phone: "+33 5 56 10 10 10",
+        osm_poi_primary_key: "craft",
+        osm_poi_primary_value: "metal_construction",
+        osm_poi_type_label: "Artisanat — Metal construction",
+        osm_raw_tags: { "building:use": "industrial", "addr:street": "Rue des Forges" },
+        zone_tag: "industrial",
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0],
+            ],
+          ],
+        },
+      },
+    ]);
+    const rows = parseMatchingV5BuildingGeometriesJson(raw);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.osmName).toBe("Atelier Delta");
+    expect(rows[0]!.osmWebsite).toBe("atelier-delta.fr");
+    expect(rows[0]!.osmPhone).toBe("+33 5 56 10 10 10");
+    expect(rows[0]!.osmPoiPrimaryKey).toBe("craft");
+    expect(rows[0]!.osmRawTags?.["building:use"]).toBe("industrial");
+  });
+});
+
+describe("osmBrowseUrlFromBuildingId", () => {
+  it("construit une URL way/node/relation", () => {
+    expect(osmBrowseUrlFromBuildingId("w:12")).toBe("https://www.openstreetmap.org/way/12");
+    expect(osmBrowseUrlFromBuildingId("n:1")).toBe("https://www.openstreetmap.org/node/1");
+    expect(osmBrowseUrlFromBuildingId("r:99")).toBe("https://www.openstreetmap.org/relation/99");
+  });
+
+  it("retourne vide si format inconnu", () => {
+    expect(osmBrowseUrlFromBuildingId("")).toBe("");
+    expect(osmBrowseUrlFromBuildingId("bad")).toBe("");
+    expect(osmBrowseUrlFromBuildingId("x:1")).toBe("");
+  });
+});
+
+describe("mergeOsmBuildingContactsFromRows", () => {
+  it("ignore les bâtiments sans nom et dédoublonne par osm_building_id", () => {
+    const shared = JSON.stringify([
+      {
+        batiment_construction_id: "bc-1",
+        osm_building_id: "w:123",
+        osm_name: "",
+        osm_phone: "0556000000",
+        osm_website: "https://acme.example",
+        osm_poi_type_label: "",
+        zone_tag: "industrial",
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0],
+            ],
+          ],
+        },
+      },
+    ]);
+    const a = parcelle({
+      id: "p1",
+      section: "A",
+      numeroNorm: "1",
+      codeInsee: "33",
+      buildingGeometriesJson: shared,
+    });
+    const b = parcelle({
+      id: "p2",
+      section: "B",
+      numeroNorm: "2",
+      codeInsee: "33",
+      buildingGeometriesJson: shared,
+    });
+    const merged = mergeOsmBuildingContactsFromRows([a, b]);
+    expect(merged).toHaveLength(0);
+  });
+
+  it("garde le nom building OSM quand présent", () => {
+    const raw = JSON.stringify([
+      {
+        batiment_construction_id: "bc-2",
+        osm_building_id: "w:456",
+        osm_name: "Atelier Nova",
+        osm_phone: "0556123456",
+        osm_website: "nova.example",
+        zone_tag: "industrial",
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0],
+            ],
+          ],
+        },
+      },
+    ]);
+    const p = parcelle({
+      id: "p3",
+      section: "C",
+      numeroNorm: "3",
+      codeInsee: "33",
+      buildingGeometriesJson: raw,
+    });
+    const merged = mergeOsmBuildingContactsFromRows([p]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.name).toBe("Atelier Nova");
+    expect(merged[0]!.externalUrl).toBe("https://nova.example");
+  });
+
+  it("expose la fiche OSM en externalUrl quand il n’y a pas de site web", () => {
+    const raw = JSON.stringify([
+      {
+        batiment_construction_id: "bc-osm-only",
+        osm_building_id: "w:999001",
+        osm_name: "Entrepôt sans site",
+        osm_phone: "",
+        osm_website: "",
+        zone_tag: "warehouse",
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0],
+            ],
+          ],
+        },
+      },
+    ]);
+    const p = parcelle({
+      id: "p-osm-only",
+      section: "D",
+      numeroNorm: "4",
+      codeInsee: "33",
+      buildingGeometriesJson: raw,
+    });
+    const merged = mergeOsmBuildingContactsFromRows([p]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.website).toBe("");
+    expect(merged[0]!.externalUrl).toBe("https://www.openstreetmap.org/way/999001");
   });
 });
 

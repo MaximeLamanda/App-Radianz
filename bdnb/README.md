@@ -2,6 +2,8 @@
 
 Ce dossier sert de **cible locale** pour l’import Postgres (`npm run import:bdnb-dep33` → `bdnb/dep33_millesime_2025_07a/extract`).
 
+> Pour ajouter une commune à Discovery / Matching V5 (extraction CSV BDNB, imports support, matching, transfert Neon), suivre la procédure unique [`docs/PROCEDURE-AJOUT-COMMUNE.md`](../docs/PROCEDURE-AJOUT-COMMUNE.md).
+
 ## Contenu versionné (léger)
 
 - **`dep33_communes_insee.txt`**, **`dep33_communes_missing.txt`** — listes INSEE utiles aux lots d’import.

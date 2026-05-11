@@ -15,7 +15,12 @@ export type ScoutMatchingV5Row = {
   /** Titre court pour la liste latérale */
   label: string;
   batimentConstructionId: string | null;
+  bdnbBatimentConstructionId?: string | null;
   batimentGroupeId: string | null;
+  osmBuildingId?: string;
+  osmMatchStatus?: string;
+  osmBdnbIntersectionAreaM2?: number;
+  osmAddressText?: string;
   codeInsee: string;
   section: string;
   numeroNorm: string;
@@ -173,7 +178,23 @@ export function parsePasserelleAddressesJson(raw: string): V5PasserellePpmEntry[
 /** Une entrée de `buildings_json` (export matching V5, jointure BDNB + parcelle). */
 export type V5BuildingsJsonEntry = {
   batimentConstructionId: string;
+  bdnbBatimentConstructionId?: string | null;
   batimentGroupeId: string | null;
+  osmBuildingId?: string;
+  osmMatchStatus?: string;
+  osmBdnbIntersectionAreaM2?: number | null;
+  osmAddressText?: string;
+  osmName?: string;
+  osmWebsite?: string;
+  osmPhone?: string;
+  osmPoiPrimaryKey?: string;
+  osmPoiPrimaryValue?: string;
+  osmPoiTypeLabel?: string;
+  osmRawTags?: Record<string, string>;
+  /** Valeur OSM brute (landuse spatial, building:use ou building). */
+  zoneTag?: string;
+  zoneSource?: string;
+  landuseIntersectionAreaM2?: number | null;
   anneeConstruction: number | null;
   footprintM2: number | null;
   intersectionAreaM2: number | null;
@@ -184,16 +205,122 @@ export type V5BuildingsJsonEntry = {
 
 export type V5BuildingGeometryEntry = {
   batimentConstructionId: string;
+  bdnbBatimentConstructionId?: string | null;
   batimentGroupeId: string | null;
+  osmBuildingId?: string;
+  osmMatchStatus?: string;
+  osmBdnbIntersectionAreaM2?: number | null;
+  osmAddressText?: string;
+  osmName?: string;
+  osmWebsite?: string;
+  osmPhone?: string;
+  osmPoiPrimaryKey?: string;
+  osmPoiPrimaryValue?: string;
+  osmPoiTypeLabel?: string;
+  osmRawTags?: Record<string, string>;
+  zoneTag?: string;
+  zoneSource?: string;
+  landuseIntersectionAreaM2?: number | null;
   anneeConstruction: number | null;
   footprintM2: number | null;
   geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
 };
 
+/** Zone OSM considérée comme activité économique (filtre UI). */
+export const V5_OSM_ACTIVITY_ZONE_TAGS = ["industrial", "commercial", "retail"] as const;
+
+/** True si `zone_tag` appartient au scope activité OSM (industrial/commercial/retail). */
+export function isV5OsmActivityZoneTag(zoneTag: string | null | undefined): boolean {
+  const t = String(zoneTag ?? "").trim().toLowerCase();
+  return t !== "" && (V5_OSM_ACTIVITY_ZONE_TAGS as readonly string[]).includes(t);
+}
+
 function numPropNullable(v: unknown): number | null {
   if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(String(v));
   return Number.isFinite(n) ? n : null;
+}
+
+function stringRecordProp(v: unknown): Record<string, string> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    const key = String(k || "").trim();
+    const value = strProp(raw);
+    if (!key || !value) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Libellés FR pour les valeurs OSM `landuse=*` / `building:use=*` / `building=*`
+ * remontées dans `zone_tag`. Les clés sont en minuscules ; toute valeur non
+ * répertoriée retombe sur la valeur brute capitalisée.
+ */
+const V5_ZONE_TAG_FR_LABELS: Record<string, string> = {
+  industrial: "Industriel",
+  commercial: "Commercial",
+  retail: "Commerce",
+  residential: "Résidentiel",
+  education: "Éducation",
+  religious: "Religieux",
+  military: "Militaire",
+  port: "Port",
+  depot: "Dépôt",
+  cemetery: "Cimetière",
+  farmyard: "Agricole",
+  brownfield: "Friche",
+  construction: "Chantier",
+  office: "Bureaux",
+  warehouse: "Entrepôt",
+  garage: "Garage",
+  garages: "Garages",
+  hospital: "Hôpital",
+  school: "École",
+  university: "Université",
+  kindergarten: "Crèche",
+  church: "Église",
+  chapel: "Chapelle",
+  mosque: "Mosquée",
+  synagogue: "Synagogue",
+  hotel: "Hôtel",
+  supermarket: "Supermarché",
+  service: "Service",
+  civic: "Bâtiment civique",
+  public: "Public",
+  government: "Administration",
+  sports_centre: "Centre sportif",
+  stadium: "Stade",
+  greenhouse: "Serre",
+  farm: "Ferme",
+};
+
+/** Libellé court FR pour la source d'un `zone_tag` (debug / tooltip). */
+const V5_ZONE_SOURCE_FR_LABELS: Record<string, string> = {
+  landuse: "OSM landuse",
+  building_use: "OSM building:use",
+  building: "OSM building",
+  none: "Inconnu",
+};
+
+/**
+ * Convertit `zone_tag` (valeur OSM brute) en libellé FR lisible.
+ * Retourne une chaîne vide si le tag est vide.
+ */
+export function formatV5ZoneTagLabel(zoneTag: string | null | undefined): string {
+  const t = String(zoneTag ?? "").trim();
+  if (!t) return "";
+  const mapped = V5_ZONE_TAG_FR_LABELS[t.toLowerCase()];
+  if (mapped) return mapped;
+  return t.charAt(0).toUpperCase() + t.slice(1).replace(/_/g, " ");
+}
+
+/** Libellé court FR pour `zone_source` (`landuse | building_use | building | none`). */
+export function formatV5ZoneSourceLabel(zoneSource: string | null | undefined): string {
+  const s = String(zoneSource ?? "").trim().toLowerCase();
+  if (!s) return "";
+  return V5_ZONE_SOURCE_FR_LABELS[s] ?? s;
 }
 
 /** Parse `buildings_json` (tableau JSON) pour affichage fiche découverte. */
@@ -212,7 +339,22 @@ export function parseMatchingV5BuildingsJson(raw: string): V5BuildingsJsonEntry[
       const bg = strProp(o.batiment_groupe_id);
       out.push({
         batimentConstructionId: bc,
+        bdnbBatimentConstructionId: strProp(o.bdnb_batiment_construction_id) || null,
         batimentGroupeId: bg || null,
+        osmBuildingId: strProp(o.osm_building_id) || undefined,
+        osmMatchStatus: strProp(o.osm_match_status) || undefined,
+        osmBdnbIntersectionAreaM2: numPropNullable(o.osm_bdnb_intersection_area_m2),
+        osmAddressText: strProp(o.osm_address_text) || undefined,
+        osmName: strProp(o.osm_name) || undefined,
+        osmWebsite: strProp(o.osm_website) || undefined,
+        osmPhone: strProp(o.osm_phone) || undefined,
+        osmPoiPrimaryKey: strProp(o.osm_poi_primary_key) || undefined,
+        osmPoiPrimaryValue: strProp(o.osm_poi_primary_value) || undefined,
+        osmPoiTypeLabel: strProp(o.osm_poi_type_label) || undefined,
+        osmRawTags: stringRecordProp(o.osm_raw_tags),
+        zoneTag: strProp(o.zone_tag) || undefined,
+        zoneSource: strProp(o.zone_source) || undefined,
+        landuseIntersectionAreaM2: numPropNullable(o.landuse_intersection_area_m2),
         anneeConstruction: numPropNullable(o.annee_construction),
         footprintM2: numPropNullable(o.footprint_m2),
         intersectionAreaM2: numPropNullable(o.intersection_area_m2),
@@ -242,7 +384,22 @@ export function parseMatchingV5BuildingGeometriesJson(raw: string): V5BuildingGe
       if (!bc || !geometry) continue;
       out.push({
         batimentConstructionId: bc,
+        bdnbBatimentConstructionId: strProp(o.bdnb_batiment_construction_id) || null,
         batimentGroupeId: strProp(o.batiment_groupe_id) || null,
+        osmBuildingId: strProp(o.osm_building_id) || undefined,
+        osmMatchStatus: strProp(o.osm_match_status) || undefined,
+        osmBdnbIntersectionAreaM2: numPropNullable(o.osm_bdnb_intersection_area_m2),
+        osmAddressText: strProp(o.osm_address_text) || undefined,
+        osmName: strProp(o.osm_name) || undefined,
+        osmWebsite: strProp(o.osm_website) || undefined,
+        osmPhone: strProp(o.osm_phone) || undefined,
+        osmPoiPrimaryKey: strProp(o.osm_poi_primary_key) || undefined,
+        osmPoiPrimaryValue: strProp(o.osm_poi_primary_value) || undefined,
+        osmPoiTypeLabel: strProp(o.osm_poi_type_label) || undefined,
+        osmRawTags: stringRecordProp(o.osm_raw_tags),
+        zoneTag: strProp(o.zone_tag) || undefined,
+        zoneSource: strProp(o.zone_source) || undefined,
+        landuseIntersectionAreaM2: numPropNullable(o.landuse_intersection_area_m2),
         anneeConstruction: numPropNullable(o.annee_construction),
         footprintM2: numPropNullable(o.footprint_m2),
         geometry,
@@ -266,6 +423,8 @@ export function collectMatchingV5BuildingFeatures(rows: ScoutMatchingV5Row[]): G
         geometry: row.geometry,
         properties: {
           batiment_construction_id: row.batimentConstructionId,
+          bdnb_batiment_construction_id: row.bdnbBatimentConstructionId,
+          osm_building_id: row.osmBuildingId,
           batiment_groupe_id: row.batimentGroupeId,
           footprint_m2: row.footprintSumM2,
         },
@@ -280,6 +439,8 @@ export function collectMatchingV5BuildingFeatures(rows: ScoutMatchingV5Row[]): G
         geometry: entry.geometry,
         properties: {
           batiment_construction_id: entry.batimentConstructionId,
+          bdnb_batiment_construction_id: entry.bdnbBatimentConstructionId,
+          osm_building_id: entry.osmBuildingId,
           batiment_groupe_id: entry.batimentGroupeId,
           annee_construction: entry.anneeConstruction,
           footprint_m2: entry.footprintM2,
@@ -404,6 +565,80 @@ export function mergeOsmPoisFromParcelleRows(rows: ScoutMatchingV5Row[]): V5OsmP
     return an.localeCompare(bn, "fr");
   });
   return out;
+}
+
+export type V5OsmBuildingContactEntry = {
+  osm_building_id: string;
+  name: string;
+  typeLabel: string;
+  phone: string;
+  website: string;
+  externalUrl: string;
+};
+
+/** Fusionne les contacts des bâtiments OSM depuis `building_geometries_json` (dédoublonnage par osm_building_id). */
+export function mergeOsmBuildingContactsFromRows(rows: ScoutMatchingV5Row[]): V5OsmBuildingContactEntry[] {
+  const seen = new Set<string>();
+  const out: V5OsmBuildingContactEntry[] = [];
+  for (const row of rows) {
+    for (const item of parseMatchingV5BuildingGeometriesJson(row.buildingGeometriesJson ?? "")) {
+      const osmBuildingId = strProp(item.osmBuildingId);
+      if (!osmBuildingId || seen.has(osmBuildingId)) continue;
+      const name = strProp(item.osmName) || strProp(item.osmRawTags?.name);
+      if (!name) continue;
+      seen.add(osmBuildingId);
+      const typeLabel =
+        strProp(item.osmPoiTypeLabel) ||
+        formatV5ZoneTagLabel(strProp(item.zoneTag)) ||
+        strProp(item.osmRawTags?.["building:use"]) ||
+        strProp(item.osmRawTags?.building) ||
+        "—";
+      const website = strProp(item.osmWebsite);
+      const externalUrl = website
+        ? websiteHrefFromRaw(website)
+        : osmBrowseUrlFromBuildingId(osmBuildingId);
+      out.push({
+        osm_building_id: osmBuildingId,
+        name,
+        typeLabel,
+        phone: strProp(item.osmPhone),
+        website,
+        externalUrl,
+      });
+    }
+  }
+  out.sort((a, b) => {
+    const byName = a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
+    if (byName !== 0) return byName;
+    return a.osm_building_id.localeCompare(b.osm_building_id, "fr");
+  });
+  return out;
+}
+
+function websiteHrefFromRaw(raw: string): string {
+  const t = strProp(raw);
+  if (!t) return "";
+  if (/^https?:\/\//i.test(t)) return t;
+  return `https://${t}`;
+}
+
+/**
+ * URL de la fiche OpenStreetMap depuis `osm_building_id` au format pipeline (`w:123`, `n:1`, `r:9`).
+ */
+export function osmBrowseUrlFromBuildingId(osmBuildingId: string): string {
+  const raw = strProp(osmBuildingId);
+  if (!raw) return "";
+  const idx = raw.indexOf(":");
+  if (idx <= 0) return "";
+  const typeKey = raw.slice(0, idx).trim().toLowerCase();
+  const idPart = raw.slice(idx + 1).trim();
+  if (!idPart || !/^\d+$/.test(idPart)) return "";
+  let slug: string;
+  if (typeKey === "n" || typeKey === "node") slug = "node";
+  else if (typeKey === "w" || typeKey === "way") slug = "way";
+  else if (typeKey === "r" || typeKey === "relation") slug = "relation";
+  else return "";
+  return `https://www.openstreetmap.org/${slug}/${idPart}`;
 }
 
 function uniqueTrimmedPropStrings(values: string[]): string[] {
@@ -560,7 +795,7 @@ export function collectBatimentIdsForMatchingV5BuildingsApi(rows: ScoutMatchingV
   const ids: string[] = [];
   for (const row of rows) {
     if (row.grain === "building") {
-      const bc = String(row.batimentConstructionId || "").trim();
+      const bc = String(row.bdnbBatimentConstructionId || row.batimentConstructionId || "").trim();
       const bg = String(row.batimentGroupeId || "").trim();
       const id = bc || bg;
       if (id && !idSeen.has(id)) {
@@ -575,10 +810,13 @@ export function collectBatimentIdsForMatchingV5BuildingsApi(rows: ScoutMatchingV
     try {
       const parsed = JSON.parse(raw) as Array<{
         batiment_construction_id?: string;
+        bdnb_batiment_construction_id?: string;
         batiment_groupe_id?: string;
       }>;
       for (const it of parsed) {
-        const id = String(it?.batiment_construction_id || it?.batiment_groupe_id || "").trim();
+        const id = String(
+          it?.bdnb_batiment_construction_id || it?.batiment_construction_id || it?.batiment_groupe_id || ""
+        ).trim();
         if (id && !idSeen.has(id)) {
           idSeen.add(id);
           ids.push(id);
@@ -942,7 +1180,15 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     const grainRaw = strProp(p.grain).toLowerCase();
     const grain: ScoutMatchingV5Grain = grainRaw === "building" ? "building" : "parcelle";
     const batimentConstructionId = strProp(p.batiment_construction_id) || null;
+    const bdnbBatimentConstructionId = strProp(p.bdnb_batiment_construction_id) || null;
     const batimentGroupeId = strProp(p.batiment_groupe_id) || null;
+    const osmBuildingId = strProp(p.osm_building_id);
+    const osmMatchStatus = strProp(p.osm_match_status);
+    const osmBdnbIntersectionAreaM2Raw = Number(strProp(p.osm_bdnb_intersection_area_m2));
+    const osmBdnbIntersectionAreaM2 = Number.isFinite(osmBdnbIntersectionAreaM2Raw)
+      ? Math.max(0, osmBdnbIntersectionAreaM2Raw)
+      : 0;
+    const osmAddressText = strProp(p.osm_address_text);
     const section = strProp(p.section);
     const numeroNorm = strProp(p.numero_norm);
     const codeInsee = strProp(p.code_insee);
@@ -987,7 +1233,12 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
       geometry: geom,
       label,
       batimentConstructionId,
+      bdnbBatimentConstructionId,
       batimentGroupeId,
+      osmBuildingId: osmBuildingId || undefined,
+      osmMatchStatus: osmMatchStatus || undefined,
+      osmBdnbIntersectionAreaM2,
+      osmAddressText: osmAddressText || undefined,
       codeInsee,
       section,
       numeroNorm,

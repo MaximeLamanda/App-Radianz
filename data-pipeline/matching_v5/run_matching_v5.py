@@ -10,6 +10,8 @@ Prérequis Postgres : PostGIS, tables
   et la table BDNB (BDNB_BUILDINGS_TABLE, défaut public.bdnb_buildings).
   Optionnel (--write-postgres) : table public.scout_matching_v5_features
   (sql/003_scout_matching_v5_features.sql).
+  Mode --building-source osm : tables public.osm_building_footprints et
+  public.osm_landuse_areas (schémas 005 et 006 ; la landuse peut être vide).
 
 IRIS : fichier GeoJSON Bordeaux Métropole (Pessac inclus) sous public/geo/.
 
@@ -25,8 +27,10 @@ import json
 import os
 import re
 import sys
+import time
 from collections import defaultdict
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +55,18 @@ from google_poi_fallback_v5 import (
     empty_google_audit,
     run_google_poi_fallback_for_parcel,
 )
+from osm_buildings_v5 import (
+    derive_zone_tag,
+    fetch_osm_geometry_payloads,
+    format_osm_building_id,
+    osm_bdnb_match_status,
+    osm_buildings_regclass,
+    qualified_osm_buildings_table,
+)
+from osm_landuse_v5 import (
+    osm_landuse_regclass,
+    qualified_osm_landuse_table,
+)
 from osm_poi_v5 import (
     building_osm_export_columns,
     fetch_osm_pois_for_parcel_keys,
@@ -74,6 +90,48 @@ DATABASE_URL_ENV_KEYS = [
 ]
 
 IDENT = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _fetch_all_dicts_chunked(cur: Any, *, chunk_size: int = 2000) -> list[dict[str, Any]]:
+    cols = [d[0] for d in cur.description]
+    out: list[dict[str, Any]] = []
+    while True:
+        rows = cur.fetchmany(chunk_size)
+        if not rows:
+            break
+        out.extend(dict(zip(cols, row)) for row in rows)
+    return out
+
+
+class PhaseProfiler:
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+        self.steps: dict[str, float] = {}
+        self.metrics: dict[str, Any] = {}
+        self._stack: list[tuple[str, float]] = []
+
+    @contextmanager
+    def phase(self, name: str):
+        if not self.enabled:
+            yield
+            return
+        start = time.perf_counter()
+        self._stack.append((name, start))
+        try:
+            yield
+        finally:
+            _name, _start = self._stack.pop()
+            self.steps[name] = self.steps.get(name, 0.0) + (time.perf_counter() - _start)
+
+    def set_metric(self, key: str, value: Any) -> None:
+        if self.enabled:
+            self.metrics[key] = value
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "steps_seconds": {k: round(v, 6) for k, v in self.steps.items()},
+            "metrics": self.metrics,
+        }
 
 
 def _load_dotenv() -> None:
@@ -191,7 +249,7 @@ def fetch_building_parcel_pairs(
     # Les bâtiments chevauchant plusieurs parcelles sans point intérieur commun sont rares.
     sql = f"""
     WITH parcels AS (
-      SELECT code_insee, section, numero_norm, geom
+      SELECT code_insee, section, numero_norm, geom, ST_Transform(geom, 2154) AS geom_2154
       FROM public.cadastre_france_feuilles_geom
       WHERE code_insee = %s
         AND numero_norm IS NOT NULL
@@ -200,13 +258,14 @@ def fetch_building_parcel_pairs(
     bat AS (
       SELECT
         batiment_construction_id::text,
-        bc.batiment_groupe_id::text,
+        bc.batiment_groupe_id,
         bc.geom_cstr,
         ffo.annee_construction,
-        ST_Transform(bc.geom_cstr, 4326) AS g4326
+        ST_Transform(bc.geom_cstr, 4326) AS g4326,
+        ST_Centroid(bc.geom_cstr) AS centroid_2154
       FROM {constructions_qualified} bc
       LEFT JOIN {ffo_qualified} ffo
-        ON ffo.batiment_groupe_id::text = bc.batiment_groupe_id::text
+        ON ffo.batiment_groupe_id = bc.batiment_groupe_id
       WHERE bc.code_commune_insee = %s
         AND bc.geom_cstr IS NOT NULL
         AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%résidentiel collectif%%'
@@ -237,7 +296,7 @@ def fetch_building_parcel_pairs(
     )
     SELECT DISTINCT ON (batiment_construction_id, code_insee, section, numero_norm)
       batiment_construction_id,
-      batiment_groupe_id,
+      batiment_groupe_id::text AS batiment_groupe_id,
       code_insee,
       section,
       numero_norm,
@@ -249,8 +308,209 @@ def fetch_building_parcel_pairs(
     ORDER BY batiment_construction_id, code_insee, section, numero_norm
     """
     cur.execute(sql, (code_insee, code_insee, min_intersection_area_m2))
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return _fetch_all_dicts_chunked(cur)
+
+
+def fetch_osm_building_parcel_pairs(
+    cur,
+    *,
+    code_insee: str,
+    constructions_qualified: str,
+    ffo_qualified: str,
+    osm_buildings_qualified: str,
+    osm_landuse_qualified: str,
+    min_parcel_intersection_area_m2: float,
+    min_osm_bdnb_intersection_area_m2: float,
+    osm_test_limit: int = 0,
+) -> list[dict[str, Any]]:
+    sql = f"""
+    WITH parcels AS (
+      SELECT code_insee, section, numero_norm, geom, ST_Transform(geom, 2154) AS geom_2154
+      FROM public.cadastre_france_feuilles_geom
+      WHERE code_insee = %s
+        AND numero_norm IS NOT NULL
+        AND TRIM(numero_norm) <> ''
+    ),
+    parcels_extent AS (
+      SELECT ST_Extent(geom)::geometry AS bbox
+      FROM parcels
+    ),
+    osm_src_raw AS MATERIALIZED (
+      SELECT
+        b.osm_type,
+        b.osm_id,
+        b.address_text,
+        b.geom AS g4326,
+        b.tags AS osm_tags,
+        ST_Transform(b.geom, 2154) AS g2154,
+        ST_Centroid(ST_Transform(b.geom, 2154)) AS centroid_2154,
+        ST_Area(ST_Transform(b.geom, 2154))::double precision AS osm_footprint_m2
+      FROM {osm_buildings_qualified} b
+      WHERE b.geom IS NOT NULL
+        AND b.geom && (SELECT bbox FROM parcels_extent)
+        AND b.code_insee = %s
+        AND ST_Area(ST_Transform(b.geom, 2154)) >= 400.0
+      ORDER BY b.osm_id
+      LIMIT %s
+    ),
+    osm_src AS MATERIALIZED (
+      SELECT DISTINCT ON (md5(ST_AsBinary(ST_Normalize(g4326))))
+        osm_type,
+        osm_id,
+        address_text,
+        osm_tags,
+        g4326,
+        g2154,
+        centroid_2154,
+        osm_footprint_m2
+      FROM osm_src_raw
+      ORDER BY
+        md5(ST_AsBinary(ST_Normalize(g4326))),
+        CASE WHEN osm_type = 'r' THEN 0 ELSE 1 END,
+        osm_id
+    ),
+    bdnb_src AS MATERIALIZED (
+      SELECT
+        bc.batiment_construction_id::text AS batiment_construction_id,
+        bc.batiment_groupe_id::text AS batiment_groupe_id,
+        ffo.annee_construction,
+        ST_Transform(bc.geom_cstr, 4326) AS g4326,
+        bc.geom_cstr AS g2154
+      FROM {constructions_qualified} bc
+      LEFT JOIN {ffo_qualified} ffo
+        ON ffo.batiment_groupe_id = bc.batiment_groupe_id
+      WHERE bc.code_commune_insee = %s
+        AND bc.geom_cstr IS NOT NULL
+        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%résidentiel collectif%%'
+        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%residentiel collectif%%'
+        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%résidentiel individuel%%'
+        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%residentiel individuel%%'
+    ),
+    osm_bdnb_pairs AS (
+      SELECT
+        o.osm_type,
+        o.osm_id,
+        b.batiment_construction_id,
+        b.batiment_groupe_id,
+        b.annee_construction,
+        ST_Area(ST_Intersection(o.g2154, b.g2154))::double precision AS osm_bdnb_intersection_area_m2
+      FROM osm_src o
+      INNER JOIN bdnb_src b
+        ON o.g4326 && b.g4326
+       AND ST_Intersects(o.g4326, b.g4326)
+    ),
+    best_osm_bdnb AS (
+      SELECT DISTINCT ON (osm_type, osm_id)
+        osm_type,
+        osm_id,
+        batiment_construction_id,
+        batiment_groupe_id,
+        annee_construction,
+        osm_bdnb_intersection_area_m2
+      FROM osm_bdnb_pairs
+      ORDER BY osm_type, osm_id, osm_bdnb_intersection_area_m2 DESC, batiment_construction_id
+    ),
+    landuse_pairs AS (
+      SELECT x.osm_type, x.osm_id, x.landuse_key, x.area_m2
+      FROM (
+        SELECT
+          o.osm_type,
+          o.osm_id,
+          lu.landuse AS landuse_key,
+          ST_Area(ST_Transform(ST_Intersection(o.g4326, lu.geom), 2154))::double precision AS area_m2
+        FROM osm_src o
+        INNER JOIN {osm_landuse_qualified} lu
+          ON o.g4326 && lu.geom
+         AND ST_Intersects(o.g4326, lu.geom)
+      ) x
+      WHERE x.area_m2 IS NOT NULL AND x.area_m2 > 0
+    ),
+    best_osm_landuse AS (
+      SELECT DISTINCT ON (osm_type, osm_id)
+        osm_type,
+        osm_id,
+        landuse_key AS landuse_value,
+        area_m2 AS landuse_intersection_area_m2
+      FROM landuse_pairs
+      ORDER BY osm_type, osm_id, area_m2 DESC NULLS LAST, landuse_key
+    ),
+    pairs AS (
+      SELECT
+        o.osm_type,
+        o.osm_id,
+        p.code_insee,
+        p.section,
+        p.numero_norm,
+        m.batiment_construction_id,
+        m.batiment_groupe_id,
+        m.annee_construction,
+        m.osm_bdnb_intersection_area_m2,
+        o.osm_footprint_m2 AS footprint_m2,
+        o.address_text AS osm_address_text,
+        (o.osm_tags->>'building:use') AS osm_tag_building_use,
+        (o.osm_tags->>'building') AS osm_tag_building,
+        z.landuse_value,
+        z.landuse_intersection_area_m2,
+        ST_Area(ST_Intersection(o.g2154, p.geom_2154))::double precision AS intersection_area_m2
+      FROM osm_src o
+      INNER JOIN parcels p
+        ON o.g4326 && p.geom
+       AND ST_Intersects(o.g4326, p.geom)
+      LEFT JOIN best_osm_bdnb m
+        ON m.osm_type = o.osm_type
+       AND m.osm_id = o.osm_id
+      LEFT JOIN best_osm_landuse z
+        ON z.osm_type = o.osm_type
+       AND z.osm_id = o.osm_id
+    )
+    SELECT
+      osm_type,
+      osm_id,
+      code_insee,
+      section,
+      numero_norm,
+      batiment_construction_id,
+      batiment_groupe_id,
+      annee_construction,
+      osm_bdnb_intersection_area_m2,
+      footprint_m2,
+      osm_address_text,
+      landuse_value,
+      landuse_intersection_area_m2,
+      osm_tag_building_use,
+      osm_tag_building,
+      intersection_area_m2
+    FROM pairs
+    WHERE intersection_area_m2 >= %s
+    ORDER BY osm_type, osm_id, code_insee, section, numero_norm
+    """
+    cur.execute(
+        sql,
+        (
+            code_insee,
+            code_insee,
+            int(osm_test_limit) if int(osm_test_limit) > 0 else 2147483647,
+            code_insee,
+            min_parcel_intersection_area_m2,
+        ),
+    )
+    rows = _fetch_all_dicts_chunked(cur)
+    for row in rows:
+        ia = safe_float(row.get("osm_bdnb_intersection_area_m2"))
+        status = osm_bdnb_match_status(ia, min_osm_bdnb_intersection_area_m2)
+        row["osm_match_status"] = status
+        if status != "matched":
+            row["batiment_construction_id"] = None
+            row["batiment_groupe_id"] = None
+            row["annee_construction"] = None
+        zt, zs = derive_zone_tag(
+            row.get("landuse_value"),
+            row.get("osm_tag_building_use"),
+            row.get("osm_tag_building"),
+        )
+        row["zone_tag"] = zt
+        row["zone_source"] = zs
+    return rows
 
 
 def fetch_parcel_geometries(cur, code_insee: str) -> dict[tuple[str, str, str], str]:
@@ -584,11 +844,19 @@ def _parcel_building_details_and_footprint_sum(
                 decision = multi_decisions.get(b) or {}
                 bdetails.append(
                     {
-                        "batiment_construction_id": b,
+                        "batiment_construction_id": entry.get("batiment_construction_id") or b,
+                        "bdnb_batiment_construction_id": entry.get("bdnb_batiment_construction_id"),
                         "batiment_groupe_id": entry.get("batiment_groupe_id"),
                         "annee_construction": entry.get("annee_construction"),
                         "footprint_m2": entry.get("footprint_m2"),
                         "intersection_area_m2": entry.get("intersection_area_m2"),
+                        "osm_building_id": entry.get("osm_building_id") or "",
+                        "osm_match_status": entry.get("osm_match_status") or "",
+                        "osm_bdnb_intersection_area_m2": entry.get("osm_bdnb_intersection_area_m2"),
+                        "osm_address_text": entry.get("osm_address_text") or "",
+                        "zone_tag": entry.get("zone_tag") or "",
+                        "zone_source": entry.get("zone_source") or "",
+                        "landuse_intersection_area_m2": entry.get("landuse_intersection_area_m2"),
                         "matching_status": "partage" if is_multi else "mono",
                         "matching_decision": decision.get("matching_decision") if is_multi else "mono",
                         "matching_siren_selected": decision.get("matching_siren_selected") if is_multi else "",
@@ -1374,6 +1642,33 @@ def qualified_scout_matching_v5_table() -> str:
     return f'"{schema}"."{table}"'
 
 
+def ensure_matching_runtime_indexes(
+    cur: Any,
+    *,
+    constructions_qualified: str,
+    ffo_qualified: str,
+    osm_buildings_qualified: str,
+    osm_landuse_qualified: str | None = None,
+) -> None:
+    # Index durcissement "best effort": IF NOT EXISTS pour éviter les locks inutiles.
+    stmts = [
+        "CREATE INDEX IF NOT EXISTS cadastre_feuilles_geom_gix ON public.cadastre_france_feuilles_geom USING GIST (geom)",
+        "CREATE INDEX IF NOT EXISTS cadastre_feuilles_insee_section_num_idx ON public.cadastre_france_feuilles_geom (code_insee, section, numero_norm)",
+        f"CREATE INDEX IF NOT EXISTS osm_buildings_geom_gix ON {osm_buildings_qualified} USING GIST (geom)",
+        f"CREATE INDEX IF NOT EXISTS osm_buildings_code_insee_idx ON {osm_buildings_qualified} (code_insee)",
+        f"CREATE INDEX IF NOT EXISTS bdnb_geom_cstr_gix ON {constructions_qualified} USING GIST (geom_cstr)",
+        f"CREATE INDEX IF NOT EXISTS bdnb_code_commune_idx ON {constructions_qualified} (code_commune_insee)",
+        f"CREATE INDEX IF NOT EXISTS bdnb_groupe_id_idx ON {constructions_qualified} (batiment_groupe_id)",
+        f"CREATE INDEX IF NOT EXISTS ffo_batiment_groupe_id_idx ON {ffo_qualified} (batiment_groupe_id)",
+    ]
+    if osm_landuse_qualified:
+        stmts.append(
+            f"CREATE INDEX IF NOT EXISTS osm_landuse_geom_gix ON {osm_landuse_qualified} USING GIST (geom)"
+        )
+    for stmt in stmts:
+        cur.execute(stmt)
+
+
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
         return int(float(v))
@@ -1550,6 +1845,30 @@ def main() -> int:
         help="Désactive la jointure OSM POI et l'export des colonnes associées.",
     )
     ap.add_argument(
+        "--building-source",
+        choices=("bdnb", "osm"),
+        default="bdnb",
+        help="Source géométrique bâtiment : bdnb (défaut) ou osm (footprints OSM + enrichissement BNDB).",
+    )
+    ap.add_argument(
+        "--osm-parcel-intersection-min-m2",
+        type=float,
+        default=50.0,
+        help="Seuil m² d'intersection OSM footprint ↔ parcelle pour retenir la paire.",
+    )
+    ap.add_argument(
+        "--osm-bdnb-match-min-m2",
+        type=float,
+        default=20.0,
+        help="Seuil m² d'intersection OSM footprint ↔ BNDB pour valider l'enrichissement BNDB.",
+    )
+    ap.add_argument(
+        "--osm-test-limit",
+        type=int,
+        default=0,
+        help="Limite le nombre de footprints OSM traités (0 = pas de limite). Utile pour test rapide.",
+    )
+    ap.add_argument(
         "--quiet",
         action="store_true",
         help="Désactive les messages de progression (stderr).",
@@ -1559,6 +1878,22 @@ def main() -> int:
         type=int,
         default=250,
         help="Afficher l'avancement des parcelles / PPM tous les N enregistrements (0 = jalons uniquement).",
+    )
+    ap.add_argument(
+        "--ensure-runtime-indexes",
+        action="store_true",
+        help="Crée/valide les index critiques du run de matching avant exécution.",
+    )
+    ap.add_argument(
+        "--light-export",
+        action="store_true",
+        help="Export allégé: désactive le payload building_geometries_json pour accélérer le run.",
+    )
+    ap.add_argument(
+        "--profile-json",
+        type=Path,
+        default=None,
+        help="Chemin optionnel pour écrire un JSON de profiling (durées et métriques).",
     )
     args = ap.parse_args()
 
@@ -1583,6 +1918,16 @@ def main() -> int:
     constructions_q, bdnb_schema = qualified_bdnb_constructions_table()
     ffo_q = qualified_bdnb_ffo_table(bdnb_schema)
     etab_q = qualified_etablissements_table()
+    profiler = PhaseProfiler(enabled=bool(args.profile_json))
+    v5_log(
+        f"[v5] Source bâtiment: {args.building_source}"
+        + (
+            f" (matching OSM→BDNB actif, seuil OSM↔parcelle {float(args.osm_parcel_intersection_min_m2):.1f} m², "
+            f"test_limit={int(args.osm_test_limit) if int(args.osm_test_limit) > 0 else 'none'})"
+            if args.building_source == "osm"
+            else ""
+        )
+    )
 
     try:
         import psycopg2
@@ -1595,8 +1940,10 @@ def main() -> int:
     if not args.no_geojson:
         args.out_geojson.parent.mkdir(parents=True, exist_ok=True)
 
-    iris_gdf = load_iris_for_commune(code_insee)
+    with profiler.phase("load_iris"):
+        iris_gdf = load_iris_for_commune(code_insee)
     v5_log(f"[v5] Commune INSEE {code_insee} — IRIS chargé ({len(iris_gdf)} polygones filtrés).")
+    profiler.set_metric("iris_polygons", len(iris_gdf))
 
     etab_rows: list[tuple[Any, ...]] = []
     voie_index: dict[str, list[tuple[Any, ...]]] = {}
@@ -1605,30 +1952,79 @@ def main() -> int:
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
-            pairs = fetch_building_parcel_pairs(cur, code_insee, constructions_q, ffo_q)
-            parcel_geom = fetch_parcel_geometries(cur, code_insee)
-            ppm = load_ppm_by_parcel(cur, code_insee)
+            pairs: list[dict[str, Any]] = []
+            if args.ensure_runtime_indexes:
+                with profiler.phase("ensure_runtime_indexes"):
+                    ensure_matching_runtime_indexes(
+                        cur,
+                        constructions_qualified=constructions_q,
+                        ffo_qualified=ffo_q,
+                        osm_buildings_qualified=qualified_osm_buildings_table(),
+                        osm_landuse_qualified=(
+                            qualified_osm_landuse_table() if args.building_source == "osm" else None
+                        ),
+                    )
+            if args.building_source == "osm":
+                osm_q = qualified_osm_buildings_table()
+                lu_q = qualified_osm_landuse_table()
+                cur.execute("SELECT to_regclass(%s) IS NOT NULL", (osm_buildings_regclass(),))
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    raise RuntimeError(
+                        "Table OSM footprints absente. Lancez d'abord import_osm_buildings.py --ensure-schema --input ... "
+                        "(ou repassez --building-source bdnb)."
+                    )
+                cur.execute("SELECT to_regclass(%s) IS NOT NULL", (osm_landuse_regclass(),))
+                row_lu = cur.fetchone()
+                if not row_lu or not row_lu[0]:
+                    raise RuntimeError(
+                        "Table OSM landuse absente. Lancez import_osm_landuse.py --ensure-schema "
+                        "(la table peut être vide ; le schéma doit exister)."
+                    )
+                with profiler.phase("fetch_osm_pairs"):
+                    pairs = fetch_osm_building_parcel_pairs(
+                        cur,
+                        code_insee=code_insee,
+                        constructions_qualified=constructions_q,
+                        ffo_qualified=ffo_q,
+                        osm_buildings_qualified=osm_q,
+                        osm_landuse_qualified=lu_q,
+                        min_parcel_intersection_area_m2=float(args.osm_parcel_intersection_min_m2),
+                        min_osm_bdnb_intersection_area_m2=float(args.osm_bdnb_match_min_m2),
+                        osm_test_limit=int(args.osm_test_limit),
+                    )
+            else:
+                with profiler.phase("fetch_bdnb_pairs"):
+                    pairs = fetch_building_parcel_pairs(cur, code_insee, constructions_q, ffo_q)
+            with profiler.phase("fetch_parcel_geometries"):
+                parcel_geom = fetch_parcel_geometries(cur, code_insee)
+            ppm: dict[tuple[str, str, str], dict[str, Any]] = {}
             etab_available = False
+            etab_match_by_parcel: dict[tuple[str, str, str], dict[str, Any]] = {}
+            with profiler.phase("load_ppm"):
+                ppm = load_ppm_by_parcel(cur, code_insee)
             try:
                 cur.execute(f"SELECT 1 FROM {etab_q} LIMIT 1")
                 etab_available = True
             except Exception:
                 etab_available = False
-            etab_match_by_parcel: dict[tuple[str, str, str], dict[str, Any]] = {}
+
             if etab_available:
-                etab_rows = fetch_etablissements_for_commune(cur, etab_q, code_insee)
-                voie_index = build_voie_norm_index(etab_rows)
+                with profiler.phase("fetch_etablissements"):
+                    etab_rows = fetch_etablissements_for_commune(cur, etab_q, code_insee)
+                    voie_index = build_voie_norm_index(etab_rows)
                 etab_match_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
                 ppm_list = list(ppm.items())
                 n_ppm = len(ppm_list)
                 v5_log(f"[v5] Matching établissements (passerelle PPM) : {n_ppm} parcelle(s) avec lignes PPM.")
-                for j, (pk, info) in enumerate(ppm_list, 1):
-                    ck = _etab_match_cache_key(code_insee, info)
-                    if ck not in etab_match_cache:
-                        etab_match_cache[ck] = match_etablissements_for_parcel(voie_index, etab_rows, info)
-                    etab_match_by_parcel[pk] = etab_match_cache[ck]
-                    if args.progress_every > 0 and j % args.progress_every == 0:
-                        v5_log(f"[v5]   PPM → SIRENE : {j}/{n_ppm}")
+                with profiler.phase("match_etablissements"):
+                    for j, (pk, info) in enumerate(ppm_list, 1):
+                        ck = _etab_match_cache_key(code_insee, info)
+                        if ck not in etab_match_cache:
+                            etab_match_cache[ck] = match_etablissements_for_parcel(voie_index, etab_rows, info)
+                        etab_match_by_parcel[pk] = etab_match_cache[ck]
+                        if args.progress_every > 0 and j % args.progress_every == 0:
+                            v5_log(f"[v5]   PPM → SIRENE : {j}/{n_ppm}")
             else:
                 for pk in ppm.keys():
                     etab_match_by_parcel[pk] = {
@@ -1654,7 +2050,10 @@ def main() -> int:
     by_building: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_parcel: dict[tuple[str, str, str], set[str]] = defaultdict(set)
     for row in pairs:
-        bid = str(row["batiment_construction_id"])
+        if args.building_source == "osm":
+            bid = format_osm_building_id(str(row.get("osm_type") or "w"), int(row.get("osm_id") or 0))
+        else:
+            bid = str(row["batiment_construction_id"])
         gid = str(row.get("batiment_groupe_id") or "")
         key = (str(row["code_insee"]), str(row["section"] or ""), str(row["numero_norm"] or ""))
         by_building[bid].append(
@@ -1663,12 +2062,33 @@ def main() -> int:
                 "section": key[1],
                 "numero_norm": key[2],
                 "batiment_groupe_id": gid or None,
+                "batiment_construction_id": (
+                    bid if args.building_source == "osm" else str(row.get("batiment_construction_id") or "").strip() or None
+                ),
+                "bdnb_batiment_construction_id": str(row.get("batiment_construction_id") or "").strip() or None,
                 "annee_construction": row.get("annee_construction"),
                 "footprint_m2": safe_float(row.get("footprint_m2")),
                 "intersection_area_m2": safe_float(row.get("intersection_area_m2")),
+                "osm_building_id": bid if args.building_source == "osm" else "",
+                "osm_match_status": str(row.get("osm_match_status") or ""),
+                "osm_bdnb_intersection_area_m2": safe_float(row.get("osm_bdnb_intersection_area_m2")),
+                "osm_address_text": str(row.get("osm_address_text") or "").strip(),
+                "zone_tag": str(row.get("zone_tag") or ""),
+                "zone_source": str(row.get("zone_source") or ""),
+                "landuse_intersection_area_m2": safe_float(row.get("landuse_intersection_area_m2")),
+                "osm_name": "",
+                "osm_website": "",
+                "osm_phone": "",
+                "osm_poi_primary_key": "",
+                "osm_poi_primary_value": "",
+                "osm_poi_type_label": "",
+                "osm_raw_tags": {},
             }
         )
         by_parcel[key].add(bid)
+    profiler.set_metric("pairs_count", len(pairs))
+    profiler.set_metric("parcels_with_pairs", len(by_parcel))
+    profiler.set_metric("buildings_count", len(by_building))
 
     multi_parcel_buildings = {b for b, lst in by_building.items() if len({(x["section"], x["numero_norm"]) for x in lst}) > 1}
     assigned_multi_by_building, multi_decisions = resolve_multi_parcel_buildings(by_building, ppm)
@@ -1730,7 +2150,7 @@ def main() -> int:
     # Lignes bâtiment (chevauchement multi-parcelles)
     multi_ids = sorted(multi_parcel_buildings)
     geom_by_bat: dict[str, str] = {}
-    if args.include_building_grain and multi_ids:
+    if args.include_building_grain and multi_ids and args.building_source != "osm":
         conn = psycopg2.connect(url)
         try:
             with conn.cursor() as cur:
@@ -1744,13 +2164,21 @@ def main() -> int:
         conn = psycopg2.connect(url)
         try:
             with conn.cursor() as cur:
-                payload_by_bat = fetch_construction_payloads(cur, all_selected_ids, constructions_q)
+                if args.building_source == "osm":
+                    payload_by_bat = fetch_osm_geometry_payloads(
+                        cur,
+                        all_selected_ids,
+                        qualified_osm_buildings_table(),
+                    )
+                else:
+                    payload_by_bat = fetch_construction_payloads(cur, all_selected_ids, constructions_q)
         finally:
             conn.close()
 
     if args.include_building_grain:
         for bid in multi_ids:
             plist = by_building[bid]
+            payload_first = payload_by_bat.get(bid, {})
             parcelles = []
             for p in plist:
                 pk = (p["code_insee"], p["section"], p["numero_norm"])
@@ -1780,8 +2208,20 @@ def main() -> int:
                 {
                     "scout_v5_id": f"building:{bid}",
                     "grain": "building",
-                    "batiment_construction_id": bid,
+                    "batiment_construction_id": (first.get("batiment_construction_id") or bid),
+                    "bdnb_batiment_construction_id": first.get("bdnb_batiment_construction_id") or "",
                     "batiment_groupe_id": first.get("batiment_groupe_id") or "",
+                    "osm_building_id": first.get("osm_building_id") or "",
+                    "osm_match_status": first.get("osm_match_status") or "",
+                    "osm_bdnb_intersection_area_m2": first.get("osm_bdnb_intersection_area_m2") or "",
+                    "osm_address_text": first.get("osm_address_text") or "",
+                    "osm_name": payload_first.get("name") or "",
+                    "osm_website": payload_first.get("website") or "",
+                    "osm_phone": payload_first.get("phone") or "",
+                    "osm_poi_primary_key": payload_first.get("poi_primary_key") or "",
+                    "osm_poi_primary_value": payload_first.get("poi_primary_value") or "",
+                    "osm_poi_type_label": payload_first.get("poi_type_label") or "",
+                    "osm_raw_tags": payload_first.get("raw_tags") or {},
                     "code_insee": "",
                     "section": "",
                     "numero_norm": "",
@@ -1809,7 +2249,11 @@ def main() -> int:
                     "matching_debug_json": json.dumps(multi_decisions.get(bid) or {}, ensure_ascii=False),
                     "parcelles_json": json.dumps(dedup, ensure_ascii=False),
                     "buildings_json": "",
-                    "geometry_geojson": geom_by_bat.get(bid, ""),
+                    "geometry_geojson": (
+                        payload_by_bat.get(bid, {}).get("geometry")
+                        if args.building_source == "osm"
+                        else geom_by_bat.get(bid, "")
+                    ),
                     **empty_google_audit(),
                     **building_osm_export_columns(),
                 }
@@ -1827,26 +2271,28 @@ def main() -> int:
     parcel_items = list(by_parcel.items())
     n_parcel_keys = len(parcel_items)
     exported_acc = 0
-    for idx, (pk, bids) in enumerate(parcel_items, 1):
-        row_ctx[pk] = compute_parcel_row_context_for_export(
-            pk,
-            bids,
-            by_building=by_building,
-            multi_parcel_buildings=multi_parcel_buildings,
-            assigned_multi_by_building=assigned_multi_by_building,
-            multi_decisions=multi_decisions,
-            parcel_geom=parcel_geom,
-            iris_for_parcel_key=iris_for_parcel_key,
-            min_default=min_default,
-            min_shared_candidate=min_shared_candidate,
-            shared_candidate_parcels=shared_candidate_parcels,
-        )
-        if row_ctx[pk] is not None:
-            exported_acc += 1
-        if args.progress_every > 0 and idx % args.progress_every == 0:
-            v5_log(f"[v5]   Parcelles scannées {idx}/{n_parcel_keys} — retenues pour export : {exported_acc}")
+    with profiler.phase("parcel_row_context"):
+        for idx, (pk, bids) in enumerate(parcel_items, 1):
+            row_ctx[pk] = compute_parcel_row_context_for_export(
+                pk,
+                bids,
+                by_building=by_building,
+                multi_parcel_buildings=multi_parcel_buildings,
+                assigned_multi_by_building=assigned_multi_by_building,
+                multi_decisions=multi_decisions,
+                parcel_geom=parcel_geom,
+                iris_for_parcel_key=iris_for_parcel_key,
+                min_default=min_default,
+                min_shared_candidate=min_shared_candidate,
+                shared_candidate_parcels=shared_candidate_parcels,
+            )
+            if row_ctx[pk] is not None:
+                exported_acc += 1
+            if args.progress_every > 0 and idx % args.progress_every == 0:
+                v5_log(f"[v5]   Parcelles scannées {idx}/{n_parcel_keys} — retenues pour export : {exported_acc}")
 
     exported_pks = {pk for pk, ctx in row_ctx.items() if ctx is not None}
+    profiler.set_metric("exported_parcels", len(exported_pks))
     v5_log(f"[v5] Parcelles retenues (lignes CSV parcelle) : {len(exported_pks)}")
     osm_global_status = "disabled" if args.no_osm_poi else "ok"
     osm_data_as_of = ""
@@ -1904,6 +2350,23 @@ def main() -> int:
             v5_log(f"[v5]   Assemblage lignes export {written}/{len(exported_pks)}")
         selected = ctx["selected"]
         bdetails = ctx["bdetails"]
+        bdetails_enriched: list[dict[str, Any]] = []
+        for item in bdetails:
+            payload_key = (
+                item.get("osm_building_id")
+                if args.building_source == "osm"
+                else item.get("batiment_construction_id")
+            )
+            payload = payload_by_bat.get(str(payload_key or "").strip(), {}) if payload_key else {}
+            enriched = dict(item)
+            enriched["osm_name"] = payload.get("name") or ""
+            enriched["osm_website"] = payload.get("website") or ""
+            enriched["osm_phone"] = payload.get("phone") or ""
+            enriched["osm_poi_primary_key"] = payload.get("poi_primary_key") or ""
+            enriched["osm_poi_primary_value"] = payload.get("poi_primary_value") or ""
+            enriched["osm_poi_type_label"] = payload.get("poi_type_label") or ""
+            enriched["osm_raw_tags"] = payload.get("raw_tags") or {}
+            bdetails_enriched.append(enriched)
         footprint_sum = ctx["footprint_sum"]
         ci = ctx["ci"]
         ni = ctx["ni"]
@@ -1939,7 +2402,12 @@ def main() -> int:
                 "scout_v5_id": scout_id,
                 "grain": "parcelle",
                 "batiment_construction_id": "",
+                "bdnb_batiment_construction_id": "",
                 "batiment_groupe_id": "",
+                "osm_building_id": "",
+                "osm_match_status": "",
+                "osm_bdnb_intersection_area_m2": "",
+                "osm_address_text": "",
                 "code_insee": pk[0],
                 "section": pk[1],
                 "numero_norm": pk[2],
@@ -1966,21 +2434,46 @@ def main() -> int:
                 "matching_siren_selected": "",
                 "matching_debug_json": "",
                 "parcelles_json": "",
-                "buildings_json": json.dumps(bdetails, ensure_ascii=False),
-                "building_geometries_json": json.dumps(
-                    [
-                        {
-                            "batiment_construction_id": item["batiment_construction_id"],
-                            "batiment_groupe_id": item.get("batiment_groupe_id"),
-                            "annee_construction": item.get("annee_construction"),
-                            "footprint_m2": item.get("footprint_m2"),
-                            "geometry": json.loads(payload_by_bat[item["batiment_construction_id"]]["geometry"]),
-                        }
-                        for item in bdetails
-                        if item.get("batiment_construction_id")
-                        and item["batiment_construction_id"] in payload_by_bat
-                    ],
-                    ensure_ascii=False,
+                "buildings_json": json.dumps(bdetails_enriched, ensure_ascii=False),
+                "building_geometries_json": (
+                    "[]"
+                    if args.light_export
+                    else json.dumps(
+                        [
+                            {
+                                "batiment_construction_id": item["batiment_construction_id"],
+                                "bdnb_batiment_construction_id": item.get("bdnb_batiment_construction_id"),
+                                "batiment_groupe_id": item.get("batiment_groupe_id"),
+                                "osm_building_id": item.get("osm_building_id") or "",
+                                "osm_match_status": item.get("osm_match_status") or "",
+                                "osm_bdnb_intersection_area_m2": item.get("osm_bdnb_intersection_area_m2"),
+                                "osm_address_text": item.get("osm_address_text") or "",
+                                "osm_name": (payload_by_bat.get(payload_key, {}) or {}).get("name") or "",
+                                "osm_website": (payload_by_bat.get(payload_key, {}) or {}).get("website") or "",
+                                "osm_phone": (payload_by_bat.get(payload_key, {}) or {}).get("phone") or "",
+                                "osm_poi_primary_key": (payload_by_bat.get(payload_key, {}) or {}).get("poi_primary_key")
+                                or "",
+                                "osm_poi_primary_value": (payload_by_bat.get(payload_key, {}) or {}).get("poi_primary_value")
+                                or "",
+                                "osm_poi_type_label": (payload_by_bat.get(payload_key, {}) or {}).get("poi_type_label") or "",
+                                "osm_raw_tags": (payload_by_bat.get(payload_key, {}) or {}).get("raw_tags") or {},
+                                "zone_tag": item.get("zone_tag") or "",
+                                "zone_source": item.get("zone_source") or "",
+                                "landuse_intersection_area_m2": item.get("landuse_intersection_area_m2"),
+                                "annee_construction": item.get("annee_construction"),
+                                "footprint_m2": item.get("footprint_m2"),
+                                "geometry": json.loads((payload_by_bat.get(payload_key, {}) or {})["geometry"]),
+                            }
+                            for item in bdetails_enriched
+                            for payload_key in [
+                                item.get("osm_building_id")
+                                if args.building_source == "osm"
+                                else item.get("batiment_construction_id")
+                            ]
+                            if payload_key in payload_by_bat
+                        ],
+                        ensure_ascii=False,
+                    )
                 ),
                 "geometry_geojson": gj,
                 **google_row,
@@ -1998,7 +2491,12 @@ def main() -> int:
         "scout_v5_id",
         "grain",
         "batiment_construction_id",
+        "bdnb_batiment_construction_id",
         "batiment_groupe_id",
+        "osm_building_id",
+        "osm_match_status",
+        "osm_bdnb_intersection_area_m2",
+        "osm_address_text",
         "code_insee",
         "section",
         "numero_norm",
@@ -2048,11 +2546,12 @@ def main() -> int:
         "osm_data_as_of",
         "geometry_geojson",
     ]
-    with args.out_csv.open("w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
-        w.writeheader()
-        for r in out_rows:
-            w.writerow(r)
+    with profiler.phase("write_csv"):
+        with args.out_csv.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+            w.writeheader()
+            for r in out_rows:
+                w.writerow(r)
     print(f"[v5] CSV écrit: {args.out_csv} ({len(out_rows)} lignes)")
     if google_fb:
         gsum = (
@@ -2067,23 +2566,24 @@ def main() -> int:
             print(gsum, file=sys.stderr, flush=True)
 
     if not args.no_geojson:
-        features = []
-        for r in out_rows:
-            gj = r.get("geometry_geojson") or ""
-            if not gj.strip():
-                continue
-            try:
-                geom = json.loads(gj)
-            except json.JSONDecodeError:
-                continue
-            props = {k: v for k, v in r.items() if k != "geometry_geojson"}
-            fid = str(props.get("scout_v5_id") or "").strip()
-            feat: dict[str, Any] = {"type": "Feature", "properties": props, "geometry": geom}
-            if fid:
-                feat["id"] = fid
-            features.append(feat)
-        fc = {"type": "FeatureCollection", "features": features}
-        args.out_geojson.write_text(json.dumps(fc, ensure_ascii=False), encoding="utf-8")
+        with profiler.phase("write_geojson"):
+            features = []
+            for r in out_rows:
+                gj = r.get("geometry_geojson") or ""
+                if not gj.strip():
+                    continue
+                try:
+                    geom = json.loads(gj)
+                except json.JSONDecodeError:
+                    continue
+                props = {k: v for k, v in r.items() if k != "geometry_geojson"}
+                fid = str(props.get("scout_v5_id") or "").strip()
+                feat: dict[str, Any] = {"type": "Feature", "properties": props, "geometry": geom}
+                if fid:
+                    feat["id"] = fid
+                features.append(feat)
+            fc = {"type": "FeatureCollection", "features": features}
+            args.out_geojson.write_text(json.dumps(fc, ensure_ascii=False), encoding="utf-8")
         print(f"[v5] GeoJSON écrit: {args.out_geojson} ({len(features)} entités)")
 
     if args.write_postgres:
@@ -2093,6 +2593,13 @@ def main() -> int:
         except Exception as e:
             print(f"[v5] Erreur --write-postgres: {e}", file=sys.stderr)
             return 1
+
+    if args.profile_json:
+        profiler.set_metric("out_rows", len(out_rows))
+        profiler.set_metric("building_source", args.building_source)
+        args.profile_json.parent.mkdir(parents=True, exist_ok=True)
+        args.profile_json.write_text(json.dumps(profiler.to_payload(), ensure_ascii=False, indent=2), encoding="utf-8")
+        v5_log(f"[v5] Profiling JSON écrit: {args.profile_json}")
 
     return 0
 

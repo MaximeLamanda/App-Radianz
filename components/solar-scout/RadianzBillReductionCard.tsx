@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 const INK = "#0A0A0A";
 /** Accent batterie (cohérent avec le reste de la page prospect / graphiques). */
 const BATTERY = "#0000FF";
+/** Injection réseau — même teinte que la série `excess` du graphe production (`MonthlyProductionChart` · `ProspectEnergyChartsPanel`). */
+const INJECTION_RESEAU = "#6B6B6B";
 const LINE_2 = "#D6D4CF";
 const CANVAS = "#F0EFED";
 export interface RadianzBillReductionSegment {
@@ -39,6 +41,8 @@ function segmentBarColor(variant: RadianzBillReductionSegment["variant"]) {
       return INK;
     case "battery":
       return BATTERY;
+    case "injection":
+      return INJECTION_RESEAU;
     default:
       return LINE_2;
   }
@@ -50,6 +54,8 @@ function segmentDotClassName(variant: RadianzBillReductionSegment["variant"]) {
       return "bg-[#0A0A0A]";
     case "battery":
       return "bg-[#0000FF]";
+    case "injection":
+      return null;
     default:
       return "bg-[#D6D4CF]";
   }
@@ -141,6 +147,7 @@ export function RadianzBillReductionCard({
             >
               <span
                 className={cn("size-2 shrink-0 rounded-full", segmentDotClassName(s.variant))}
+                style={s.variant === "injection" ? { backgroundColor: INJECTION_RESEAU } : undefined}
                 aria-hidden
               />
               <span className="min-w-0 text-[#0A0A0A]">{s.label}</span>
