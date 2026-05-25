@@ -80,8 +80,6 @@ describe("filterScoutMatchingV5RowsByMapBounds", () => {
       codeInsee: "33318",
       section: "A",
       numeroNorm: "0001",
-      codeIris: "",
-      nomIris: "",
       nbBatiments: 0,
       footprintSumM2: 100,
       sirenStatus: "",

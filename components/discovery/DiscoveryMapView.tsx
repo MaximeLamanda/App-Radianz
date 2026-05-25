@@ -13,58 +13,60 @@ import {
   MapTileLayer,
   MapZoomControl,
 } from "@/components/ui/map";
-import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
-import {
-  findMatchingV5RowIdForBatimentFootprint,
-  type ScoutMatchingV5Row,
-} from "@/lib/scout-matching-v5-map";
+import type { ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
 import type { MapBounds } from "@/lib/swr-hooks";
 import { discoveryBoundsKey, discoveryDebug } from "@/lib/discovery-debug";
-import { BRAND_INK, BRAND_LIME, BRAND_LIME_HOVER } from "@/lib/brand-colors";
-
-/** Contour plus foncé que `BRAND_LIME_HOVER` pour rester lisible sur imagerie / cadastre sombre. */
-const LIME_STROKE_DARK = "#b0c45a";
+import { BRAND_INK } from "@/lib/brand-colors";
+import {
+  DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM,
+  DISCOVERY_VIEWPORT_FETCH_DEBOUNCE_MS,
+} from "@/lib/discovery-zoom-modes";
+import { DiscoveryMvtBuildingsLayer, type DiscoveryOsmBuildingDisplayFilter } from "@/components/discovery/DiscoveryMvtBuildingsLayer";
+import { DiscoveryEnedisConsumptionLayer } from "@/components/discovery/DiscoveryEnedisConsumptionLayer";
+import type { DiscoveryEnedisPoint } from "@/lib/discovery-enedis-layer";
+import type { DiscoveryComboMarker } from "@/lib/discovery-combo-markers";
+import {
+  simplifyFeatureCollectionForMapDisplay,
+  toleranceDegForParcelHighlightZoom,
+} from "@/lib/geojson-simplify-display";
+import { parkingSourceFromFeatureProps, parkingSourceHoverText } from "@/lib/matching-v5-parking";
+import type { DiscoveryComboBuildingNumberLabel } from "@/lib/discovery-combo-building-labels";
+import { DiscoveryComboBuildingNumberLabelsLayer } from "@/components/discovery/DiscoveryComboBuildingNumberLabelsLayer";
+import {
+  discoveryBuildingSelectionIdFromFeature,
+  isDiscoveryBuildingSelected,
+} from "@/lib/discovery-combo-building-selection";
 
 /**
- * Empilement « cadastre / parcelle » vs « bâtiment » :
- *
- * - Souvent **toutes** les lignes exportées sont `grain === "parcelle"` : le « building » vu sur la
- *   carte, c’est surtout le **BDNB** (lime + bord lime foncé) + éventuellement des lignes `building` rares.
- * - L’empreinte parcelle a un **plein sombre** (fill) ; le BDNB était à fillOpacity 0.1 → le bâtiment
- *   est **souvent au-dessus en z-index** mais **visuellement noyé** sous le cadastre (illusion de
- *   polygone building « en dessous »).
- * - Quand du BDNB est chargé : parcelle / surbrillance cadastre en **contour** (fill désactivé),
- *   BDNB plus opaque, panes avec **z-index** bien séparés du fond parcelle.
- * - Leaflet applique `.leaflet-pane { z-index: 400 }` par défaut ; les empreintes **bâtiment** (GeoJSON
- *   `grain === "building"`) doivent rester **strictement au-dessus** des couches cadastre / parcelle
- *   (souvent sous 400), sinon le plein cadastre peut masquer le polygone bâtiment.
+ * Empilement des panes Leaflet — overlayPane par défaut = 400.
+ * - Cadastre / parcelle (surcouche sélection) restent en dessous des bâtiments.
+ * - La couche MVT bâtiments est dessinée par-dessus.
  */
 const PANE_CADASTRE_HL = "discoveryCadastreHl";
-const PANE_FP_PARCELLE = "discoveryFpParcelle";
-const PANE_FP_BUILDING = "discoveryFpBuilding";
+const PANE_PARKING_HL = "discoveryParkingHl";
 const PANE_SELECTED_PARCELLE = "discoverySelectedParcelle";
-const PANE_BDNB = "discoveryBdnb";
-const PANE_SELECTED_BUILDING = "discoverySelectedBuilding";
-
-/** Zoom « reculé » : au-delà, empreintes matching en polygones ; en dessous, points + MapMarkerClusterGroup (shadcn-map). */
-const DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM = 14;
+const PANE_FP_BUILDING = "discoveryFpBuilding";
+/** Au-dessus des empreintes MVT pour recevoir les clics en mode édition combo. */
+const PANE_ADDABLE_PARCELLE = "discoveryAddableParcelle";
 
 /**
- * Marqueurs + clusters isolés dans un `memo` : les mises à jour bounds/zoom parent ne
- * re-rendent pas toute la couche tant que la liste des points est inchangée.
- * Couleurs des clusters = défaut Leaflet.markercluster (cf. exemple shadcn-map sans prop `icon`).
+ * Marqueurs + clusters isolés dans un `memo` : les mises à jour bounds/zoom parent ne re-rendent pas
+ * toute la couche tant que la liste des points est inchangée. Couleurs des clusters = défaut
+ * Leaflet.markercluster (cf. exemple shadcn-map sans prop `icon`).
  */
-const DiscoveryClusteredFootprints = memo(function DiscoveryClusteredFootprints({
+const DiscoveryClusteredBuildings = memo(function DiscoveryClusteredBuildings({
   markers,
+  selectedComboId,
   onSelectRef,
 }: {
   markers: readonly { id: string; position: L.LatLngExpression }[];
-  onSelectRef: React.RefObject<(id: string | null) => void>;
+  selectedComboId: string | null;
+  onSelectRef: React.RefObject<(comboId: string | null) => void>;
 }) {
   useEffect(() => {
     const first = markers[0]?.id;
     const last = markers.length > 0 ? markers[markers.length - 1]?.id : undefined;
-    discoveryDebug("map", "DiscoveryClusteredFootprints (marqueurs cluster)", {
+    discoveryDebug("map", "DiscoveryClusteredBuildings (marqueurs cluster)", {
       markerCount: markers.length,
       firstId: first,
       lastId: last,
@@ -74,13 +76,18 @@ const DiscoveryClusteredFootprints = memo(function DiscoveryClusteredFootprints(
   return (
     <MapMarkerClusterGroup
       showCoverageOnHover={false}
-      removeOutsideVisibleBounds={false}
-      spiderfyOnMaxZoom
+      removeOutsideVisibleBounds
+      maxClusterRadius={64}
+      spiderfyOnMaxZoom={false}
+      chunkedLoading
+      chunkInterval={200}
+      chunkDelay={50}
     >
       {markers.map((m) => (
         <MapMarker
           key={m.id}
           position={m.position}
+          selected={selectedComboId === m.id}
           eventHandlers={{
             click: (e) => {
               L.DomEvent.stopPropagation(e);
@@ -116,16 +123,15 @@ function DiscoveryMapVectorPanes() {
   const map = useMap();
   useLayoutEffect(() => {
     /**
-     * overlayPane Leaflet = 400 (`.leaflet-pane`). Cadastre / parcelle sous 400 ; bâtiments au-dessus de 400
-     * pour que le GeoJSON building reste visible au-dessus des polygones cadastre.
+     * Cadastre / parcelle sélectionnée sous 400 (overlayPane), bâtiments au-dessus pour rester
+     * visibles au-dessus des polygones parcelle.
      */
     const defs: Array<[string, number]> = [
       [PANE_CADASTRE_HL, 340],
-      [PANE_FP_PARCELLE, 355],
+      [PANE_PARKING_HL, 360],
       [PANE_SELECTED_PARCELLE, 370],
       [PANE_FP_BUILDING, 430],
-      [PANE_BDNB, 520],
-      [PANE_SELECTED_BUILDING, 540],
+      [PANE_ADDABLE_PARCELLE, 500],
     ];
     for (const [name, z] of defs) {
       const pane = map.getPane(name) ?? map.createPane(name);
@@ -148,77 +154,111 @@ function rowsToFeatureCollection(rows: ScoutMatchingV5Row[]): GeoJSON.FeatureCol
   };
 }
 
-/** Surbrillance cadastre (sous tout le reste) — non interactive : les clics vont aux footprints / BDNB. */
-const parcelleCadastreHighlightPath: L.PathOptions = {
-  color: BRAND_INK,
-  weight: 1.5,
-  fillColor: "#09090b",
-  fillOpacity: 0.35,
-  pane: PANE_CADASTRE_HL,
+/** Polygone(s) parking OSM liés au bâtiment sélectionné. */
+const selectedParkingPathOsm: L.PathOptions = {
+  color: "#d97706",
+  weight: 2,
+  opacity: 0.95,
+  fillColor: "#fbbf24",
+  fillOpacity: 0.28,
+  pane: PANE_PARKING_HL,
+  interactive: true,
+};
+
+const selectedParkingPathEnr: L.PathOptions = {
+  color: "#0369a1",
+  weight: 2,
+  opacity: 0.95,
+  fillColor: "#38bdf8",
+  fillOpacity: 0.26,
+  pane: PANE_PARKING_HL,
+  interactive: true,
+};
+
+function parkingHighlightStyle(feature?: GeoJSON.Feature): L.PathOptions {
+  const props = feature?.properties as Record<string, unknown> | undefined;
+  return parkingSourceFromFeatureProps(props) === "enr" ? selectedParkingPathEnr : selectedParkingPathOsm;
+}
+
+function bindParkingHighlightTooltip(feature: GeoJSON.Feature, layer: L.Layer): void {
+  if (!("bindTooltip" in layer) || typeof (layer as L.Path).bindTooltip !== "function") return;
+  const props = feature.properties as Record<string, unknown> | undefined;
+  const source = parkingSourceFromFeatureProps(props);
+  (layer as L.Path).bindTooltip(parkingSourceHoverText(source), { sticky: true });
+}
+
+/** Parcelle(s) liée(s) à la sélection bâtiment : contour clair + voile translucide. */
+const selectedParcellePath: L.PathOptions = {
+  color: "#fafafa",
+  weight: 1.4,
+  opacity: 0.95,
+  fillColor: BRAND_INK,
+  fillOpacity: 0.18,
+  pane: PANE_SELECTED_PARCELLE,
   interactive: false,
 };
 
-/** Parcelle (empreinte Σ bâtiments) — même lecture « cadastre » sombre que les parcelles. */
-const parcelleFootprintPath: L.PathOptions = {
-  color: "#27272a",
-  weight: 1.5,
-  fillColor: "#09090b",
-  fillOpacity: 0.28,
-};
-
-/** Sélection parcelle / surbrillance cadastre : même plein que `parcelleFootprintPath`, contour fin (lisibilité surtout par la couleur). */
-const parcelleSelectedStrokeOnly: Pick<L.PathOptions, "color" | "weight" | "opacity"> = {
-  color: "#fafafa",
-  weight: 1,
-  opacity: 1,
-};
-
-/** Bâtiment multi-parcelles (grain building) — lime DS + contour lime foncé. */
-const buildingFootprintPath: L.PathOptions = {
-  color: LIME_STROKE_DARK,
-  weight: 2.5,
-  fillColor: BRAND_LIME,
-  fillOpacity: 0.4,
-};
-
-const buildingFootprintSelectedPath: L.PathOptions = {
-  color: LIME_STROKE_DARK,
+/** Emprise(s) bâtiment OSM sélectionnée(s) — visible même si tuile MVT absente du cache. */
+const selectedBuildingPath: L.PathOptions = {
+  color: "#e8f0a0",
   weight: 2,
-  fillColor: BRAND_LIME_HOVER,
+  opacity: 1,
+  fillColor: "#b8c469",
   fillOpacity: 0.55,
+  pane: PANE_FP_BUILDING,
+  interactive: false,
 };
 
-/** Empreintes BDNB — plein lime marque, bord lime plus foncé. */
-const bdnbConstructionPath: L.PathOptions = {
-  color: LIME_STROKE_DARK,
-  weight: 3,
-  fillColor: BRAND_LIME,
-  fillOpacity: 0.46,
-  pane: PANE_BDNB,
+/** Parcelle voisine non incluse — clic pour ajouter. */
+const addableParcellePath: L.PathOptions = {
+  color: "#60a5fa",
+  weight: 1.2,
+  opacity: 0.9,
+  dashArray: "5 4",
+  fillColor: "#3b82f6",
+  fillOpacity: 0.1,
+  pane: PANE_ADDABLE_PARCELLE,
+  interactive: true,
 };
 
-/** BDNB correspondant à la ligne sélectionnée (souvent `grain === "parcelle"`). */
-const bdnbConstructionSelectedPath: L.PathOptions = {
-  color: LIME_STROKE_DARK,
-  weight: 2.5,
-  fillColor: BRAND_LIME_HOVER,
-  fillOpacity: 0.58,
-  pane: PANE_SELECTED_BUILDING,
+/** Parcelle voisine déjà dans le périmètre — clic pour retirer. */
+const adjacentParcelleIncludedPath: L.PathOptions = {
+  color: "#2563eb",
+  weight: 2,
+  opacity: 1,
+  fillColor: "#3b82f6",
+  fillOpacity: 0.28,
+  pane: PANE_ADDABLE_PARCELLE,
+  interactive: true,
 };
 
-/**
- * Empreinte stable des points cluster (tri par id) : si le pan ne change pas le jeu de parcelles
- * / positions affichées, on garde la **même référence** de tableau → `memo` ne refait pas tout le groupe.
- */
-function footprintClusterMarkersSignature(rows: ScoutMatchingV5Row[]): string {
-  const parts: string[] = [];
-  for (const r of rows) {
-    const c = centroidFromGeoJsonPolygonLike(r.geometry);
-    if (!c) continue;
-    parts.push(`${r.id};${c.lat.toFixed(5)};${c.lng.toFixed(5)}`);
+function addableParcelleStyleForFeature(feature: GeoJSON.Feature | undefined): L.PathOptions {
+  const props = feature?.properties as Record<string, unknown> | undefined;
+  if (props?.in_effective === true) return adjacentParcelleIncludedPath;
+  return addableParcellePath;
+}
+
+/** Emprise bâtiment exclue du combo personnalisé. */
+const deselectedBuildingPath: L.PathOptions = {
+  color: "#a1a1aa",
+  weight: 1,
+  opacity: 0.55,
+  fillColor: "#71717a",
+  fillOpacity: 0.12,
+  pane: PANE_FP_BUILDING,
+  interactive: false,
+};
+
+function buildingHighlightStyleForSelection(
+  feature: GeoJSON.Feature | undefined,
+  selectedBuildingIds: ReadonlySet<string> | undefined
+): L.PathOptions {
+  if (!selectedBuildingIds) return selectedBuildingPath;
+  const id = feature ? discoveryBuildingSelectionIdFromFeature(feature) : "";
+  if (id && !isDiscoveryBuildingSelected(selectedBuildingIds, id)) {
+    return deselectedBuildingPath;
   }
-  parts.sort();
-  return `${parts.length}|${parts.join("|")}`;
+  return selectedBuildingPath;
 }
 
 function rowIdsSignature(rows: ScoutMatchingV5Row[]): string {
@@ -235,15 +275,32 @@ function rowIdsSignature(rows: ScoutMatchingV5Row[]): string {
   return `${rows.length}:${(hash >>> 0).toString(36)}`;
 }
 
-function batimentIdFromBdnbGeoJsonFeature(feature: GeoJSON.Feature): string {
-  const p = feature.properties as Record<string, unknown> | undefined;
-  const c = String(p?.batiment_construction_id ?? "").trim();
-  if (c) return c;
-  const g = String(p?.batiment_groupe_id ?? "").trim();
-  if (g) return g;
-  const fid = typeof feature.id === "string" ? feature.id.trim() : "";
-  if (fid.startsWith("bdnbcstr:")) return fid.slice("bdnbcstr:".length);
-  return "";
+function comboMarkersSignature(markers: readonly DiscoveryComboMarker[]): string {
+  const parts: string[] = [];
+  for (const m of markers) {
+    const osmSig = [...m.osmBuildingIds].sort().join(",");
+    parts.push(
+      `${m.comboId};${m.position.lat.toFixed(5)};${m.position.lng.toFixed(5)};${m.anchorParcelleId};${Math.round(m.footprintSumM2)};${osmSig}`
+    );
+  }
+  parts.sort();
+  return `${parts.length}|${parts.join("|")}`;
+}
+
+/** Clé stable pour recréer la couche MVT quand la whitelist change (évite de re-hasher tout le Set côté effet). */
+function osmBuildingWhitelistSignature(ids: ReadonlySet<string>): string {
+  let hash = 2166136261;
+  const sorted = Array.from(ids).sort();
+  const n = sorted.length;
+  for (const id of sorted) {
+    for (let i = 0; i < id.length; i += 1) {
+      hash ^= id.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    hash ^= 124;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${n}:${(hash >>> 0).toString(36)}`;
 }
 
 function MapResizeInvalidate({ layoutRevision }: { layoutRevision?: string }) {
@@ -302,7 +359,7 @@ function MapBoundsEmitter({ onViewBoundsChange }: { onViewBoundsChange: (bounds:
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null;
         emitBounds("moveend-debounced");
-      }, 500);
+      }, DISCOVERY_VIEWPORT_FETCH_DEBOUNCE_MS);
     },
   });
 
@@ -354,58 +411,84 @@ function DiscoveryMapFlyTo({
   return null;
 }
 
-function styleForFootprintFeature(feature: GeoJSON.Feature, selected: boolean): L.PathOptions {
-  const grain = feature.properties?.grain;
-  const isBuilding = grain === "building";
-  if (selected) {
-    if (isBuilding) {
-      return { ...buildingFootprintSelectedPath, pane: PANE_SELECTED_BUILDING };
-    }
-    /** Sous le BDNB : ne pas intercepter les clics (sélection bâtiment / empreinte fine). */
-    return {
-      ...parcelleFootprintPath,
-      ...parcelleSelectedStrokeOnly,
-      pane: PANE_SELECTED_PARCELLE,
-      interactive: false,
-    };
-  }
-  if (isBuilding) {
-    return { ...buildingFootprintPath, pane: PANE_FP_BUILDING };
-  }
-  return { ...parcelleFootprintPath, pane: PANE_FP_PARCELLE };
-}
-
 export type DiscoveryMapViewProps = {
-  /** Lignes matching V5 à tracer (parcelle et/ou building), comme sur Solar Scout. */
-  footprintRows: ScoutMatchingV5Row[];
-  /** Polygones BDNB (`batiment_construction`), chargés à part depuis Postgres. */
-  bdnbBuildingFeatures?: GeoJSON.Feature[];
+  /**
+   * Marqueurs cluster (1 par combo parcelles/bâtiments liés) au zoom ≤ DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM.
+   */
+  comboMarkers: readonly DiscoveryComboMarker[];
+  /** Filtres découverte : restreint clusters + MVT aux bâtiments liés aux emprises filtrées. */
+  osmBuildingDisplayFilter: DiscoveryOsmBuildingDisplayFilter;
+  /** Parcelles à mettre en surcouche (cluster « partage » de la sélection bâtiment). */
   parcelleHighlightRows: ScoutMatchingV5Row[];
-  selectedRowId: string | null;
-  onSelectRowId: (id: string | null) => void;
+  /** Polygones bâtiment (building_geometries_json) pour la sélection courante. */
+  buildingHighlightFc: GeoJSON.FeatureCollection;
+  /** Numéros 1…N au centroïde de chaque empreinte surlignée (combo sélectionné). */
+  buildingNumberLabels?: readonly DiscoveryComboBuildingNumberLabel[];
+  /** Bâtiments inclus dans le combo personnalisé (`bc:` / `osm:`). */
+  selectedBuildingIds?: ReadonlySet<string>;
+  onToggleDiscoveryBuilding?: (selectionId: string) => void;
+  /** Mode édition : parcelles voisines cliquables pour étendre le combo. */
+  discoveryEditMode?: boolean;
+  addableParcellesFc?: GeoJSON.FeatureCollection;
+  onToggleAdjacentParcelle?: (parcelleId: string, include: boolean) => void;
+  adjacentParcellesLoading?: boolean;
+  /** Périmètre parcelles courant (toggle ajout / retrait sur les voisines). */
+  effectiveParcelleIds?: ReadonlySet<string>;
+  /** Polygones parking OSM (`parking_geometries_json`) pour la sélection courante. */
+  parkingHighlightFc: GeoJSON.FeatureCollection;
+  /** Bâtiment OSM courant (MVT / whitelist). */
+  selectedOsmBuildingId: string | null;
+  /** Combo sélectionné (marqueur cluster). */
+  selectedComboId: string | null;
+  /** Clic marqueur cluster → comboId (`combo:p1|p2` ou fallback `w:123`). */
+  onSelectComboId: (comboId: string | null) => void;
+  /** Clic polygone MVT → osm_building_id. */
+  onSelectOsmBuildingId: (osmBuildingId: string | null) => void;
   onViewBoundsChange: (bounds: MapBounds | null) => void;
+  /** Notifié à l’init (zoom bridge) et à chaque `zoomend` — pour piloter les fetchs côté page. */
+  onViewportZoomChange?: (zoom: number) => void;
   defaultCenter: { lat: number; lng: number };
   defaultZoom: number;
   /** Vol carte (deep link) ; consommé après `moveend`. */
   flyTo?: { lat: number; lng: number; zoom?: number } | null;
   /** Appelé une fois le vol terminé (défaut no-op). */
   onFlyToConsumed?: () => void;
-  /** Classes pour le conteneur Leaflet (ex. carte pleine hauteur dans un parent `relative`). */
+  /** Classes pour le conteneur Leaflet. */
   className?: string;
+  /** Couche Enedis (points consommation) — affichée si non vide. */
+  enedisPoints?: readonly DiscoveryEnedisPoint[];
+  selectedEnedisId?: string | null;
+  onSelectEnedisId?: (id: string | null) => void;
 };
 
 export function DiscoveryMapView({
-  footprintRows,
-  bdnbBuildingFeatures = [],
+  comboMarkers,
+  osmBuildingDisplayFilter,
   parcelleHighlightRows,
-  selectedRowId,
-  onSelectRowId,
+  buildingHighlightFc,
+  buildingNumberLabels = [],
+  selectedBuildingIds,
+  onToggleDiscoveryBuilding,
+  discoveryEditMode = false,
+  addableParcellesFc = { type: "FeatureCollection", features: [] },
+  onToggleAdjacentParcelle,
+  adjacentParcellesLoading = false,
+  effectiveParcelleIds,
+  parkingHighlightFc,
+  selectedOsmBuildingId,
+  selectedComboId,
+  onSelectComboId,
+  onSelectOsmBuildingId,
   onViewBoundsChange,
+  onViewportZoomChange,
   defaultCenter,
   defaultZoom,
   flyTo = null,
   onFlyToConsumed = () => {},
   className,
+  enedisPoints = [],
+  selectedEnedisId = null,
+  onSelectEnedisId = () => {},
 }: DiscoveryMapViewProps) {
   const [mounted, setMounted] = useState(false);
   const [viewportZoom, setViewportZoom] = useState(defaultZoom);
@@ -413,153 +496,118 @@ export function DiscoveryMapView({
     setMounted(true);
   }, []);
 
-  const onSelectRowIdRef = useRef(onSelectRowId);
-  onSelectRowIdRef.current = onSelectRowId;
-  const footprintRowsRef = useRef(footprintRows);
-  footprintRowsRef.current = footprintRows;
+  const onSelectOsmBuildingIdRef = useRef(onSelectOsmBuildingId);
+  onSelectOsmBuildingIdRef.current = onSelectOsmBuildingId;
+  const onSelectComboIdRef = useRef(onSelectComboId);
+  onSelectComboIdRef.current = onSelectComboId;
+  const onSelectEnedisIdRef = useRef(onSelectEnedisId);
+  onSelectEnedisIdRef.current = onSelectEnedisId;
 
-  const parcellesFc = useMemo(
+  const onToggleDiscoveryBuildingRef = useRef(onToggleDiscoveryBuilding);
+  onToggleDiscoveryBuildingRef.current = onToggleDiscoveryBuilding;
+  const onToggleAdjacentParcelleRef = useRef(onToggleAdjacentParcelle);
+  onToggleAdjacentParcelleRef.current = onToggleAdjacentParcelle;
+
+  const buildingIdsForHighlight = selectedBuildingIds;
+
+  const showBuildingPolygons = viewportZoom > DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM;
+
+  const parcelleHighlightFcRaw = useMemo(
     () => rowsToFeatureCollection(parcelleHighlightRows),
     [parcelleHighlightRows]
   );
 
-  /** Toute parcelle du groupe « partage » / multi-cadastre (clic BDNB ou parcelle). */
-  const selectedLinkedParcelleIdSet = useMemo(
-    () => new Set(parcelleHighlightRows.map((r) => r.id)),
-    [parcelleHighlightRows]
-  );
-
-  const selectedRow = useMemo(
-    () => (selectedRowId ? footprintRows.filter((r) => r.id === selectedRowId) : []),
-    [footprintRows, selectedRowId]
-  );
-  const otherFootprints = useMemo(
+  const parcelleHighlightFc = useMemo(
     () =>
-      selectedRowId ? footprintRows.filter((r) => r.id !== selectedRowId) : footprintRows,
-    [footprintRows, selectedRowId]
+      simplifyFeatureCollectionForMapDisplay(
+        parcelleHighlightFcRaw,
+        toleranceDegForParcelHighlightZoom(viewportZoom)
+      ),
+    [parcelleHighlightFcRaw, viewportZoom]
   );
 
-  /** Deux couches : d’abord parcelle puis building — sinon Leaflet empile les polygons dans l’ordre des features et le cadastre capte les clics au-dessus du bâtiment. */
-  const otherParcelleFootprints = useMemo(
-    () => otherFootprints.filter((r) => r.grain === "parcelle"),
-    [otherFootprints]
-  );
-  const otherBuildingFootprints = useMemo(
-    () => otherFootprints.filter((r) => r.grain === "building"),
-    [otherFootprints]
-  );
-  const mainParcelleFootprintsFc = useMemo(
-    () => rowsToFeatureCollection(otherParcelleFootprints),
-    [otherParcelleFootprints]
-  );
-  const mainBuildingFootprintsFc = useMemo(
-    () => rowsToFeatureCollection(otherBuildingFootprints),
-    [otherBuildingFootprints]
-  );
-  /**
-   * - `grain === "building"` : toutes les parcelles de `parcelleHighlightRows` + le polygone building.
-   * - `grain === "parcelle"` (ex. clic BDNB) : `findMatchingV5RowIdForBatimentFootprint` ne retient qu’un
-   *   id canonique, mais `parcelleHighlightRows` liste déjà toutes les parcelles en partage — on les trace
-   *   toutes en style « sélection » pour que chaque cadastre lié (ex. HB 0088 + HB 0093) soit surligné.
-   */
-  const selectedFc = useMemo((): GeoJSON.FeatureCollection => {
-    if (selectedRow.length === 0) {
-      return { type: "FeatureCollection", features: [] };
-    }
-    const anchor = selectedRow[0]!;
-    if (anchor.grain === "building") {
-      const linkedFc = rowsToFeatureCollection(parcelleHighlightRows);
-      const buildingFc = rowsToFeatureCollection(selectedRow);
-      return {
-        type: "FeatureCollection",
-        features: [...linkedFc.features, ...buildingFc.features],
-      };
-    }
-    if (anchor.grain === "parcelle" && parcelleHighlightRows.length > 0) {
-      return rowsToFeatureCollection(parcelleHighlightRows);
-    }
-    return rowsToFeatureCollection(selectedRow);
-  }, [selectedRow, parcelleHighlightRows]);
-
-  /**
-   * react-leaflet GeoJSON ne met pas à jour `data` après le 1er rendu (seulement `style` dans updateGeoJSON).
-   * Sans remontage, les couches restent vides si la 1ère passe était sans entités puis l’API remplit les rows.
-   */
-  const vectorLayersKey = useMemo(() => {
-    const footprintSig = rowIdsSignature(footprintRows);
-    const highlightSig = rowIdsSignature(parcelleHighlightRows);
-    return `fp:${footprintSig}:hl:${highlightSig}:sel:${selectedRowId ?? "-"}`;
-  }, [footprintRows, parcelleHighlightRows, selectedRowId]);
-
-  const bdnbFc = useMemo(
-    (): GeoJSON.FeatureCollection => ({
-      type: "FeatureCollection",
-      features: bdnbBuildingFeatures,
-    }),
-    [bdnbBuildingFeatures]
+  const parkingHighlightFcDisplay = useMemo(
+    () =>
+      simplifyFeatureCollectionForMapDisplay(
+        parkingHighlightFc,
+        toleranceDegForParcelHighlightZoom(viewportZoom)
+      ),
+    [parkingHighlightFc, viewportZoom]
   );
 
-  const bdnbLayerKey = useMemo(() => {
-    const n = bdnbBuildingFeatures.length;
-    if (n === 0) return "bdnb0";
-    const f0 = bdnbBuildingFeatures[0];
-    const id0 =
-      typeof f0?.id === "string" && f0.id
-        ? f0.id
-        : String((f0?.properties as Record<string, unknown> | undefined)?.batiment_construction_id ?? "");
-    return `bdnb${n}:${id0}`;
-  }, [bdnbBuildingFeatures]);
+  const parcelleHighlightKey = useMemo(
+    () =>
+      `pl:${rowIdsSignature(parcelleHighlightRows)}:b:${buildingHighlightFc.features.length}:pk:${parkingHighlightFc.features.length}:sel:${selectedOsmBuildingId ?? "-"}`,
+    [
+      parcelleHighlightRows,
+      buildingHighlightFc.features.length,
+      parkingHighlightFc.features.length,
+      selectedOsmBuildingId,
+    ]
+  );
 
-  /** Dès qu’on affiche du BDNB, l’empreinte parcelle ne doit plus voler les clics sur la majeure partie de la surface. */
-  const hasBdnbFootprints = bdnbBuildingFeatures.length > 0;
+  /** Resize carte : géométries de surbrillance uniquement (pas la sélection → évite reload tuiles MVT au clic). */
+  const mapLayoutRevision = useMemo(
+    () => `pl:${rowIdsSignature(parcelleHighlightRows)}:b:${buildingHighlightFc.features.length}`,
+    [parcelleHighlightRows, buildingHighlightFc.features.length]
+  );
 
-  const showFootprintPolygons = viewportZoom > DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM;
-  /** BDNB + contours « fines » seulement quand les empreintes sont en mode polygone. */
-  const hasBdnbFootprintsForStyle = hasBdnbFootprints && showFootprintPolygons;
+  const buildingHighlightFcDisplay = useMemo(
+    () =>
+      simplifyFeatureCollectionForMapDisplay(
+        buildingHighlightFc,
+        toleranceDegForParcelHighlightZoom(viewportZoom)
+      ),
+    [buildingHighlightFc, viewportZoom]
+  );
 
-  const footprintClusterMarkersCacheRef = useRef<{
+  const comboMarkersCacheRef = useRef<{
     sig: string;
-    markers: { id: string; position: L.LatLngExpression }[];
+    markers: { id: string; position: L.LatLngExpression; osmBuildingIds: string[] }[];
   } | null>(null);
 
-  const footprintClusterMarkers = useMemo(() => {
-    const sig = footprintClusterMarkersSignature(otherFootprints);
-    const cached = footprintClusterMarkersCacheRef.current;
-    if (cached && cached.sig === sig) {
-      return cached.markers;
+  const comboMapMarkers = useMemo(() => {
+    const sig = comboMarkersSignature(comboMarkers);
+    const cached = comboMarkersCacheRef.current;
+    if (cached && cached.sig === sig) return cached.markers;
+    const out: { id: string; position: L.LatLngExpression; osmBuildingIds: string[] }[] = [];
+    for (const m of comboMarkers) {
+      out.push({
+        id: m.comboId,
+        position: [m.position.lat, m.position.lng],
+        osmBuildingIds: m.osmBuildingIds,
+      });
     }
-    const out: { id: string; position: L.LatLngExpression }[] = [];
-    for (const row of otherFootprints) {
-      const c = centroidFromGeoJsonPolygonLike(row.geometry);
-      if (!c) continue;
-      out.push({ id: row.id, position: [c.lat, c.lng] });
-    }
-    footprintClusterMarkersCacheRef.current = { sig, markers: out };
+    comboMarkersCacheRef.current = { sig, markers: out };
     return out;
-  }, [otherFootprints]);
+  }, [comboMarkers]);
 
-  useEffect(() => {
-    discoveryDebug("map", "cluster markers : nouvelle référence de liste (remontage MarkerClusterGroup possible)", {
-      count: footprintClusterMarkers.length,
-    });
-  }, [footprintClusterMarkers]);
+  /** Les combos sont déjà filtrés côté page (`mapBuildingPoints` + filtres) — pas de second passage whitelist. */
+  const clusteredMarkers = comboMapMarkers;
+
+  const mvtWhitelistKey = useMemo(
+    () =>
+      osmBuildingDisplayFilter.mode === "all"
+        ? "all"
+        : `w:${osmBuildingWhitelistSignature(osmBuildingDisplayFilter.ids)}`,
+    [osmBuildingDisplayFilter]
+  );
 
   useEffect(() => {
     discoveryDebug("map", "viewportZoom / mode affichage", {
       viewportZoom,
-      modePolygones: showFootprintPolygons,
+      modePolygones: showBuildingPolygons,
       seuilClusterMaxZoom: DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM,
     });
-  }, [viewportZoom, showFootprintPolygons]);
+  }, [viewportZoom, showBuildingPolygons]);
 
   useEffect(() => {
     discoveryDebug("map", "données carte (clés couches)", {
-      footprintRowCount: footprintRows.length,
-      bdnbFeatureCount: bdnbBuildingFeatures.length,
-      vectorLayersKey,
-      bdnbLayerKey,
+      comboMarkerCount: comboMarkers.length,
+      parcelleHighlightCount: parcelleHighlightRows.length,
+      parcelleHighlightKey,
     });
-  }, [footprintRows.length, bdnbBuildingFeatures.length, vectorLayersKey, bdnbLayerKey]);
+  }, [comboMarkers.length, parcelleHighlightRows.length, parcelleHighlightKey]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -600,133 +648,111 @@ export function DiscoveryMapView({
         maxZoom={19}
       />
       <MapZoomControl variant="minimal" />
-      {/** Pas lier à `vectorLayersKey` : sinon chaque fetch empreintes → invalidateSize → Leaflet recalcule tout. */}
-      <MapResizeInvalidate layoutRevision={bdnbLayerKey} />
+      <MapResizeInvalidate layoutRevision={mapLayoutRevision} />
       <MapBoundsEmitter onViewBoundsChange={onViewBoundsChange} />
       {flyTo != null ? <DiscoveryMapFlyTo flyTo={flyTo} onFlyToConsumed={onFlyToConsumed} /> : null}
-      <MapBackgroundDeselect onDeselect={() => onSelectRowIdRef.current(null)} />
-      <DiscoveryMapZoomBridge onZoom={setViewportZoom} />
-      <>
-        {/**
-         * Clés séparées empreintes matching vs BDNB : évite de remonter toute la pile (dont 600 polygones BDNB)
-         * quand seul `vectorLayersKey` change (ex. léger pan, n 615→618, ids BDNB inchangés).
-         */}
-        <GeoJSON
-          key={`parcelles-hl-${vectorLayersKey}`}
-          data={parcellesFc}
-          style={() =>
-            hasBdnbFootprintsForStyle
-              ? {
-                  ...parcelleCadastreHighlightPath,
-                  fill: false,
-                  fillOpacity: 0,
-                  weight: 2,
-                  color: "#a1a1aa",
-                  opacity: 0.95,
-                }
-              : parcelleCadastreHighlightPath
-          }
+      <MapBackgroundDeselect
+        onDeselect={() => {
+          onSelectComboIdRef.current(null);
+          onSelectOsmBuildingIdRef.current(null);
+          onSelectEnedisIdRef.current(null);
+        }}
+      />
+      <DiscoveryMapZoomBridge
+        onZoom={(z) => {
+          setViewportZoom(z);
+          onViewportZoomChange?.(z);
+        }}
+      />
+      <DiscoveryMvtBuildingsLayer
+        enabled={showBuildingPolygons}
+        osmBuildingDisplayFilter={osmBuildingDisplayFilter}
+        whitelistKey={mvtWhitelistKey}
+        mapClickPassthrough={discoveryEditMode}
+        onOsmBuildingId={(id) => onSelectOsmBuildingIdRef.current(id)}
+      />
+      {!showBuildingPolygons ? (
+        <DiscoveryClusteredBuildings
+          markers={clusteredMarkers}
+          selectedComboId={selectedComboId}
+          onSelectRef={onSelectComboIdRef}
         />
-        {showFootprintPolygons ? (
-          <>
-            <GeoJSON
-              key={`fp-parcelle-${vectorLayersKey}`}
-              data={mainParcelleFootprintsFc}
-              style={(feature) => {
-                const base = styleForFootprintFeature(feature as GeoJSON.Feature, false);
-                if (!hasBdnbFootprintsForStyle) return base;
-                /** Plein parcelle masque le BDNB : avec BDNB, seul le contour reste (bâtiment lisible). */
-                return {
-                  ...base,
-                  interactive: false,
-                  fill: false,
-                  fillOpacity: 0,
-                  color: "#737373",
-                  weight: 1.5,
-                  opacity: 0.92,
-                };
-              }}
-              onEachFeature={(feature, layer) => {
-                if (hasBdnbFootprintsForStyle) return;
-                layer.on("click", (e) => {
-                  L.DomEvent.stopPropagation(e);
-                  const id = feature.properties?.id;
-                  if (typeof id === "string" && id) onSelectRowIdRef.current(id);
-                });
-              }}
-            />
-            <GeoJSON
-              key={`fp-building-${vectorLayersKey}`}
-              data={mainBuildingFootprintsFc}
-              style={(feature) => styleForFootprintFeature(feature as GeoJSON.Feature, false)}
-              onEachFeature={(feature, layer) => {
-                layer.on("click", (e) => {
-                  L.DomEvent.stopPropagation(e);
-                  const id = feature.properties?.id;
-                  if (typeof id === "string" && id) onSelectRowIdRef.current(id);
-                });
-              }}
-            />
-            {hasBdnbFootprints ? (
-              <GeoJSON
-                key={`bdnb-${bdnbLayerKey}`}
-                data={bdnbFc}
-                style={(feature) => {
-                  const f = feature as GeoJSON.Feature;
-                  if (!selectedRowId) return bdnbConstructionPath;
-                  const bid = batimentIdFromBdnbGeoJsonFeature(f);
-                  if (!bid) return bdnbConstructionPath;
-                  const rowId = findMatchingV5RowIdForBatimentFootprint(footprintRows, bid);
-                  const matchesGroup =
-                    rowId != null &&
-                    (rowId === selectedRowId || selectedLinkedParcelleIdSet.has(rowId));
-                  return matchesGroup ? bdnbConstructionSelectedPath : bdnbConstructionPath;
-                }}
-                onEachFeature={(feature, layer) => {
-                  layer.on("click", (e) => {
-                    L.DomEvent.stopPropagation(e);
-                    const bid = batimentIdFromBdnbGeoJsonFeature(feature as GeoJSON.Feature);
-                    if (!bid) return;
-                    const rowId = findMatchingV5RowIdForBatimentFootprint(footprintRowsRef.current, bid);
-                    if (rowId) onSelectRowIdRef.current(rowId);
-                  });
-                }}
-              />
-            ) : null}
-          </>
-        ) : (
-          <DiscoveryClusteredFootprints
-            markers={footprintClusterMarkers}
-            onSelectRef={onSelectRowIdRef}
-          />
-        )}
+      ) : null}
+      {parkingHighlightFcDisplay.features.length > 0 ? (
         <GeoJSON
-          key={`selected-${vectorLayersKey}`}
-          data={selectedFc}
-          style={(feature) => {
-            const f = feature as GeoJSON.Feature;
-            const base = styleForFootprintFeature(f, true);
-            if (hasBdnbFootprintsForStyle && f.properties?.grain !== "building") {
-              return {
-                ...base,
-                fill: false,
-                fillOpacity: 0,
-                color: base.color ?? "#e4e4e7",
-                weight: 1,
-                opacity: 0.98,
-              };
-            }
-            return base;
-          }}
+          key={`parking-hl-${parcelleHighlightKey}`}
+          data={parkingHighlightFcDisplay}
+          style={parkingHighlightStyle}
+          onEachFeature={bindParkingHighlightTooltip}
+        />
+      ) : null}
+      {discoveryEditMode ? (
+        <div
+          className="pointer-events-none absolute left-3 top-3 z-[1000] max-w-[min(100%,20rem)] rounded-lg border border-blue-200/80 bg-white/95 px-3 py-2 text-xs text-foreground shadow-sm"
+          role="status"
+        >
+          {adjacentParcellesLoading
+            ? "Chargement des parcelles voisines…"
+            : "Parcelles voisines : clic pour ajouter (pointillés) ou retirer (plein bleu)."}
+        </div>
+      ) : null}
+      <GeoJSON
+        key={`parcelles-hl-${parcelleHighlightKey}`}
+        data={parcelleHighlightFc}
+        style={() => selectedParcellePath}
+      />
+      {buildingHighlightFcDisplay.features.length > 0 ? (
+        <GeoJSON
+          key={`buildings-hl-${parcelleHighlightKey}`}
+          data={buildingHighlightFcDisplay}
+          style={(feature) => ({
+            ...buildingHighlightStyleForSelection(feature, buildingIdsForHighlight),
+            interactive: !discoveryEditMode,
+          })}
+        />
+      ) : null}
+      {discoveryEditMode && addableParcellesFc.features.length > 0 ? (
+        <GeoJSON
+          key={`parcelles-add-${parcelleHighlightKey}-${addableParcellesFc.features.length}-${effectiveParcelleIds?.size ?? 0}`}
+          data={addableParcellesFc}
+          style={(feature) => addableParcelleStyleForFeature(feature)}
           onEachFeature={(feature, layer) => {
+            const pid = String(feature.properties?.scout_v5_id ?? feature.id ?? "").trim();
+            if (!pid) return;
+            const included = Boolean(
+              (feature.properties as Record<string, unknown> | undefined)?.in_effective
+            );
+            if (layer instanceof L.Path) {
+              layer.options.className = included
+                ? "discovery-adjacent-parcelle-included-path"
+                : "discovery-addable-parcelle-path";
+            }
             layer.on("click", (e) => {
               L.DomEvent.stopPropagation(e);
-              const id = (feature as GeoJSON.Feature).properties?.id;
-              if (typeof id === "string" && id) onSelectRowIdRef.current(id);
+              const nextInclude = !(
+                effectiveParcelleIds?.has(pid) ??
+                (feature.properties as Record<string, unknown> | undefined)?.in_effective ===
+                  true
+              );
+              onToggleAdjacentParcelleRef.current?.(pid, nextInclude);
             });
           }}
         />
-      </>
+      ) : null}
+      {buildingNumberLabels.length > 0 && onToggleDiscoveryBuilding && selectedBuildingIds ? (
+        <DiscoveryComboBuildingNumberLabelsLayer
+          labels={buildingNumberLabels}
+          selectedBuildingIds={selectedBuildingIds}
+          onToggleBuilding={(id) => onToggleDiscoveryBuildingRef.current?.(id)}
+        />
+      ) : null}
+      {enedisPoints.length > 0 ? (
+        <DiscoveryEnedisConsumptionLayer
+          points={enedisPoints}
+          selectedEnedisId={selectedEnedisId}
+          onSelectEnedisId={onSelectEnedisId}
+        />
+      ) : null}
     </Map>
   );
 }

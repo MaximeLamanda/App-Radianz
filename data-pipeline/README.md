@@ -173,18 +173,23 @@ uvicorn scout_pipeline.api:app --reload --port 8787
 
 Next.js : définir **`SCOUT_PIPELINE_API_URL=http://127.0.0.1:8787`** et utiliser le proxy [`/api/scout-pipeline/*`](../app/api/scout-pipeline/%5B...path%5D/route.ts).
 
-## Passerelle parcelles personnes morales (Pessac)
+## Passerelle parcelles personnes morales (Lead Inbox)
 
-Pour enrichir `Lead Inbox` via Postgres (approche table + vue), importer le parquet local :
+Référentiel unique des communes : table **`public.scout_leads_communes`** (`code_insee` en clé primaire). Pour couvrir une commune : `INSERT INTO public.scout_leads_communes (code_insee) VALUES ('33547') ON CONFLICT DO NOTHING;` puis importer le parquet PPM pour cet INSEE (voir `import_parcelles_personnes_morales.py --code-insee=…`).
+
+La vue **`public.scout_leads_enriched`** joint `scout_leads` et l’agrégation PPM sur **tous** les `code_insee` présents dans `scout_leads_communes`. `GET /api/leads` lit cette vue.
+
+Import exemple (schéma + PPM pour Pessac, idempotent par commune) :
 
 ```bash
 npm run import:parcelles-pessac
 ```
 
-Cette commande :
-- applique `data-pipeline/sql/001_scout_schema.sql` (si nécessaire),
-- recharge `public.parcelles_personnes_morales` pour `code_insee=33318`,
-- alimente la vue `public.scout_leads_pessac_enriched` utilisée par `GET /api/leads`.
+Cette commande applique `data-pipeline/sql/001_scout_schema.sql` si besoin, recharge `parcelles_personnes_morales` pour `33318`, et s’appuie sur `scout_leads_communes` + `scout_leads_enriched` pour l’API leads.
+
+### Migration depuis `scout_leads_pessac_enriched`
+
+Si la base a encore l’ancienne vue : exécuter une fois dans Postgres le bloc allant de `CREATE TABLE … scout_leads_communes` jusqu’à `DROP VIEW … scout_leads_pessac_enriched` dans [`sql/001_scout_schema.sql`](sql/001_scout_schema.sql) (rejeu du fichier entier sur une base neuve est aussi valide).
 
 ## Téléversement Neon
 

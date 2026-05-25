@@ -4,6 +4,7 @@ pyarrow>=14.0
 pyproj>=3.6
 shapely>=2.0
 geopandas>=0.14
+py7zr>=0.21
 psycopg2-binary>=2.9
 fastapi>=0.109
 uvicorn[standard]>=0.27

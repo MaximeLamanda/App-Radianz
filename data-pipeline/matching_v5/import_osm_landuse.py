@@ -42,8 +42,25 @@ DEFAULT_ALLOWED_LANDUSE = (
     "depot",
     "cemetery",
     "farmyard",
+    "farmland",
+    "meadow",
+    "orchard",
+    "vineyard",
+    "recreation_ground",
+    "allotments",
     "brownfield",
     "construction",
+)
+
+# Polygones fermés avec leisure=* (stade, piscine, etc.) — même table `osm_landuse_areas`, colonne `landuse` = valeur leisure.
+DEFAULT_ALLOWED_LEISURE = (
+    "sports_centre",
+    "stadium",
+    "pitch",
+    "track",
+    "golf_course",
+    "swimming_pool",
+    "marina",
 )
 
 DATABASE_URL_ENV_KEYS = [
@@ -136,11 +153,34 @@ def build_landuse_matcher(allowed_csv: str) -> Callable[[str], str | None]:
     return match
 
 
+def build_leisure_matcher(allowed_csv: str) -> Callable[[str], str | None]:
+    if not (allowed_csv or "").strip():
+        allowed = list(DEFAULT_ALLOWED_LEISURE)
+    else:
+        allowed = [x.strip() for x in allowed_csv.split(",") if x.strip()]
+    allowed_cf = frozenset(a.casefold() for a in allowed)
+
+    def match(raw: str) -> str | None:
+        t = (raw or "").strip()
+        if not t:
+            return None
+        if t.casefold() in allowed_cf:
+            return t
+        return None
+
+    return match
+
+
 class PbfLanduseCollector(osmium.SimpleHandler):
-    def __init__(self, landuse_match: Callable[[str], str | None]) -> None:
+    def __init__(
+        self,
+        landuse_match: Callable[[str], str | None],
+        leisure_match: Callable[[str], str | None],
+    ) -> None:
         super().__init__()
         self._wkb = osmium.geom.WKBFactory()
         self._landuse_match = landuse_match
+        self._leisure_match = leisure_match
         self.rows: list[tuple[str, int, str, str, dict[str, str]]] = []
         self._seen: set[tuple[str, int]] = set()
         self.ways_kept = 0
@@ -174,6 +214,8 @@ class PbfLanduseCollector(osmium.SimpleHandler):
         tags = tags_dict(dict(w.tags))
         lu = self._landuse_match(str(tags.get("landuse") or ""))
         if lu is None:
+            lu = self._leisure_match(str(tags.get("leisure") or ""))
+        if lu is None:
             self.skipped_tag += 1
             return
         if not w.is_closed():
@@ -189,6 +231,8 @@ class PbfLanduseCollector(osmium.SimpleHandler):
     def area(self, a: osmium.osm.Area) -> None:
         tags = tags_dict(dict(a.tags))
         lu = self._landuse_match(str(tags.get("landuse") or ""))
+        if lu is None:
+            lu = self._leisure_match(str(tags.get("leisure") or ""))
         if lu is None:
             self.skipped_tag += 1
             return
@@ -245,7 +289,13 @@ def main() -> int:
         "--allowed-landuse",
         type=str,
         default="",
-        help="Liste CSV (sinon valeurs par défaut industrial,commercial,...)",
+        help="Liste CSV (sinon valeurs par défaut industrial,commercial,..., farmland, recreation_ground, …)",
+    )
+    ap.add_argument(
+        "--allowed-leisure",
+        type=str,
+        default="",
+        help="Liste CSV de leisure=* sur polygones (sinon sports_centre,stadium,pitch,…). Stocké comme landuse en base.",
     )
     args = ap.parse_args()
 
@@ -278,7 +328,8 @@ def main() -> int:
         return 1
 
     matcher = build_landuse_matcher(args.allowed_landuse or "")
-    collector = PbfLanduseCollector(matcher)
+    leisure_matcher = build_leisure_matcher(args.allowed_leisure or "")
+    collector = PbfLanduseCollector(matcher, leisure_matcher)
     print(f"[osm_landuse] Lecture PBF: {args.input}", flush=True)
     collector.apply_file(str(args.input), locations=True, idx="flex_mem")
 

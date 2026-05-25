@@ -3,15 +3,17 @@
  * `data-pipeline/matching_v5/run_matching_v5.py` (défaut public/geo/matching-v5-33318.geojson).
  */
 
-import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
+import { latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
 import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
+import { parseParkingsJson, type V5ParkingEntry } from "@/lib/matching-v5-parking";
 
 export type ScoutMatchingV5Grain = "building" | "parcelle";
 
 export type ScoutMatchingV5Row = {
   id: string;
   grain: ScoutMatchingV5Grain;
-  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  /** Polygone complet (detail) ou `Point` (overview carte). */
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | GeoJSON.Point;
   /** Titre court pour la liste latérale */
   label: string;
   batimentConstructionId: string | null;
@@ -24,8 +26,6 @@ export type ScoutMatchingV5Row = {
   codeInsee: string;
   section: string;
   numeroNorm: string;
-  codeIris: string;
-  nomIris: string;
   nbBatiments: number;
   footprintSumM2: number;
   sirenStatus: string;
@@ -38,9 +38,15 @@ export type ScoutMatchingV5Row = {
   matchingReason: string;
   passerelleAddress: string;
   passerelleAddressesJson: string;
+  /** Adresse confirmée (cascade OSM / PPM / BAN / SIRENE). */
+  displayAddress?: string;
+  displayAddressSource?: string;
+  displayAddressConfidence?: string;
   parcellesJson: string;
   buildingsJson: string;
   buildingGeometriesJson: string;
+  /** Polygones parking liés (`parking_geometries_json` / properties). */
+  parkingGeometriesJson?: string;
   /** POI OSM dans la parcelle (export matching V5, `osm_pois_json`). */
   osmPoisJson?: string;
   osmPoiCount?: number;
@@ -126,11 +132,11 @@ export function formatV5OsmPoiTypeLabelForDisplay(raw: string): string {
   return `${cat} — ${pretty}`;
 }
 
-function parseGeometry(g: unknown): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+function parseGeometry(g: unknown): GeoJSON.Polygon | GeoJSON.MultiPolygon | GeoJSON.Point | null {
   if (!g || typeof g !== "object") return null;
   const t = (g as { type?: string }).type;
-  if (t === "Polygon" || t === "MultiPolygon") {
-    return g as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  if (t === "Polygon" || t === "MultiPolygon" || t === "Point") {
+    return g as GeoJSON.Polygon | GeoJSON.MultiPolygon | GeoJSON.Point;
   }
   return null;
 }
@@ -201,6 +207,7 @@ export type V5BuildingsJsonEntry = {
   matchingStatus: string;
   matchingDecision: string;
   matchingSirenSelected: string;
+  parkings?: V5ParkingEntry[];
 };
 
 export type V5BuildingGeometryEntry = {
@@ -262,14 +269,20 @@ const V5_ZONE_TAG_FR_LABELS: Record<string, string> = {
   industrial: "Industriel",
   commercial: "Commercial",
   retail: "Commerce",
-  residential: "Résidentiel",
-  education: "Éducation",
+  residential: "Zone résidentielle",
+  education: "École · université · campus",
   religious: "Religieux",
   military: "Militaire",
   port: "Port",
   depot: "Dépôt",
   cemetery: "Cimetière",
-  farmyard: "Agricole",
+  farmyard: "Cour d'exploitation agricole",
+  farmland: "Zone agricole",
+  meadow: "Prairie / zone ouverte",
+  orchard: "Verger",
+  vineyard: "Vignoble",
+  recreation_ground: "Terrain de loisirs / sport (landuse)",
+  allotments: "Jardins familiaux",
   brownfield: "Friche",
   construction: "Chantier",
   office: "Bureaux",
@@ -292,6 +305,11 @@ const V5_ZONE_TAG_FR_LABELS: Record<string, string> = {
   government: "Administration",
   sports_centre: "Centre sportif",
   stadium: "Stade",
+  pitch: "Terrain de sport",
+  track: "Piste (athlétisme / course)",
+  golf_course: "Golf",
+  swimming_pool: "Piscine (complexe)",
+  marina: "Port de plaisance",
   greenhouse: "Serre",
   farm: "Ferme",
 };
@@ -361,7 +379,83 @@ export function parseMatchingV5BuildingsJson(raw: string): V5BuildingsJsonEntry[
         matchingStatus: strProp(o.matching_status),
         matchingDecision: strProp(o.matching_decision),
         matchingSirenSelected: strProp(o.matching_siren_selected),
+        parkings: parseParkingsJson(o.parkings_json),
       });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Somme des empreintes (m²) sur un cluster parcelle sans double-compter un même
+ * `batiment_construction_id` listé dans plusieurs `buildings_json`.
+ * Retourne `null` si aucun bâtiment parseable (repli sur `footprintSumM2` par parcelle).
+ */
+export function footprintSumM2DedupedFromParcelleCluster(
+  parcels: ScoutMatchingV5Row[]
+): number | null {
+  const byBc = new Map<string, number>();
+  for (const pr of parcels) {
+    for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
+      const bc = b.batimentConstructionId.trim();
+      if (!bc || byBc.has(bc)) continue;
+      const fp = b.footprintM2;
+      byBc.set(
+        bc,
+        fp != null && Number.isFinite(fp) && fp > 0 ? fp : 0
+      );
+    }
+  }
+  if (byBc.size === 0) return null;
+  let sum = 0;
+  for (const fp of byBc.values()) {
+    if (fp > 0) sum += fp;
+  }
+  return sum;
+}
+
+/** Même format que `isValidOsmBuildingId` côté Discovery (`w:123`, etc.). */
+const PIPELINE_OSM_BUILDING_ID_RE = /^[wnr]:\d{1,20}$/;
+
+/**
+ * Liste les `osm_building_id` valides dans `buildings_json` sans exiger `batiment_construction_id`.
+ * Utile pour la whitelist carte (MVT / clusters) : `parseMatchingV5BuildingsJson` ignore les entrées sans BC.
+ */
+export function listValidOsmBuildingIdsInBuildingsJson(raw: string): string[] {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s) as unknown;
+    if (!Array.isArray(v)) return [];
+    const out: string[] = [];
+    for (const item of v) {
+      if (!item || typeof item !== "object") continue;
+      const id = strProp((item as Record<string, unknown>).osm_building_id);
+      if (id && PIPELINE_OSM_BUILDING_ID_RE.test(id)) out.push(id);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Liste les `osm_building_id` dans `building_geometries_json` sans exiger `batiment_construction_id`
+ * ni géométrie parsable (aligné tuiles MVT / `scout_matching_v5_buildings_mv`).
+ */
+export function listValidOsmBuildingIdsInBuildingGeometriesJson(raw: string): string[] {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s) as unknown;
+    if (!Array.isArray(v)) return [];
+    const out: string[] = [];
+    for (const item of v) {
+      if (!item || typeof item !== "object") continue;
+      const id = strProp((item as Record<string, unknown>).osm_building_id);
+      if (id && PIPELINE_OSM_BUILDING_ID_RE.test(id)) out.push(id);
     }
     return out;
   } catch {
@@ -382,6 +476,7 @@ export function parseMatchingV5BuildingGeometriesJson(raw: string): V5BuildingGe
       const bc = strProp(o.batiment_construction_id);
       const geometry = parseGeometry(o.geometry);
       if (!bc || !geometry) continue;
+      if (geometry.type === "Point") continue;
       out.push({
         batimentConstructionId: bc,
         bdnbBatimentConstructionId: strProp(o.bdnb_batiment_construction_id) || null,
@@ -415,20 +510,22 @@ export function collectMatchingV5BuildingFeatures(rows: ScoutMatchingV5Row[]): G
   const byId = new Map<string, GeoJSON.Feature>();
   for (const row of rows) {
     if (row.grain === "building") {
-      const id = String(row.batimentConstructionId || row.batimentGroupeId || "").trim();
-      if (!id || byId.has(id)) continue;
-      byId.set(id, {
-        type: "Feature",
-        id: `bdnbcstr:${id}`,
-        geometry: row.geometry,
-        properties: {
-          batiment_construction_id: row.batimentConstructionId,
-          bdnb_batiment_construction_id: row.bdnbBatimentConstructionId,
-          osm_building_id: row.osmBuildingId,
-          batiment_groupe_id: row.batimentGroupeId,
-          footprint_m2: row.footprintSumM2,
-        },
-      });
+      if (row.geometry.type === "Polygon" || row.geometry.type === "MultiPolygon") {
+        const id = String(row.batimentConstructionId || row.batimentGroupeId || "").trim();
+        if (!id || byId.has(id)) continue;
+        byId.set(id, {
+          type: "Feature",
+          id: `bdnbcstr:${id}`,
+          geometry: row.geometry,
+          properties: {
+            batiment_construction_id: row.batimentConstructionId,
+            bdnb_batiment_construction_id: row.bdnbBatimentConstructionId,
+            osm_building_id: row.osmBuildingId,
+            batiment_groupe_id: row.batimentGroupeId,
+            footprint_m2: row.footprintSumM2,
+          },
+        });
+      }
       continue;
     }
     for (const entry of parseMatchingV5BuildingGeometriesJson(row.buildingGeometriesJson)) {
@@ -687,15 +784,28 @@ function cadastreParcelHeroLabels(rows: ScoutMatchingV5Row[]): string {
   return parts.join(" · ");
 }
 
+/** Adresse d'affichage confirmée (pipeline `display_address`). */
+export function confirmedDisplayAddressFromRow(row: ScoutMatchingV5Row): string {
+  const confidence =
+    strProp(row.displayAddressConfidence) || strProp(row.properties?.display_address_confidence);
+  if (confidence !== "confirmed") return "";
+  return strProp(row.displayAddress) || strProp(row.properties?.display_address);
+}
+
 /**
- * Ligne d’adresse sous le titre Découverte : adresse du POI Google (Place Details / Nearby),
- * sinon adresse taguée d’un POI OSM, sinon adresses passerelle (PPM), sinon libellé cadastral.
+ * Ligne d’adresse sous le titre Découverte : `display_address` confirmée, puis POI Google,
+ * OSM POI, passerelle PPM, libellé cadastral.
  */
 export function formatDiscoveryDrawerHeroAddress(
   row: ScoutMatchingV5Row,
   parcelleCluster: ScoutMatchingV5Row[]
 ): string {
   const poiSources = matchingV5SourceRowsForPoiDiscovery(row, parcelleCluster);
+  const displayParts = uniqueTrimmedPropStrings(
+    poiSources.map((r) => confirmedDisplayAddressFromRow(r))
+  );
+  if (displayParts.length === 1) return displayParts[0]!;
+  if (displayParts.length > 1) return displayParts.join(" · ");
 
   const googleAnchors = uniqueTrimmedPropStrings(
     poiSources.map((r) => strProp(r.properties?.google_anchor_address))
@@ -760,6 +870,121 @@ export function formatDiscoveryDrawerHeroAddress(
   if (cad) return cad;
 
   return "Adresse non renseignée";
+}
+
+/** Source de l’adresse affichée sous le titre Discovery (alignée sur `formatDiscoveryDrawerHeroAddress`). */
+export type DiscoveryDrawerHeroAddressSource =
+  | "osm"
+  | "ppm"
+  | "ban_reverse"
+  | "sirene"
+  | "google"
+  | "osm_poi"
+  | "cadastre"
+  | "mixed";
+
+function displayAddressSourceFromRow(row: ScoutMatchingV5Row): DiscoveryDrawerHeroAddressSource | null {
+  if (!confirmedDisplayAddressFromRow(row)) return null;
+  const raw =
+    strProp(row.displayAddressSource) || strProp(row.properties?.display_address_source);
+  if (raw === "osm" || raw === "ppm" || raw === "ban_reverse" || raw === "sirene") {
+    return raw;
+  }
+  return null;
+}
+
+/**
+ * Source de la ligne d’adresse hero Discovery (même priorité que `formatDiscoveryDrawerHeroAddress`).
+ * `null` si adresse absente ou libellé cadastral seul sans source explicite.
+ */
+export function resolveDiscoveryDrawerHeroAddressSource(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): DiscoveryDrawerHeroAddressSource | null {
+  const poiSources = matchingV5SourceRowsForPoiDiscovery(row, parcelleCluster);
+  const displaySourceSet = new Set<DiscoveryDrawerHeroAddressSource>();
+  for (const r of poiSources) {
+    const s = displayAddressSourceFromRow(r);
+    if (s) displaySourceSet.add(s);
+  }
+  const hasDisplay = poiSources.some((r) => Boolean(confirmedDisplayAddressFromRow(r)));
+  if (hasDisplay) {
+    if (displaySourceSet.size === 0) return null;
+    if (displaySourceSet.size === 1) return [...displaySourceSet][0]!;
+    return "mixed";
+  }
+
+  const googleAnchors = uniqueTrimmedPropStrings(
+    poiSources.map((r) => strProp(r.properties?.google_anchor_address))
+  );
+  if (googleAnchors.length > 0) return "google";
+
+  const winnerIds = new Set(
+    poiSources.map((r) => strProp(r.properties?.google_winner_place_id)).filter(Boolean)
+  );
+  const ranked: V5GoogleNearbyRankedEntry[] = [];
+  for (const r of poiSources) {
+    ranked.push(...parseGoogleNearbyRankedJson(r.properties?.google_nearby_ranked_json));
+  }
+  ranked.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  if (winnerIds.size > 0) {
+    for (const e of ranked) {
+      const pid = strProp(e.place_id);
+      if (!pid || !winnerIds.has(pid)) continue;
+      if (strProp(e.vicinity)) return "google";
+    }
+  }
+  for (const e of ranked) {
+    if (strProp(e.vicinity)) return "google";
+  }
+
+  const parcellesForOsm =
+    parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [];
+  for (const poi of mergeOsmPoisFromParcelleRows(parcellesForOsm)) {
+    if (strProp(poi.address)) return "osm_poi";
+  }
+
+  const passerelleRows =
+    parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [];
+  const pushPasserelle = (s: string) => Boolean(strProp(s));
+  for (const pr of passerelleRows) {
+    if (pushPasserelle(pr.passerelleAddress)) return "ppm";
+    for (const p of parsePasserelleAddressesJson(pr.passerelleAddressesJson)) {
+      if (pushPasserelle(strProp(p.address))) return "ppm";
+    }
+  }
+  if (row.grain === "building") {
+    if (pushPasserelle(row.passerelleAddress)) return "ppm";
+    for (const p of parsePasserelleAddressesJson(row.passerelleAddressesJson)) {
+      if (pushPasserelle(strProp(p.address))) return "ppm";
+    }
+  }
+
+  const cadastreRows =
+    passerelleRows.length > 0 ? passerelleRows : row.grain === "parcelle" ? [row] : [];
+  if (cadastreParcelHeroLabels(cadastreRows)) return "cadastre";
+
+  return null;
+}
+
+const DISCOVERY_HERO_ADDRESS_SOURCE_LABEL_FR: Record<DiscoveryDrawerHeroAddressSource, string> =
+  {
+    osm: "OSM",
+    ppm: "PPM",
+    ban_reverse: "BAN",
+    sirene: "SIRENE",
+    google: "Google",
+    osm_poi: "OSM",
+    cadastre: "Cadastre",
+    mixed: "Mixte",
+  };
+
+/** Libellé court pour badge discret à côté de l’adresse Discovery. */
+export function formatDiscoveryDrawerHeroAddressSourceLabel(
+  source: DiscoveryDrawerHeroAddressSource | null | undefined
+): string {
+  if (!source) return "";
+  return DISCOVERY_HERO_ADDRESS_SOURCE_LABEL_FR[source] ?? "";
 }
 
 /** Identifiants `batiment_construction_id` avec `matching_status === "partage"` dans buildings_json. */
@@ -1133,6 +1358,12 @@ export function collectSirensFromMatchingV5Rows(rows: ScoutMatchingV5Row[]): str
  * Centroïde pour un groupe de parcelles : moyenne des centroïdes pondérée par l’aire cadastrale (m²)
  * approximée sur chaque polygone (pas d’union géométrique exacte).
  */
+function geometryWeightM2ForCentroid(row: ScoutMatchingV5Row): number {
+  const g = row.geometry;
+  if (g.type === "Point") return Math.max(1, row.footprintSumM2);
+  return Math.max(1, polygonAreaM2ApproxWgs84(g));
+}
+
 export function centroidWeightedFromParcelleRowGeometries(
   rows: ScoutMatchingV5Row[]
 ): { lat: number; lng: number } | null {
@@ -1141,9 +1372,9 @@ export function centroidWeightedFromParcelleRowGeometries(
   let sumW = 0;
   for (const r of rows) {
     if (r.grain !== "parcelle") continue;
-    const c = centroidFromGeoJsonPolygonLike(r.geometry);
+    const c = latLngFromMatchingGeometry(r.geometry);
     if (!c) continue;
-    const w = Math.max(1, polygonAreaM2ApproxWgs84(r.geometry));
+    const w = geometryWeightM2ForCentroid(r);
     sumLat += c.lat * w;
     sumLng += c.lng * w;
     sumW += w;
@@ -1192,8 +1423,6 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     const section = strProp(p.section);
     const numeroNorm = strProp(p.numero_norm);
     const codeInsee = strProp(p.code_insee);
-    const codeIris = strProp(p.code_iris);
-    const nomIris = strProp(p.nom_iris);
     const nb = Number(strProp(p.nb_batiments));
     const nbBatiments = Number.isFinite(nb) ? Math.max(0, Math.trunc(nb)) : 0;
     const fs = Number(strProp(p.footprint_sum_m2));
@@ -1207,6 +1436,9 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     const matchingConfidence = Number.isFinite(matchingConfidenceRaw) ? Math.max(0, matchingConfidenceRaw) : 0;
     const passerelleAddress = strProp(p.passerelle_address);
     const passerelleAddressesJson = strProp(p.passerelle_addresses_json);
+    const displayAddress = strProp(p.display_address);
+    const displayAddressSource = strProp(p.display_address_source);
+    const displayAddressConfidence = strProp(p.display_address_confidence);
     const osmPoisJson = strProp(p.osm_pois_json);
     const osmPoiCountRaw = Number(strProp(p.osm_poi_count));
     const osmPoiCount = Number.isFinite(osmPoiCountRaw) ? Math.max(0, Math.trunc(osmPoiCountRaw)) : 0;
@@ -1224,7 +1456,7 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     } else {
       label =
         section && numeroNorm
-          ? `Parcelle ${section} ${numeroNorm}${codeIris ? ` · ${codeIris}` : ""}`
+          ? `Parcelle ${section} ${numeroNorm}`
           : `Parcelle ${codeInsee || "—"}`;
     }
     rows.push({
@@ -1242,8 +1474,6 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
       codeInsee,
       section,
       numeroNorm,
-      codeIris,
-      nomIris,
       nbBatiments,
       footprintSumM2,
       sirenStatus,
@@ -1256,9 +1486,14 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
       matchingReason: strProp(p.matching_reason),
       passerelleAddress,
       passerelleAddressesJson,
+      displayAddress: displayAddress || undefined,
+      displayAddressSource: displayAddressSource || undefined,
+      displayAddressConfidence: displayAddressConfidence || undefined,
       parcellesJson: strProp(p.parcelles_json),
-      buildingsJson: strProp(p.buildings_json),
+      /** JSONB / tableau natif côté API : `strProp` produirait `[object Object]` et casserait le parsing. */
+      buildingsJson: jsonStringProp(p.buildings_json),
       buildingGeometriesJson: jsonStringProp(p.building_geometries_json),
+      parkingGeometriesJson: jsonStringProp(p.parking_geometries_json),
       osmPoisJson,
       osmPoiCount,
       osmPoisStatus,
@@ -1268,7 +1503,11 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     });
   }
   if (rows.length === 0) {
-    return { rows: [], error: "Aucune entité avec géométrie valide (Polygon/MultiPolygon)" };
+    return {
+      rows: [],
+      error:
+        "Aucune ligne reconnue : id/scout_v5_id manquant ou géométrie non prise en charge (Point en mode aperçu, polygone en détail).",
+    };
   }
   return { rows, error: null };
 }

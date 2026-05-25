@@ -15,7 +15,8 @@ Les schémas SQL sont dans [`../sql/`](../sql/). Les sorties V5 vont sous [`../o
 | `public.scout_leads` | Leads consolidés (ETL SIRENE → BDNB). |
 | `public.parcelles_personnes_morales` | Parcelles → SIREN. |
 | `public.cadastre_france_feuilles_geom` | Parcelles cadastrales locales. |
-| `public.scout_leads_pessac_enriched` | Vue leads Pessac enrichis. |
+| `public.scout_leads_communes` | INSEE actifs pour la Lead Inbox (INSERT pour ajouter une commune). |
+| `public.scout_leads_enriched` | Vue leads enrichis (PPM + périmètre `scout_leads_communes`). |
 | `public.scout_matching_v5_features` | Résultats discovery V5 (GeoJSON équivalent en table ; rempli avec `run_matching_v5.py --write-postgres`). |
 
 Fichiers : [`../sql/001_scout_schema.sql`](../sql/001_scout_schema.sql), [`../sql/002_scout_bdnb_poi_sample.sql`](../sql/002_scout_bdnb_poi_sample.sql), [`../sql/003_scout_matching_v5_features.sql`](../sql/003_scout_matching_v5_features.sql).

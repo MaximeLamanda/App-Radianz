@@ -13,8 +13,24 @@
  *   node scripts/import-bdnb-postgres.mjs --data-dir=... --all --departements=33
  *     → tout le périmètre CSV pour les départements listés
  *
+ * Surface empreinte groupe (Lambert 2154) :
+ *   --min-groupe-area-m2=400 (défaut si ni flag ni BDNB_MIN_GROUPE_AREA_M2) : ne garde que les
+ *   batiment_groupe dont ST_Area(geom_groupe) >= seuil. Pour un MultiPolygon, l’aire = somme des
+ *   polygones (bâtiment seul large ou groupe dont la somme des empreintes atteint le seuil).
+ *   --min-groupe-area-m2=0 : pas de filtre surface (import complet sur le périmètre communal / dept).
+ *
+ * Avancement (stdout) :
+ *   --progress-every=N : jalon toutes les N lignes CSV lues par fichier (défaut 100000 en mode commune)
+ *   En mode --all --departements=… sans --progress-every= explicite, défaut 5000 (progression plus granulaire).
+ *   --progress-every=0 : désactiver les jalons intermédiaires
+ *   --quiet : pas de jalons (sauf erreurs)
+ *
+ * Les messages d’avancement vont sur stdout (console.log), pas stderr — pour rester visibles
+ * là où seuls les logs « npm » / stdout sont affichés.
+ *
  * Env :
  *   BDNB_BUILDINGS_TABLE — défaut public.bdnb_buildings (voir lib/bdnb-buildings-table.ts)
+ *   BDNB_MIN_GROUPE_AREA_M2 — seuil m² si le flag --min-groupe-area-m2= est absent (0 = désactiver ; le flag CLI prime)
  *
  * Schéma : la table inclut toutes les colonnes issues des CSV staging (FFO, DPE, usage, départements).
  * Si une base a encore l’ancienne table (moins de colonnes), supprimer la table ou lancer sans --append
@@ -23,6 +39,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { Transform } from "node:stream";
 import { Client } from "pg";
 import { from as copyFrom } from "pg-copy-streams";
 import { resolveDatabaseUrl } from "./lib/resolve-database-url.mjs";
@@ -85,23 +102,126 @@ function formatSemicolonCsvField(v) {
 }
 
 /**
- * @param {{ filter?: (fullRow: Record<string, string>) => boolean }} opts
+ * @param {{
+ *   filter?: (fullRow: Record<string, string>) => boolean;
+ *   progressLabel?: string;
+ *   progressEvery?: number;
+ *   quiet?: boolean;
+ *   clearDdlHeartbeat?: () => void;
+ * }} opts
  */
-async function copyCsvSelectedColumns(client, { table, columns, filePath, filter }) {
+async function copyCsvSelectedColumns(
+  client,
+  {
+    table,
+    columns,
+    filePath,
+    filter,
+    progressLabel,
+    progressEvery = 100_000,
+    quiet = false,
+    clearDdlHeartbeat,
+  }
+) {
+  clearDdlHeartbeat?.();
+
   const sql = `COPY ${table}(${columns.join(",")}) FROM STDIN WITH (FORMAT csv, DELIMITER ';', HEADER true, QUOTE '\"')`;
+  const label = progressLabel || path.basename(filePath);
+  const every = Math.max(0, Number(progressEvery) || 0);
+  const t0 = Date.now();
+
+  if (!quiet) {
+    let sizeHint = "";
+    try {
+      const bytes = fs.statSync(filePath).size;
+      sizeHint = ` — fichier ${(bytes / (1024 * 1024)).toFixed(1)} Mio`;
+    } catch {
+      /* ignore */
+    }
+    const freq =
+      every <= 0 ? "sans jalons intermédiaires" : `jalon toutes les ${every.toLocaleString("fr-FR")} lignes lues`;
+    console.log(`[bdnb] ${label}${sizeHint} ; ${freq}`);
+    console.log(
+      `[bdnb] ${label}: chaque ligne CSV peut être très longue (WKT géom_groupe). ` +
+        "readline n’émet un événement qu’après une ligne complète : les jalons « par ligne » peuvent rester silencieux longtemps ; pulsation toutes les 12s ci-dessous."
+    );
+  }
 
   await new Promise((resolve, reject) => {
     const copyStream = client.query(copyFrom(sql));
-    copyStream.on("error", reject);
-    copyStream.on("finish", resolve);
+    let linesRead = 0;
+    let linesWritten = 0;
+    let header = null;
+    /** @type {ReturnType<typeof setInterval> | null} */
+    let heartbeat = null;
+
+    const clearHb = () => {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+    };
+
+    const rejectWithCleanup = (err) => {
+      clearHb();
+      reject(err);
+    };
+
+    copyStream.on("error", rejectWithCleanup);
+    copyStream.on("finish", () => {
+      clearHb();
+      resolve();
+    });
+
+    /** Octets déjà passés dans le fichier (chunks) — avance pendant l’assemblage d’une ligne WKT géante (readline). */
+    let rawBytesIn = 0;
+    const byteCount = new Transform({
+      transform(chunk, _enc, cb) {
+        rawBytesIn += chunk.length;
+        cb(null, chunk);
+      },
+    });
+    byteCount.on("error", rejectWithCleanup);
+
+    const fileIn = fs.createReadStream(filePath);
+    fileIn.on("error", rejectWithCleanup);
+    fileIn.pipe(byteCount);
 
     const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
+      input: byteCount,
       crlfDelay: Infinity,
     });
 
-    let header = null;
+    if (!quiet) {
+      heartbeat = setInterval(() => {
+        const elapsedS = ((Date.now() - t0) / 1000).toFixed(0);
+        const stuckOnFirstData =
+          header !== null && linesRead === 0 ? " (0 ligne complète encore ; lecture WKT en cours ou parse synchrone)" : "";
+        const mibRaw = (rawBytesIn / (1024 * 1024)).toFixed(2);
+        console.log(
+          `[bdnb] ${label}: pulsation +${elapsedS}s — ${linesRead.toLocaleString("fr-FR")} ligne(s) CSV terminée(s), ` +
+            `${linesWritten.toLocaleString("fr-FR")} ligne(s) COPY ; flux brut ${mibRaw} Mio lus${stuckOnFirstData}`
+        );
+      }, 12_000);
+    }
+
     let idxs = null;
+
+    const maybeLog = () => {
+      if (quiet) return;
+      const elapsedS = ((Date.now() - t0) / 1000).toFixed(1);
+      if (linesRead === 1) {
+        console.log(`[bdnb] ${label}: première ligne CSV de données lue [+${elapsedS}s]`);
+      }
+      if (every <= 0) return;
+      if (linesRead > 0 && linesRead % every === 0) {
+        console.log(
+          `[bdnb] ${label}: ${linesRead.toLocaleString("fr-FR")} ligne(s) CSV lue(s), ` +
+            `${linesWritten.toLocaleString("fr-FR")} ligne(s) envoyée(s) au COPY (filtre inclus) ` +
+            `[+${elapsedS}s]`
+        );
+      }
+    };
 
     rl.on("line", (line) => {
       if (header === null) {
@@ -116,23 +236,37 @@ async function copyCsvSelectedColumns(client, { table, columns, filePath, filter
       }
 
       if (!line) return;
+      linesRead += 1;
       const fields = parseSemicolonCsvLine(line);
       if (filter) {
         const fullRow = {};
         for (let i = 0; i < header.length; i++) {
           fullRow[header[i]] = fields[i] ?? "";
         }
-        if (!filter(fullRow)) return;
+        if (!filter(fullRow)) {
+          maybeLog();
+          return;
+        }
       }
+      linesWritten += 1;
       const picked = idxs.map((i) => formatSemicolonCsvField(fields[i] ?? ""));
       copyStream.write(picked.join(";") + "\n");
+      maybeLog();
     });
 
     rl.on("close", () => {
+      clearHb();
+      if (!quiet) {
+        const totalS = ((Date.now() - t0) / 1000).toFixed(1);
+        console.log(
+          `[bdnb] ${label}: terminé en ${totalS}s — ${linesRead.toLocaleString("fr-FR")} ligne(s) lue(s), ` +
+            `${linesWritten.toLocaleString("fr-FR")} ligne(s) insérée(s) via COPY`
+        );
+      }
       copyStream.end();
     });
 
-    rl.on("error", reject);
+    rl.on("error", rejectWithCleanup);
   });
 }
 
@@ -159,10 +293,20 @@ function parseArgs() {
   let append = false;
   let dataDir = null;
   let departements = null;
+  let progressEvery = 100_000;
+  let progressEveryExplicit = false;
+  let quiet = false;
+  /** @type {number | undefined} */
+  let minGroupeAreaM2Cli = undefined;
   for (const a of argv) {
     if (a === "--all") all = true;
     else if (a === "--append") append = true;
-    else if (a.startsWith("--data-dir="))
+    else if (a === "--quiet") quiet = true;
+    else if (a.startsWith("--progress-every=")) {
+      progressEveryExplicit = true;
+      const n = parseInt(a.slice("--progress-every=".length).trim(), 10);
+      if (!Number.isNaN(n)) progressEvery = Math.max(0, n);
+    } else if (a.startsWith("--data-dir="))
       dataDir = path.resolve(process.cwd(), a.slice("--data-dir=".length).trim());
     else if (a.startsWith("--departements="))
       departements = a
@@ -179,11 +323,32 @@ function parseArgs() {
         .map((s) => s.trim())
         .filter(Boolean);
     } else if (a.startsWith("--commune=")) commune = a.slice("--commune=".length).trim();
+    else if (a.startsWith("--min-groupe-area-m2=")) {
+      const raw = a.slice("--min-groupe-area-m2=".length).trim();
+      minGroupeAreaM2Cli = Number(raw);
+      if (raw === "" || Number.isNaN(minGroupeAreaM2Cli)) {
+        throw new Error(`Valeur numérique attendue pour --min-groupe-area-m2= (reçu : ${JSON.stringify(raw)})`);
+      }
+    }
   }
   if (!dataDir) {
     throw new Error("Argument requis: --data-dir=chemin/vers/extract_csv_bdnb");
   }
-  if (all) return { commune: null, communes: null, all: true, append, dataDir, departements };
+  if (all && departements && departements.length > 0 && !progressEveryExplicit) {
+    progressEvery = 5_000;
+  }
+  if (all)
+    return {
+      commune: null,
+      communes: null,
+      all: true,
+      append,
+      dataDir,
+      departements,
+      progressEvery,
+      quiet,
+      minGroupeAreaM2Cli,
+    };
   if (communesFile) {
     if (!fs.existsSync(communesFile)) {
       throw new Error(`Fichier introuvable: ${communesFile}`);
@@ -198,9 +363,29 @@ function parseArgs() {
     }
   }
   if (communes && communes.length > 0)
-    return { commune: null, communes, all: false, append, dataDir, departements };
+    return {
+      commune: null,
+      communes,
+      all: false,
+      append,
+      dataDir,
+      departements,
+      progressEvery,
+      quiet,
+      minGroupeAreaM2Cli,
+    };
   if (!commune) commune = "33063";
-  return { commune, communes: null, all: false, append, dataDir, departements };
+  return {
+    commune,
+    communes: null,
+    all: false,
+    append,
+    dataDir,
+    departements,
+    progressEvery,
+    quiet,
+    minGroupeAreaM2Cli,
+  };
 }
 
 function stripCsvQuotes(s) {
@@ -216,6 +401,66 @@ function buildDeptWhereClause(departements) {
   return `AND bg.code_departement_insee IN (${list})`;
 }
 
+/** Aire empreinte au sol `geom_groupe` (2154). `minM2 <= 0` → pas de filtre. */
+function buildGroupeFootprintAreaFilterSql(minM2) {
+  if (!(minM2 > 0)) return "";
+  const m = Number(minM2);
+  if (!Number.isFinite(m) || m < 0) {
+    throw new Error(`Seuil surface groupe invalide (attendu >= 0) : ${minM2}`);
+  }
+  return ` AND bg.geom_groupe IS NOT NULL AND ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry) >= ${m}`;
+}
+
+/**
+ * @param {number | undefined} cliExplicit — si défini, provient de `--min-groupe-area-m2=` (prioritaire).
+ * @returns {number} m² ; 0 = désactiver le filtre surface sur la table principale.
+ */
+function resolveMinGroupeAreaM2(cliExplicit) {
+  if (cliExplicit !== undefined) {
+    if (!Number.isFinite(cliExplicit) || cliExplicit < 0) {
+      throw new Error(`--min-groupe-area-m2 invalide : ${cliExplicit}`);
+    }
+    return cliExplicit;
+  }
+  const e = process.env.BDNB_MIN_GROUPE_AREA_M2?.trim();
+  if (e !== undefined && e !== "") {
+    const n = Number(e);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new Error(`BDNB_MIN_GROUPE_AREA_M2 invalide : ${process.env.BDNB_MIN_GROUPE_AREA_M2}`);
+    }
+    return n;
+  }
+  return 400;
+}
+
+/**
+ * Requête SQL avec log timing (diagnostic : CREATE EXTENSION postgis peut bloquer longtemps).
+ * @param {{ phase: string; phaseStartedAt: number | null }} ddlCtx — lu par la pulsation DDL
+ */
+async function bdnbSql(client, phaseLabel, sql, quiet, ddlCtx) {
+  ddlCtx.phase = phaseLabel;
+  ddlCtx.phaseStartedAt = Date.now();
+  if (!quiet) console.log(`[bdnb] SQL ▶ ${phaseLabel}…`);
+  const t = Date.now();
+  try {
+    const res = await client.query(sql);
+    if (!quiet) {
+      console.log(`[bdnb] SQL ◀ ${phaseLabel} — ${((Date.now() - t) / 1000).toFixed(1)}s`);
+    }
+    return res;
+  } catch (e) {
+    if (!quiet) {
+      console.log(
+        `[bdnb] SQL ✖ ${phaseLabel} — erreur après ${((Date.now() - t) / 1000).toFixed(1)}s :`,
+        /** @type {Error} */ (e).message
+      );
+    }
+    throw e;
+  } finally {
+    ddlCtx.phaseStartedAt = null;
+  }
+}
+
 async function main() {
   const {
     commune: communeFilter,
@@ -224,6 +469,9 @@ async function main() {
     append,
     dataDir,
     departements: departementsArg,
+    progressEvery,
+    quiet,
+    minGroupeAreaM2Cli,
   } = parseArgs();
 
   const tableRef = parseQualifiedTable(process.env.BDNB_BUILDINGS_TABLE);
@@ -267,6 +515,8 @@ async function main() {
       : (row) => allowedBatimentIds.has(stripCsvQuotes(row.batiment_groupe_id));
 
   const deptWhere = buildDeptWhereClause(departements);
+  const minGroupeAreaM2 = resolveMinGroupeAreaM2(minGroupeAreaM2Cli);
+  const groupeAreaSql = buildGroupeFootprintAreaFilterSql(minGroupeAreaM2);
 
   console.log(`[bdnb] Table cible: ${qualifiedTable} (BDNB_BUILDINGS_TABLE)`);
   console.log(
@@ -280,6 +530,22 @@ async function main() {
     console.log("[bdnb] Mode table: append (ajout sans suppression, ON CONFLICT DO NOTHING)");
   } else {
     console.log("[bdnb] Mode table: replace (DROP/CREATE)");
+  }
+  if (!quiet && progressEvery > 0) {
+    console.log(
+      `[bdnb] Avancement CSV : jalon toutes les ${progressEvery.toLocaleString("fr-FR")} lignes lues ` +
+        `(--progress-every=0 pour désactiver, --quiet pour tout masquer sauf erreurs).`
+    );
+  }
+  if (!quiet) {
+    if (minGroupeAreaM2 > 0) {
+      console.log(
+        `[bdnb] Filtre empreinte groupe : ST_Area(geom_groupe) >= ${minGroupeAreaM2} m² (Lambert 2154). ` +
+          `Désactiver : --min-groupe-area-m2=0`
+      );
+    } else {
+      console.log("[bdnb] Filtre empreinte groupe : désactivé (import toutes les géométries du périmètre).");
+    }
   }
 
   const files = {
@@ -360,30 +626,95 @@ async function main() {
         ) u ON true
         WHERE 1=1
         ${deptWhere}
+        ${groupeAreaSql}
   `;
 
+  /** Pulsation pendant l’import ; `ddlCtx.phase` = dernière requête lancée (voir SQL ▶). BEGIN arrive après le DDL staging. */
+  let ddlHeartbeat = null;
+  const clearDdlHeartbeat = () => {
+    if (ddlHeartbeat) {
+      clearInterval(ddlHeartbeat);
+      ddlHeartbeat = null;
+    }
+  };
+  const ddlCtx = { phase: "", phaseStartedAt: /** @type {number | null} */ (null) };
+  const csvProgress = { progressEvery, quiet, clearDdlHeartbeat };
+
   try {
-    await client.query("BEGIN");
+    const tBegin = Date.now();
+    if (!quiet) {
+      console.log(
+        "[bdnb] Import : logs SQL ▶ / ◀ avec durée ; pulsation toutes les 12s. " +
+          "Le DDL pré-staging (extension, DROP/CREATE _stg_*) s’exécute hors BEGIN, puis BEGIN avant les COPY."
+      );
+      ddlHeartbeat = setInterval(() => {
+        const sinceBegin = ((Date.now() - tBegin) / 1000).toFixed(0);
+        const phase = ddlCtx.phase || "?";
+        const onStep =
+          ddlCtx.phaseStartedAt != null
+            ? ((Date.now() - ddlCtx.phaseStartedAt) / 1000).toFixed(0)
+            : "?";
+        let hint = "";
+        if (phase.includes("postgis")) {
+          hint = " — CREATE EXTENSION peut être lent la 1ère fois.";
+        } else if (phase.includes("CREATE _stg_")) {
+          hint =
+            " — une CREATE staging vide est normalement < 1s : si ça dure, chercher un verrou (autre session, import concurrent) ou la latence pooler (ex. Neon : connexion directe / non-pooled pour le DDL).";
+        } else if (phase === "BEGIN") {
+          hint = " — transaction ouverte pour COPY + table finale.";
+        }
+        console.log(
+          `[bdnb] Pulsation +${sinceBegin}s depuis début import — étape « ${phase} » bloquée ~${onStep}s${hint}`
+        );
+      }, 12_000);
+    }
+    await bdnbSql(
+      client,
+      "SET lock_timeout (évite attente infinie sur verrous)",
+      "SET lock_timeout = '90s'",
+      quiet,
+      ddlCtx
+    );
+    await bdnbSql(
+      client,
+      "CREATE EXTENSION postgis (souvent long la 1ère fois)",
+      "CREATE EXTENSION IF NOT EXISTS postgis",
+      quiet,
+      ddlCtx
+    );
 
-    await client.query("CREATE EXTENSION IF NOT EXISTS postgis");
-
-    await client.query(`
+    await bdnbSql(
+      client,
+      "DROP IF EXISTS tables staging _stg_bdnb_*",
+      `
       DROP TABLE IF EXISTS public._stg_bdnb_batiment_groupe;
       DROP TABLE IF EXISTS public._stg_bdnb_ffo;
       DROP TABLE IF EXISTS public._stg_bdnb_usage;
       DROP TABLE IF EXISTS public._stg_bdnb_dpe_rep;
-    `);
+    `,
+      quiet,
+      ddlCtx
+    );
 
-    await client.query(`
+    await bdnbSql(
+      client,
+      "CREATE _stg_bdnb_batiment_groupe",
+      `
       CREATE TABLE public._stg_bdnb_batiment_groupe (
         batiment_groupe_id text,
         code_departement_insee text,
         code_commune_insee text,
         geom_groupe text
       );
-    `);
+    `,
+      quiet,
+      ddlCtx
+    );
 
-    await client.query(`
+    await bdnbSql(
+      client,
+      "CREATE _stg_bdnb_ffo",
+      `
       CREATE TABLE public._stg_bdnb_ffo (
         batiment_groupe_id text,
         code_departement_insee text,
@@ -394,17 +725,29 @@ async function main() {
         mat_toit_txt text,
         nb_log integer
       );
-    `);
+    `,
+      quiet,
+      ddlCtx
+    );
 
-    await client.query(`
+    await bdnbSql(
+      client,
+      "CREATE _stg_bdnb_usage",
+      `
       CREATE TABLE public._stg_bdnb_usage (
         batiment_groupe_id text,
         code_departement_insee text,
         usage_principal_bdnb_open text
       );
-    `);
+    `,
+      quiet,
+      ddlCtx
+    );
 
-    await client.query(`
+    await bdnbSql(
+      client,
+      "CREATE _stg_bdnb_dpe_rep",
+      `
       CREATE TABLE public._stg_bdnb_dpe_rep (
         batiment_groupe_id text,
         identifiant_dpe text,
@@ -414,8 +757,19 @@ async function main() {
         classe_conso_energie_arrete_2012 text,
         surface_habitable_logement numeric
       );
-    `);
+    `,
+      quiet,
+      ddlCtx
+    );
 
+    if (!quiet) {
+      console.log(
+        "[bdnb] DDL pré-staging terminé (autocommit). Ouverture de la transaction pour COPY + création table finale…"
+      );
+    }
+    await bdnbSql(client, "BEGIN (transaction COPY + table finale)", "BEGIN", quiet, ddlCtx);
+
+    if (!quiet) console.log("[bdnb] COPY staging : batiment_groupe.csv …");
     await copyCsvSelectedColumns(client, {
       table: "public._stg_bdnb_batiment_groupe",
       columns: [
@@ -426,8 +780,11 @@ async function main() {
       ],
       filePath: files.batiment_groupe,
       filter: filterBatiment,
+      progressLabel: "batiment_groupe.csv → _stg_bdnb_batiment_groupe",
+      ...csvProgress,
     });
 
+    if (!quiet) console.log("[bdnb] COPY staging : batiment_groupe_ffo_bat.csv …");
     await copyCsvSelectedColumns(client, {
       table: "public._stg_bdnb_ffo",
       columns: [
@@ -442,8 +799,11 @@ async function main() {
       ],
       filePath: files.ffo,
       filter: filterByAllowedIds,
+      progressLabel: "batiment_groupe_ffo_bat.csv → _stg_bdnb_ffo",
+      ...csvProgress,
     });
 
+    if (!quiet) console.log("[bdnb] COPY staging : batiment_groupe_synthese_propriete_usage.csv …");
     await copyCsvSelectedColumns(client, {
       table: "public._stg_bdnb_usage",
       columns: [
@@ -453,8 +813,11 @@ async function main() {
       ],
       filePath: files.usage,
       filter: filterByAllowedIds,
+      progressLabel: "batiment_groupe_synthese_propriete_usage.csv → _stg_bdnb_usage",
+      ...csvProgress,
     });
 
+    if (!quiet) console.log("[bdnb] COPY staging : batiment_groupe_dpe_representatif_logement.csv …");
     await copyCsvSelectedColumns(client, {
       table: "public._stg_bdnb_dpe_rep",
       columns: [
@@ -468,17 +831,73 @@ async function main() {
       ],
       filePath: files.dpeRep,
       filter: filterByAllowedIds,
+      progressLabel: "batiment_groupe_dpe_representatif_logement.csv → _stg_bdnb_dpe_rep",
+      ...csvProgress,
     });
+
+    // Sans index, chaque LATERAL (FFO / DPE / usage) peut ressembler à un seq scan sur tout le staging
+    // pour chaque ligne de batiment_groupe — facilement 15–30+ min sur un dept entier.
+    if (!quiet) {
+      console.log(
+        "[bdnb] Index batiment_groupe_id sur _stg_ffo / _stg_dpe_rep / _stg_usage + ANALYZE (accélère le CREATE TABLE AS)…"
+      );
+    }
+    const tStgIdx = Date.now();
+    await client.query(
+      `CREATE INDEX _stg_bdnb_ffo_batiment_groupe_id_idx ON public._stg_bdnb_ffo (batiment_groupe_id)`
+    );
+    await client.query(
+      `CREATE INDEX _stg_bdnb_dpe_rep_batiment_groupe_id_idx ON public._stg_bdnb_dpe_rep (batiment_groupe_id)`
+    );
+    await client.query(
+      `CREATE INDEX _stg_bdnb_usage_batiment_groupe_id_idx ON public._stg_bdnb_usage (batiment_groupe_id)`
+    );
+    await client.query(`
+      ANALYZE public._stg_bdnb_batiment_groupe, public._stg_bdnb_ffo, public._stg_bdnb_dpe_rep, public._stg_bdnb_usage
+    `);
+    if (!quiet) {
+      console.log(
+        `[bdnb] Index staging + ANALYZE terminés en ${((Date.now() - tStgIdx) / 1000).toFixed(1)}s`
+      );
+    }
 
     if (!append) {
       await client.query(`DROP TABLE IF EXISTS ${qualifiedTable};`);
 
-      await client.query(`
+      if (!quiet) {
+        console.log(
+          "[bdnb] Étape SQL : CREATE TABLE AS (jointures FFO/DPE/usage + filtre dept/surface) — " +
+            "peut prendre plusieurs minutes ; rappel toutes les 30s sur stdout…"
+        );
+      }
+      const tCreateAs = Date.now();
+      const hbCreate = !quiet
+        ? setInterval(() => {
+            console.log(
+              `[bdnb] Étape SQL : CREATE TABLE AS toujours en cours… ${((Date.now() - tCreateAs) / 1000).toFixed(0)}s`
+            );
+          }, 30_000)
+        : null;
+      try {
+        await client.query(`
         CREATE TABLE ${qualifiedTable} AS
         ${selectCore};
       `);
+      } finally {
+        if (hbCreate) clearInterval(hbCreate);
+      }
+      if (!quiet) {
+        console.log(
+          `[bdnb] Étape SQL : CREATE TABLE AS terminée en ${((Date.now() - tCreateAs) / 1000).toFixed(1)}s`
+        );
+      }
 
+      if (!quiet) console.log(`[bdnb] Étape SQL : ALTER TABLE … ADD PRIMARY KEY (${qualifiedTable})…`);
+      const tPk = Date.now();
       await client.query(`ALTER TABLE ${qualifiedTable} ADD PRIMARY KEY (batiment_groupe_id);`);
+      if (!quiet) {
+        console.log(`[bdnb] Étape SQL : PRIMARY KEY créée en ${((Date.now() - tPk) / 1000).toFixed(1)}s`);
+      }
     } else {
       await client.query(`
         CREATE TABLE IF NOT EXISTS ${qualifiedTable} (
@@ -505,7 +924,21 @@ async function main() {
         );
       `);
 
-      await client.query(`
+      if (!quiet) {
+        console.log(
+          "[bdnb] Étape SQL : INSERT … ON CONFLICT (append, jointures + géométrie) — peut prendre plusieurs minutes ; rappel 30s…"
+        );
+      }
+      const tInsert = Date.now();
+      const hbInsert = !quiet
+        ? setInterval(() => {
+            console.log(
+              `[bdnb] Étape SQL : INSERT append toujours en cours… ${((Date.now() - tInsert) / 1000).toFixed(0)}s`
+            );
+          }, 30_000)
+        : null;
+      try {
+        await client.query(`
         INSERT INTO ${qualifiedTable} (
           batiment_groupe_id,
           geom_groupe,
@@ -531,9 +964,27 @@ async function main() {
         ${selectCore}
         ON CONFLICT (batiment_groupe_id) DO NOTHING;
       `);
+      } finally {
+        if (hbInsert) clearInterval(hbInsert);
+      }
+      if (!quiet) {
+        console.log(`[bdnb] Étape SQL : INSERT append terminé en ${((Date.now() - tInsert) / 1000).toFixed(1)}s`);
+      }
     }
 
-    // Pessac (33318) + Talence (33522) : géométrie seule, sans jointure FFO / DPE / usage. > 1000 m².
+    const pessacTalenceAreaCond =
+      minGroupeAreaM2 > 0
+        ? `ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry) >= ${Number(minGroupeAreaM2)}`
+        : `ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry) > 1000`;
+
+    // Pessac (33318) + Talence (33522) : géométrie seule, sans jointure FFO / DPE / usage.
+    if (!quiet) {
+      console.log(
+        `[bdnb] Tables auxiliaires Pessac / Talence (filtre aire : ${
+          minGroupeAreaM2 > 0 ? `>= ${minGroupeAreaM2} m²` : "> 1000 m² (filtre principal désactivé)"
+        })…`
+      );
+    }
     await client.query(`DROP TABLE IF EXISTS public.bdnb_pessac_geom_raw;`);
     await client.query(`DROP TABLE IF EXISTS public.bdnb_talence_geom_raw;`);
     await client.query(`CREATE TABLE public.bdnb_pessac_geom_raw (
@@ -557,7 +1008,7 @@ async function main() {
         ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry)::double precision AS area_m2
       FROM public._stg_bdnb_batiment_groupe bg
       WHERE bg.code_commune_insee = '33318'
-        AND ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry) > 1000;
+        AND ${pessacTalenceAreaCond};
     `);
     await client.query(`
       INSERT INTO public.bdnb_talence_geom_raw (batiment_groupe_id, geom_groupe, code_commune_insee, area_m2)
@@ -568,7 +1019,7 @@ async function main() {
         ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry)::double precision AS area_m2
       FROM public._stg_bdnb_batiment_groupe bg
       WHERE bg.code_commune_insee = '33522'
-        AND ST_Area(ST_SetSRID(ST_GeomFromText(bg.geom_groupe), 2154)::geometry) > 1000;
+        AND ${pessacTalenceAreaCond};
     `);
     await client.query(
       `CREATE INDEX IF NOT EXISTS bdnb_pessac_geom_raw_gix ON public.bdnb_pessac_geom_raw USING GIST (geom_groupe)`
@@ -582,8 +1033,14 @@ async function main() {
     const { rows: talenceGeomRows } = await client.query(
       `SELECT COUNT(*)::bigint AS n FROM public.bdnb_talence_geom_raw`
     );
-    console.log("[bdnb] Pessac sans jointure (INSEE 33318, >1000 m²):", pessacGeomRows[0]);
-    console.log("[bdnb] Talence sans jointure (INSEE 33522, >1000 m²):", talenceGeomRows[0]);
+    console.log(
+      `[bdnb] Pessac sans jointure (INSEE 33318, ${minGroupeAreaM2 > 0 ? `>= ${minGroupeAreaM2} m²` : "> 1000 m²"}):`,
+      pessacGeomRows[0]
+    );
+    console.log(
+      `[bdnb] Talence sans jointure (INSEE 33522, ${minGroupeAreaM2 > 0 ? `>= ${minGroupeAreaM2} m²` : "> 1000 m²"}):`,
+      talenceGeomRows[0]
+    );
 
     await client.query(`
       DROP TABLE IF EXISTS public._stg_bdnb_batiment_groupe;
@@ -609,13 +1066,19 @@ async function main() {
     `);
     console.log("[bdnb] Validation:", stats[0]);
 
+    await client.query("RESET lock_timeout");
     await client.query("COMMIT");
   } catch (e) {
+    clearDdlHeartbeat();
+    try {
+      await client.query("RESET lock_timeout");
+    } catch {}
     try {
       await client.query("ROLLBACK");
     } catch {}
     throw e;
   } finally {
+    clearDdlHeartbeat();
     await client.end();
   }
 }

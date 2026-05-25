@@ -25,9 +25,22 @@ export function matchingV5SelectionMatchesProspect(
   anchor: ScoutMatchingV5Row,
   linkedParcellesForAnchor: ScoutMatchingV5Row[],
   allRows: ScoutMatchingV5Row[],
-  prospect: Pick<Prospect, "pipelineEntrySource" | "matchingV5RowId">
+  prospect: Pick<
+    Prospect,
+    "pipelineEntrySource" | "matchingV5RowId" | "matchingV5ParcelleIds"
+  >
 ): boolean {
   if (prospect.pipelineEntrySource !== "discovery_v5") return false;
+  const persisted = prospect.matchingV5ParcelleIds?.filter(Boolean) ?? [];
+  if (persisted.length > 0) {
+    const linkedKey = linkedParcellesForAnchor
+      .map((r) => r.id)
+      .sort()
+      .join("|");
+    const persistedKey = [...persisted].sort().join("|");
+    if (linkedKey === persistedKey) return true;
+    if (persisted.includes(anchor.id)) return true;
+  }
   const sid = prospect.matchingV5RowId;
   if (!sid) return false;
   if (anchor.id === sid) return true;

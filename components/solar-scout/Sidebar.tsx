@@ -48,7 +48,6 @@ import {
   parseSiretsMatchJson,
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
-import { isParcIndustrielIris } from "@/lib/matching-v5-iris-zones";
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
 import type {
   AddressCoordinates,
@@ -78,7 +77,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "@/lib/api-client";
-import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
+import { latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
 
 type MatchingV5ApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
 type DiscoveryPoiTableRow = {
@@ -1003,7 +1002,7 @@ export function BatteryReferenceForm({
 interface SidebarProps {
   onProspectUpdate?: (patch: Partial<Prospect>) => void;
   onRefreshDiscovery?: () => void;
-  /** Couche « Découverte » (export local /geo/matching-v5-33318.geojson) */
+  /** Couche « Découverte » : Postgres (défaut) ou export local GeoJSON */
   discoveryState?: {
     loading: boolean;
     count: number;
@@ -1103,20 +1102,14 @@ export function Sidebar({
     return out;
   }, [matchingV5GooglePois, matchingV5OsmPois]);
 
-  /** Adresse PPM absente ou aucun établissement issu du matching adresse → proposer le test Google.
-   *  Alignement pipeline: n'afficher le test que sur périmètre IRIS Parc Industriel sans POI OSM avec lien.
-   */
+  /** Adresse PPM absente ou aucun établissement issu du matching adresse → proposer le test Google (sans POI OSM avec site). */
   const matchingV5ShowGooglePoiTest = useMemo(() => {
     if (!selectedMatchingV5Row) return false;
-    const hasParcIndustriel = matchingV5OsmParcelleRows.some(
-      (r) => isParcIndustrielIris(r.nomIris)
-    );
-    if (!hasParcIndustriel) return false;
     const hasOsmWebsite = matchingV5OsmPois.some((poi) => String(poi.website || "").trim().length > 0);
     if (hasOsmWebsite) return false;
     if (!selectedMatchingV5Row.passerelleAddress?.trim()) return true;
     return parseSiretsMatchJson(selectedMatchingV5Row.siretsJson).length === 0;
-  }, [matchingV5OsmParcelleRows, matchingV5OsmPois, selectedMatchingV5Row]);
+  }, [matchingV5OsmPois, selectedMatchingV5Row]);
 
   const matchingV5OsmMeta = useMemo(() => {
     const rows = matchingV5OsmParcelleRows;
@@ -1255,9 +1248,10 @@ export function Sidebar({
                 <CardContent className="space-y-3 p-3 md:p-3 lg:p-4">
                   <div className="text-sm font-semibold text-foreground">Découverte</div>
                   <div className="text-[11px] text-muted-foreground leading-relaxed">
-                    Cadastre, IRIS, BDNB et personnes morales (Pessac). Fichier{" "}
-                    <span className="font-mono">/geo/matching-v5-33318.geojson</span> —{" "}
-                    <span className="font-mono">npm run pipeline:matching-v5:run</span>.
+                    Cadastre, BDNB et personnes morales — données Postgres comme la page Découverte.
+                    Sans base : <span className="font-mono">?discovery=static</span> et fichier{" "}
+                    <span className="font-mono">/geo/matching-v5-33318.geojson</span> (
+                    <span className="font-mono">npm run pipeline:matching-v5:run</span>).
                   </div>
                   <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs">
                     {discoveryState?.loading ? (
@@ -1390,7 +1384,7 @@ export function Sidebar({
                               onClick={async () => {
                                 const row = selectedMatchingV5Row;
                                 if (!row || (row.grain !== "parcelle" && row.grain !== "building")) return;
-                                const c = centroidFromGeoJsonPolygonLike(row.geometry);
+                                const c = latLngFromMatchingGeometry(row.geometry);
                                 if (!c) {
                                   toast.error("Impossible de calculer le centroïde (géométrie).");
                                   return;
@@ -1712,13 +1706,6 @@ export function Sidebar({
                           <dt className="text-muted-foreground w-28 shrink-0">Adresse</dt>
                           <dd className="break-words">{selectedMatchingV5Row.passerelleAddress || "—"}</dd>
                         </div>
-                        <div className="flex gap-2">
-                          <dt className="text-muted-foreground w-28 shrink-0">IRIS</dt>
-                              <dd>
-                                {selectedMatchingV5Row.codeIris || "—"}{" "}
-                                {selectedMatchingV5Row.nomIris ? `· ${selectedMatchingV5Row.nomIris}` : ""}
-                              </dd>
-                            </div>
                             <div className="mt-3 space-y-3 border-t border-emerald-200/50 dark:border-emerald-800/50 pt-3">
                               <div>
                                 <div className="text-[11px] font-semibold text-foreground">

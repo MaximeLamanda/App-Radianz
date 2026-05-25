@@ -79,6 +79,8 @@ open_data_millesime_*/
 datasource/**/*.geojsonseq
 datasource/**/*.osm.pbf
 datasource/**/*.zip
+datasource/**/*.7z
+datasource/enr/
 datasource/**/*.json.gz
 datasource/**/*.parquet
 datasource/**/*.csv

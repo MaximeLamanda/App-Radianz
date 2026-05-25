@@ -43,3 +43,19 @@ export function rowMatchesDiscoveryConstructionYearRange(
       b.anneeConstruction <= hi
   );
 }
+
+/**
+ * Filtre année sur un combo (années pré-agrégées en SQL).
+ * Même règle : au moins une année connue dans l’intervalle.
+ */
+export function comboMeetsDiscoveryConstructionYearRange(
+  constructionYears: readonly number[],
+  minY: number,
+  maxY: number,
+  sliderMaxYear: number = getDiscoveryConstructionYearSliderMax()
+): boolean {
+  const lo = Math.min(minY, maxY);
+  const hi = Math.max(minY, maxY);
+  if (isDiscoveryConstructionYearFilterDisabled(lo, hi, sliderMaxYear)) return true;
+  return constructionYears.some((y) => y >= lo && y <= hi);
+}

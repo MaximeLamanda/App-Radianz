@@ -85,7 +85,7 @@ async function fetchBatteryReferences(userId: string): Promise<BatteryReference[
 }
 
 async function fetchLeads(): Promise<Lead[]> {
-  const res = await fetchWithAuth("/api/leads?codeInsee=33318");
+  const res = await fetchWithAuth("/api/leads");
   if (!res.ok) {
     throw new Error(`Erreur API leads (${res.status})`);
   }

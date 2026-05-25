@@ -36,6 +36,11 @@ def test_derive_zone_tag_landuse_priority():
     assert m.derive_zone_tag("industrial", "retail", "warehouse") == ("industrial", "landuse")
 
 
+def test_derive_zone_tag_farmland_from_landuse():
+    m = _load_osm_buildings_v5()
+    assert m.derive_zone_tag("farmland", None, "yes") == ("farmland", "landuse")
+
+
 def test_derive_zone_tag_building_use_fallback():
     m = _load_osm_buildings_v5()
     assert m.derive_zone_tag(None, "commercial", "yes") == ("commercial", "building_use")
@@ -56,4 +61,14 @@ def test_derive_zone_tag_empty():
     m = _load_osm_buildings_v5()
     assert m.derive_zone_tag(None, None, None) == ("", "none")
     assert m.derive_zone_tag("", "  ", "") == ("", "none")
+
+
+def test_osm_building_tag_is_importable():
+    m = _load_osm_buildings_v5()
+    assert m.osm_building_tag_is_importable({}) is False
+    assert m.osm_building_tag_is_importable({"building": ""}) is False
+    assert m.osm_building_tag_is_importable({"building": "no"}) is False
+    assert m.osm_building_tag_is_importable({"building": "NO"}) is False
+    assert m.osm_building_tag_is_importable({"building": "yes"}) is True
+    assert m.osm_building_tag_is_importable({"building": "warehouse"}) is True
 

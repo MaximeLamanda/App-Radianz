@@ -190,6 +190,10 @@ export interface Prospect {
   pipelineEntrySource?: "discovery_v5";
   /** Identifiant de la ligne / cluster matching V5 à l’origine du prospect. */
   matchingV5RowId?: string;
+  /** Périmètre parcelles personnalisé (agrégat pipeline, sans modifier Scout V5). */
+  matchingV5ParcelleIds?: string[];
+  /** Bâtiments inclus (`bc:…` / `osm:…`) dans l’agrégat pipeline. */
+  matchingV5BuildingSelectionIds?: string[];
   /** Aire approximative contour(s) parcelle(s) cadastrale(s) (m²), source Discovery. */
   parcelContourAreaM2?: number;
   /** Empreinte au sol bâtiments BDNB Σ (m²), source Discovery — aligné tiroir. */

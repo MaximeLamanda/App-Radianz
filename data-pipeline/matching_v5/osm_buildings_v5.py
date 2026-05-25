@@ -44,6 +44,17 @@ def qualified_osm_buildings_table() -> str:
     return f'"{schema}"."{table}"'
 
 
+def osm_building_tag_is_importable(tags: dict[str, Any]) -> bool:
+    """True si le tag ``building`` OSM doit entrer dans ``osm_building_footprints``.
+
+    Exclut l'absence de tag et ``building=no`` (contour de site, pas un bâtiment).
+    """
+    b = str(tags.get("building") or "").strip()
+    if not b:
+        return False
+    return b.casefold() != "no"
+
+
 def osm_buildings_regclass() -> str:
     raw = os.environ.get("OSM_BUILDINGS_TABLE", "public.osm_building_footprints")
     schema, table = parse_qualified_table(

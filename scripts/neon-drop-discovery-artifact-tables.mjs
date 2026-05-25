@@ -40,7 +40,9 @@ function pickNeonUrlOnly(repoRoot) {
 }
 
 const STATEMENTS = [
+  "DROP VIEW IF EXISTS public.scout_leads_enriched CASCADE",
   "DROP VIEW IF EXISTS public.scout_leads_pessac_enriched CASCADE",
+  "DROP TABLE IF EXISTS public.scout_leads_communes CASCADE",
   "DROP TABLE IF EXISTS public.scout_leads CASCADE",
   "DROP TABLE IF EXISTS public.parcelles_personnes_morales CASCADE",
   "DROP TABLE IF EXISTS public.cadastre_france_feuilles_geom CASCADE",

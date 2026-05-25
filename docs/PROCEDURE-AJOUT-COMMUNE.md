@@ -21,10 +21,12 @@ Document de référence **unique** pour alimenter Discovery / Matching V5 (commu
 
 Avec **`--building-source osm`** ([`docs/MATCHING-V5.md`](MATCHING-V5.md)), les emprises bâtiments viennent des tables **`osm_building_footprints`** (et idéalement **`osm_landuse_areas`**). Ces imports lisent un **`.osm.pbf`** (Geofabrik régional / national, ou extrait **bbox / département** via la CLI `osmium`). En pratique :
 
-- **Une passe par département (ou par extrait PBF qui couvre tout le département)** pour `pipeline:osm-buildings:*`, `pipeline:osm-landuse:*` et, si besoin, `pipeline:osm-poi:*` — pas une relance « une commune = un import OSM ». Les scripts d’import acceptent souvent **`--truncate`** : la table reflète alors **le dernier PBF chargé** ; choisir un PBF dont l’emprise couvre **toutes** les communes du département que tu comptes matcher avant de truncater.
+- **Une passe par département (ou par extrait PBF qui couvre tout le département)** pour `pipeline:osm-buildings:*`, `pipeline:osm-landuse:*`, `pipeline:osm-parking:*` et, si besoin, `pipeline:osm-poi:*` — pas une relance « une commune = un import OSM ». Les scripts d’import acceptent souvent **`--truncate`** : la table reflète alors **le dernier PBF chargé** ; choisir un PBF dont l’emprise couvre **toutes** les communes du département que tu comptes matcher avant de truncater.
+- **Parking ENR** (surfaces > 500 m², national) : import **une fois** via `pipeline:enr-parking:download` puis `pipeline:enr-parking:import` — pas de re-import par commune ; le matching V5 fusionne ENR + OSM automatiquement.
+- **Consommation électricité Enedis** (couche Discovery, open data par adresse) : import **par département Scout** via `npm run pipeline:enedis:schema` puis `npm run pipeline:enedis:import-dep-<DEP>` (géocodage Géoplateforme à l’import). Table locale `public.scout_enedis_consumption_sites` ; pour la prod Discovery, synchroniser vers Neon avec `npm run pipeline:enedis:sync-neon-dep-<DEP>`. Voir [`docs/plans/2026-05-22-discovery-enedis-consumption-design.md`](plans/2026-05-22-discovery-enedis-consumption-design.md).
 - **BDNB** (zip `dep<DEP>_csv.zip`, étapes 2–4) reste **au niveau département** : un extract, imports avec **`--append`** pour accumuler les communes du dep dans `bdnb_buildings` / `batiment_construction` sans tout écraser.
 - **Cadastre et PPM** : chargement **par commune** (`--code-insee=<INSEE>`) ou, si tu disposes d’un fichier couvrant tout le département, tu peux enchaîner les INSEE du dep sans re-télécharger le PBF OSM.
-- **Matching V5, backfill et transfert Neon** : le script `run_matching_v5.py` prend **un seul `--code-insee` par invocation** — tu répètes étapes 6–8 pour chaque commune cible **après** avoir posé les données départementales (OSM + BDNB dep + IRIS adapté au périmètre).
+- **Matching V5, backfill, combos et transfert Neon** : `run_matching_v5.py` prend **un seul `--code-insee` par invocation**, ou enchaînement département via `npm run pipeline:matching-v5:pipeline-dep-<DEP>` (matching + backfill + combos) **après** les données départementales (OSM + BDNB dep).
 
 En résumé : **préparer et stocker large (département / PBF)** ; **produire et pousser fin (commune / INSEE)**.
 
@@ -37,7 +39,6 @@ En résumé : **préparer et stocker large (département / PBF)** ; **produire e
 - **FFO** : Fichiers Fonciers (millésimes annuels). Source de l'année de construction et des usages bâti, jointe à BDNB par `batiment_groupe_id`.
 - **PPM** : « Parcelles Personnes Morales » (passerelle parcelle ↔ entreprise / SIREN), table `public.parcelles_personnes_morales`.
 - **V5** : pipeline de matching `data-pipeline/matching_v5/run_matching_v5.py` produisant `public.scout_matching_v5_features`.
-- **IRIS** : maillage statistique INSEE (sous-commune). Utilisé pour qualifier les parcelles (`code_iris`, `nom_iris` dans `properties_json`).
 - **PBF OSM** : fichier binaire OpenStreetMap (`.osm.pbf`). Découpe **département** ou région conseillée pour limiter taille et temps d’import ; voir [data-pipeline/README.md](../data-pipeline/README.md) (OSM PBF, `osmium extract`).
 
 ---
@@ -50,8 +51,7 @@ flowchart TD
     Extract["Extraction des 5 CSV<br/>datasource/bdnb/depXX_extract/csv"]
     LocalSupport["Postgres Docker local<br/>cadastre + PPM + scout_etablissements<br/>(filtres code_insee)"]
     LocalBdnb["Postgres Docker local<br/>bdnb_buildings + batiment_construction +<br/>batiment_groupe_ffo_bat (--append)<br/>+ si OSM: osm_building_footprints,<br/>osm_landuse_areas (import PBF dep)"]
-    IrisLocal["GeoJSON IRIS<br/>public/geo/iris-...geojson"]
-    MatchLocal["run_matching_v5.py<br/>--code-insee=&lt;INSEE&gt; --write-postgres<br/>(option: --building-source osm)<br/>(cible: LOCAL_DATABASE_URL)"]
+    MatchLocal["run_matching_v5.py<br/>--code-insee=&lt;INSEE&gt; --write-postgres<br/>(cible: LOCAL_DATABASE_URL)"]
     Backfill["backfill_building_geometries_v5.py<br/>--code-insee=&lt;INSEE&gt;<br/>(cible: LOCAL_DATABASE_URL)"]
     LocalScout["Postgres local<br/>scout_matching_v5_features<br/>(building_geometries_json rempli)"]
     Transfer["Transfert local -> Neon<br/>(psql COPY filtré ou pg_dump table)"]
@@ -62,7 +62,6 @@ flowchart TD
     Extract --> LocalSupport
     LocalSupport --> MatchLocal
     LocalBdnb --> MatchLocal
-    IrisLocal --> MatchLocal
     MatchLocal --> LocalScout
     LocalScout --> Backfill
     Backfill --> LocalScout
@@ -92,7 +91,6 @@ flowchart TD
 - Sirene établissement (CSV / Parquet national `StockEtablissement_utf8.csv`) — chargé une seule fois pour la France entière (cf. § 5.4).
 - Cadastre national `cadastre-france-feuilles.json.gz` — filtrable par INSEE.
 - PPM Parquet `datasource/parcelles-personnes-morales/parcelles-personnes-morales-latest.parquet` — filtrable par INSEE.
-- IRIS GeoJSON couvrant la commune (cf. § 5.5).
 - Les fichiers peuvent être stockés **hors repo** : les scripts acceptent un **chemin absolu local** (ex. `/Volumes/data/parcelles-personnes-morales-latest.parquet`).
 
 ### 4.3 État Neon
@@ -176,8 +174,9 @@ Ce script :
 ```
 
 - `--truncate` ici **ne TRUNCATE PAS toute la table** : combiné à `--code-insee`, il fait un `DELETE FROM cadastre_france_feuilles_geom WHERE code_insee = <INSEE>` (cf. l. 113-118 de [data-pipeline/python/import_cadastre_france_feuilles.py](../data-pipeline/python/import_cadastre_france_feuilles.py)).
+- **Tout un département** : `--dep <DEPT>` (ex. `33`, `971`, `2A`) à la place de `--code-insee` — ne garde que les parcelles dont le code INSEE commence par ce préfixe ; avec `--truncate`, `DELETE … WHERE code_insee LIKE '<DEPT>%'` (les autres départements déjà en base ne sont pas vidés). Incompatible avec `--code-insee` sur la même commande.
 - Idempotent (UPSERT sur `(code_insee, section, numero_norm)`).
-- Exemple repo (dep 33) : `datasource/cadastre/cadastre-33-parcelles.json.gz`.
+- Exemple repo (dep 33) : `datasource/cadastre/cadastre-33-parcelles.json.gz`. Raccourci npm : `npm run import:cadastre-33-parcelles:dep`.
 
 #### 5.2 PPM (parcelles personnes morales)
 
@@ -190,6 +189,7 @@ Ce script :
 ```
 
 Idempotent par `code_insee` : `--truncate` supprime uniquement les lignes du même INSEE avant insertion.
+- **Tout un département** : `--dep <DEPT>` à la place de `--code-insee` — filtre le parquet sur le préfixe INSEE ; `--truncate` exécute `DELETE … WHERE code_insee LIKE '<DEPT>%'`. Raccourci npm : `npm run import:parcelles-dep-33` (Gironde).
 - Exemple repo : `datasource/parcelles-personnes-morales/parcelles-personnes-morales-latest.parquet`.
 
 #### 5.3 SIRENE établissements (`scout_etablissements`)
@@ -221,19 +221,6 @@ npm run pipeline:osm-poi:import
 
 Ne pas relancer ces imports pour **chaque** commune du département si le PBF couvre déjà tout le dep.
 
-#### 5.5 IRIS (limitation à connaître)
-
-Le script V5 lit l'IRIS depuis un chemin **codé en dur** : `public/geo/iris-bordeaux-metropole.geojson` (cf. [data-pipeline/matching_v5/run_matching_v5.py](../data-pipeline/matching_v5/run_matching_v5.py) l. 487).
-
-Conséquence pour les communes **hors Bordeaux Métropole** : il faut **remplacer** ce fichier par un GeoJSON IRIS contenant la commune visée, **avant** de lancer le matching V5. Sources possibles :
-
-- IRIS open data INSEE / IGN (national, à filtrer ; export par département disponible).
-- Bibliothèques géographiques (geopandas / mapshaper) pour filtrer par `code_insee`.
-
-Le GeoJSON doit conserver les colonnes `code_insee`, `code_iris`, `nom_iris`. Conserver une copie du fichier original (`iris-bordeaux-metropole.geojson.bak`) avant remplacement si nécessaire.
-
-> Évolution future possible (hors scope ici) : paramétrer le chemin via une variable d'environnement et/ou héberger un IRIS national filtré par commune au moment du run.
-
 ### Étape 6 — Lancer le matching V5 sur le Postgres **local**
 
 Commande recommandée (direct Python, cible explicite) :
@@ -247,7 +234,7 @@ bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; \
   --no-geojson'
 ```
 
-Avec emprises **OSM** (après § 5.4 et tables locales prêtes), ajouter notamment **`--building-source osm`** sur cette même commande. Détails et seuils : [`docs/MATCHING-V5.md`](MATCHING-V5.md).
+Avec emprises **OSM** (après § 5.4 et tables locales prêtes), ajouter notamment **`--building-source osm`** sur cette même commande. Détails et seuils : [`docs/MATCHING-V5.md`](MATCHING-V5.md). Les petites emprises en zone landuse **commercial / industrial / retail** sont retenues sans plancher 400 m² (voir [`docs/plans/2026-05-18-matching-v5-landuse-footprint-waiver-design.md`](plans/2026-05-18-matching-v5-landuse-footprint-waiver-design.md)) — **re-lancer le matching** après toute évolution de cette règle.
 
 - `LOCAL_DATABASE_URL` est utilisé en priorité par le pipeline (cf. [scripts/lib/resolve-database-url.mjs](../scripts/lib/resolve-database-url.mjs)) → l'écriture va bien sur le Postgres local.
 - `--write-postgres` fait un `DELETE FROM scout_matching_v5_features WHERE code_insee=<INSEE>` puis un `INSERT` (idempotent par commune).
@@ -265,6 +252,27 @@ npm run pipeline:matching-v5:backfill-building-geometries -- \
 Référence : [data-pipeline/matching_v5/backfill_building_geometries_v5.py](../data-pipeline/matching_v5/backfill_building_geometries_v5.py).
 
 À l'issue de cette étape, les lignes `grain='parcelle'` du Postgres local ont leur colonne `building_geometries_json` remplie avec les polygones bâtiments — Discovery pourra les afficher sans appeler `/api/matching-v5/buildings`.
+
+### Étape 7b — Vue bâtiments + table combos Discovery (local)
+
+Après le backfill, sur la **même** base Postgres que Discovery :
+
+```bash
+npm run scout:matching-v5:combos:apply          # une fois : sql/010–014 (combos)
+npm run scout:matching-v5:buildings-mv:refresh  # REFRESH scout_matching_v5_buildings_mv
+npm run pipeline:matching-v5:combos -- --code-insee=<INSEE>
+```
+
+**Tout un département** (matching + backfill + combos, communes du cadastre) :
+
+```bash
+npm run pipeline:matching-v5:pipeline-dep-33
+# Variantes : --skip-matching | --skip-backfill | --skip-combos
+```
+
+Script : [`scripts/run-matching-v5-pipeline-by-dep.mjs`](../scripts/run-matching-v5-pipeline-by-dep.mjs). Matching seul : `npm run pipeline:matching-v5:run-dep-33`.
+
+La table `scout_matching_v5_combos` alimente `/api/matching-v5/combos-overview` (clusters carte + filtres surface building / surface parking / activité / année de construction pré-agrégés). Designs : [`docs/plans/2026-05-20-discovery-combo-surface-sql-design.md`](plans/2026-05-20-discovery-combo-surface-sql-design.md), [`docs/plans/2026-05-20-discovery-combo-parking-surface-sql-design.md`](plans/2026-05-20-discovery-combo-parking-surface-sql-design.md).
 
 ### Étape 8 — Transférer la commune vers Neon
 
@@ -368,7 +376,6 @@ Attendu :
 - **Importer un PBF OSM trop petit puis `--truncate`** sur `osm_building_footprints` avant de matcher une autre commune du même département → la table ne contient plus que le dernier extrait ; préférer **un PBF couvrant tout le département** (ou stratégie sans truncate + upsert si tu adaptes les scripts).
 - **Oublier l'étape 7 (backfill)** → Discovery retombe sur le fallback HTTP `/api/matching-v5/buildings`, qui exige les tables `batiment_construction` + `batiment_groupe_ffo_bat` sur Neon (donc casse l'option B).
 - **Créer un fichier `public/geo/matching-v5-<INSEE>.geojson`** → déprécié, ne plus en générer. Le fichier historique `public/geo/matching-v5-33318.geojson` peut être conservé pour archive mais n'est plus consommé par Discovery.
-- **Hors Bordeaux Métropole sans remplacer le GeoJSON IRIS** → `run_matching_v5.py` lève `FileNotFoundError` ou produit un export sans IRIS. Cf. § 5.5.
 - **Schéma BDNB versionné `bdnb_2025_07_a_open_data_dep33`** : présent en fallback dans [app/api/matching-v5/buildings/route.ts](../app/api/matching-v5/buildings/route.ts), non utilisé sur Neon en option B. Ignorer.
 - **`pg_dump --table=` méthode alternative étape 8** : non idempotent sur les `scout_v5_id` existants — privilégier la méthode `psql COPY`.
 - **Commande npm de run V5 sans garde-fou** → peut ignorer la commune demandée et repartir sur la valeur par défaut du script ; préférer la commande Python explicite de l'étape 6.
@@ -400,7 +407,6 @@ Après nettoyage, Neon ne contient plus que `public.scout_matching_v5_features` 
 
 - **Script agrégé** `npm run commune:add -- --insee=<INSEE> --dep=<DEP>` regroupant les étapes 2 à 8 dans une commande unique.
 - **Suppression définitive** de [app/api/matching-v5/buildings/route.ts](../app/api/matching-v5/buildings/route.ts) une fois le backfill devenu systématique pour toutes les communes en base.
-- **Paramétrage du chemin IRIS** via variable d'environnement (ex. `MATCHING_V5_IRIS_GEOJSON`) pour éviter le remplacement physique de `public/geo/iris-bordeaux-metropole.geojson` à chaque commune hors BM.
 
 ---
 

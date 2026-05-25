@@ -272,7 +272,15 @@
   }
 
   .drawer-discovery-hero-address {
-    @apply min-w-0 max-w-full truncate whitespace-nowrap text-sm leading-snug text-muted-foreground;
+    @apply flex min-w-0 max-w-full items-baseline gap-2 text-sm leading-snug text-muted-foreground;
+  }
+
+  .drawer-discovery-hero-address-text {
+    @apply min-w-0 flex-1 truncate;
+  }
+
+  .drawer-discovery-hero-address-source {
+    @apply shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40;
   }
 
   .drawer-discovery-pills {
@@ -481,4 +489,17 @@
   .drawer-discovery-json-pre {
     @apply mt-2 max-h-44 overflow-auto rounded-lg border border-border bg-background/80 p-3 font-mono text-[0.65rem] leading-snug text-foreground shadow-inner backdrop-blur-[1px];
   }
+}
+
+/* Mode édition combo — parcelles cadastrales cliquables au-dessus des empreintes MVT. */
+.leaflet-pane.discoveryAddableParcelle-pane path.discovery-addable-parcelle-path,
+.leaflet-pane.discoveryAddableParcelle-pane path.discovery-adjacent-parcelle-included-path {
+  cursor: pointer;
+}
+
+/* Fallback Leaflet : jamais d’épingle PNG par défaut (voir lib/leaflet-marker-icon.ts). */
+.leaflet-hidden-marker-icon {
+  display: none !important;
+  border: none !important;
+  background: transparent !important;
 }

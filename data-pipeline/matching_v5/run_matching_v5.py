@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Matching V5 (discovery) — cadastre × IRIS × BDNB × parcelles personnes morales.
+Matching V5 (discovery) — cadastre × empreintes OSM × parcelles personnes morales (zoning landuse OSM).
 
 Totalement indépendant : aucun import depuis le package scout_pipeline.
+
+Export cadastre×bâtiment : ne dépend pas du PPM. Le matching SIRENE (passerelle) utilise le PPM
+quand il est présent ; sinon une adresse OSM sur le footprint peut servir de passerelle synthétique.
 
 Prérequis Postgres : PostGIS, tables
   public.cadastre_france_feuilles_geom,
   public.parcelles_personnes_morales,
-  et la table BDNB (BDNB_BUILDINGS_TABLE, défaut public.bdnb_buildings).
+  public.osm_building_footprints, public.osm_landuse_areas (schémas 005 et 006 ; landuse peut être vide),
+  BDNB constructions + FFO (BDNB_CONSTRUCTIONS_TABLE) pour enrichissement OSM→BDNB (métadonnées).
   Optionnel (--write-postgres) : table public.scout_matching_v5_features
   (sql/003_scout_matching_v5_features.sql).
-  Mode --building-source osm : tables public.osm_building_footprints et
-  public.osm_landuse_areas (schémas 005 et 006 ; la landuse peut être vide).
 
-IRIS : fichier GeoJSON Bordeaux Métropole (Pessac inclus) sous public/geo/.
 
 Connexion : même ordre de variables que scripts/lib/resolve-database-url.mjs
 """
@@ -22,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import os
 import re
@@ -50,11 +50,15 @@ from scout_pipeline.address_normalization import (
     street_number_match_set,
 )
 
-from google_poi_fallback_v5 import (
-    build_synthetic_ppm_from_google_anchor,
-    empty_google_audit,
-    run_google_poi_fallback_for_parcel,
+from address_resolver_v5 import (
+    DisplayAddressResolver,
+    augment_ppm_passerelle_for_etab,
+    enrich_building_detail_with_display,
+    pick_parcel_display_from_buildings,
+    resolve_parcel_centroid_fallback,
 )
+from geoplateforme_geocode import GeoplateformeGeocoder
+from google_poi_fallback_v5 import build_synthetic_ppm_from_google_anchor, empty_google_audit
 from osm_buildings_v5 import (
     derive_zone_tag,
     fetch_osm_geometry_payloads,
@@ -64,9 +68,22 @@ from osm_buildings_v5 import (
     qualified_osm_buildings_table,
 )
 from osm_landuse_v5 import (
+    build_osm_min_footprint_filter_sql,
+    footprint_sum_meets_export_threshold,
     osm_landuse_regclass,
     qualified_osm_landuse_table,
 )
+from parking_match_v5 import (
+    attach_parkings_to_bdetails,
+    build_parking_index_from_rows,
+    collect_parking_geometries_for_bdetails,
+    fetch_charging_stations_for_parcel_keys,
+    fetch_enr_parking_parcel_intersections,
+    fetch_parking_parcel_intersections,
+    merge_parking_rows_with_enr_priority,
+)
+from enr_parking_v5 import qualified_enr_parking_table
+from osm_parking_v5 import osm_parking_regclass, qualified_osm_parking_table
 from osm_poi_v5 import (
     building_osm_export_columns,
     fetch_osm_pois_for_parcel_keys,
@@ -238,79 +255,6 @@ def safe_float(value: Any) -> float | None:
     return f
 
 
-def fetch_building_parcel_pairs(
-    cur,
-    code_insee: str,
-    constructions_qualified: str,
-    ffo_qualified: str,
-) -> list[dict[str, Any]]:
-    min_intersection_area_m2 = 50.0
-    # Point dans parcelle (ST_PointOnSurface) : rapide et stable vs ST_Intersects sur géométries invalides.
-    # Les bâtiments chevauchant plusieurs parcelles sans point intérieur commun sont rares.
-    sql = f"""
-    WITH parcels AS (
-      SELECT code_insee, section, numero_norm, geom, ST_Transform(geom, 2154) AS geom_2154
-      FROM public.cadastre_france_feuilles_geom
-      WHERE code_insee = %s
-        AND numero_norm IS NOT NULL
-        AND TRIM(numero_norm) <> ''
-    ),
-    bat AS (
-      SELECT
-        batiment_construction_id::text,
-        bc.batiment_groupe_id,
-        bc.geom_cstr,
-        ffo.annee_construction,
-        ST_Transform(bc.geom_cstr, 4326) AS g4326,
-        ST_Centroid(bc.geom_cstr) AS centroid_2154
-      FROM {constructions_qualified} bc
-      LEFT JOIN {ffo_qualified} ffo
-        ON ffo.batiment_groupe_id = bc.batiment_groupe_id
-      WHERE bc.code_commune_insee = %s
-        AND bc.geom_cstr IS NOT NULL
-        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%résidentiel collectif%%'
-        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%residentiel collectif%%'
-        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%résidentiel individuel%%'
-        AND COALESCE(LOWER(ffo.usage_niveau_1_txt), '') NOT LIKE '%%residentiel individuel%%'
-    ),
-    pairs AS (
-      SELECT
-        b.batiment_construction_id,
-        b.batiment_groupe_id,
-        p.code_insee,
-        p.section,
-        p.numero_norm,
-        b.annee_construction,
-        ST_Area(b.geom_cstr)::double precision AS footprint_m2,
-        ST_Area(
-          ST_Transform(
-            ST_Intersection(b.g4326, p.geom),
-            2154
-          )
-        )::double precision AS intersection_area_m2
-      FROM bat b
-      INNER JOIN parcels p
-        ON ST_IsValid(b.g4326)
-        AND b.g4326 && p.geom
-        AND ST_Intersects(b.g4326, p.geom)
-    )
-    SELECT DISTINCT ON (batiment_construction_id, code_insee, section, numero_norm)
-      batiment_construction_id,
-      batiment_groupe_id::text AS batiment_groupe_id,
-      code_insee,
-      section,
-      numero_norm,
-      annee_construction,
-      footprint_m2,
-      intersection_area_m2
-    FROM pairs
-    WHERE intersection_area_m2 >= %s
-    ORDER BY batiment_construction_id, code_insee, section, numero_norm
-    """
-    cur.execute(sql, (code_insee, code_insee, min_intersection_area_m2))
-    return _fetch_all_dicts_chunked(cur)
-
-
 def fetch_osm_building_parcel_pairs(
     cur,
     *,
@@ -322,7 +266,12 @@ def fetch_osm_building_parcel_pairs(
     min_parcel_intersection_area_m2: float,
     min_osm_bdnb_intersection_area_m2: float,
     osm_test_limit: int = 0,
+    min_batiment_footprint_m2: float = 400.0,
 ) -> list[dict[str, Any]]:
+    osm_footprint_sql, osm_footprint_params = build_osm_min_footprint_filter_sql(
+        min_batiment_footprint_m2,
+        osm_landuse_qualified,
+    )
     sql = f"""
     WITH parcels AS (
       SELECT code_insee, section, numero_norm, geom, ST_Transform(geom, 2154) AS geom_2154
@@ -348,9 +297,10 @@ def fetch_osm_building_parcel_pairs(
       FROM {osm_buildings_qualified} b
       WHERE b.geom IS NOT NULL
         AND b.geom && (SELECT bbox FROM parcels_extent)
-        AND b.code_insee = %s
-        AND ST_Area(ST_Transform(b.geom, 2154)) >= 400.0
-      ORDER BY b.osm_id
+        /* Pas de filtre b.code_insee : l'enrichissement import peut laisser NULL ; la jointure
+           parcels + filtre intersection ci-dessous rattache uniquement les bâtiments réellement
+           sur le cadastre de cette commune. */
+{osm_footprint_sql}      ORDER BY b.osm_id
       LIMIT %s
     ),
     osm_src AS MATERIALIZED (
@@ -488,7 +438,7 @@ def fetch_osm_building_parcel_pairs(
         sql,
         (
             code_insee,
-            code_insee,
+            *osm_footprint_params,
             int(osm_test_limit) if int(osm_test_limit) > 0 else 2147483647,
             code_insee,
             min_parcel_intersection_area_m2,
@@ -528,29 +478,6 @@ def fetch_parcel_geometries(cur, code_insee: str) -> dict[tuple[str, str, str], 
     out: dict[tuple[str, str, str], str] = {}
     for cinsee, section, numero, gj in cur.fetchall():
         out[(str(cinsee), str(section or ""), str(numero or ""))] = str(gj)
-    return out
-
-
-def fetch_construction_geometries(cur, construction_ids: list[str], constructions_qualified: str) -> dict[str, str]:
-    if not construction_ids:
-        return {}
-    cur.execute(
-        f"""
-        SELECT batiment_construction_id::text AS batiment_construction_id,
-               ST_AsGeoJSON(ST_Transform(geom_cstr, 4326))::text AS geometry
-        FROM {constructions_qualified}
-        WHERE batiment_construction_id = ANY(%s::text[])
-        """,
-        (construction_ids,),
-    )
-    out: dict[str, str] = {}
-    for row in cur.fetchall():
-        if isinstance(row, dict):
-            a = row["batiment_construction_id"]
-            b = row["geometry"]
-        else:
-            a, b = row
-        out[str(a)] = str(b)
     return out
 
 
@@ -741,66 +668,6 @@ def load_ppm_by_parcel(cur, code_insee: str) -> dict[tuple[str, str, str], dict[
     return out
 
 
-def load_iris_for_commune(code_insee: str) -> Any:
-    import geopandas as gpd
-
-    path = REPO_ROOT / "public" / "geo" / "iris-bordeaux-metropole.geojson"
-    if not path.is_file():
-        raise FileNotFoundError(f"Fichier IRIS introuvable: {path}")
-    gdf = gpd.read_file(path)
-    if "code_insee" not in gdf.columns:
-        raise ValueError("GeoJSON IRIS sans colonne code_insee")
-    sub = gdf[gdf["code_insee"].astype(str) == str(code_insee)].copy()
-    if sub.crs is None:
-        sub.set_crs(4326, inplace=True)
-    else:
-        sub = sub.to_crs(4326)
-    return sub
-
-
-def iris_for_point(lon: float, lat: float, iris_gdf: Any) -> tuple[str | None, str | None]:
-    import geopandas as gpd
-    from shapely.geometry import Point
-
-    pt = gpd.GeoDataFrame([{"geometry": Point(lon, lat)}], geometry="geometry", crs=4326)
-    joined = pt.sjoin(iris_gdf, how="left", predicate="within")
-    if joined.empty:
-        return None, None
-    row = joined.iloc[0]
-    code = row.get("code_iris")
-    nom = row.get("nom_iris")
-    if code is None:
-        return None, None
-    c = str(code).strip()
-    if not c or c.lower() == "nan":
-        return None, None
-    n = ""
-    if nom is not None:
-        n = str(nom).strip()
-        if n.lower() == "nan":
-            n = ""
-    return (c, n or None)
-
-
-def parcel_centroid_geojson(geom_geojson_str: str) -> tuple[float, float] | None:
-    """Return lon, lat from Polygon/MultiPolygon GeoJSON string."""
-    from shapely.geometry import shape
-
-    try:
-        g = shape(json.loads(geom_geojson_str))
-    except Exception:
-        return None
-    c = g.centroid
-    return (float(c.x), float(c.y))
-
-
-def is_parc_industriel_iris(nom_iris: str | None) -> bool:
-    n = (nom_iris or "").strip()
-    if not n or n.lower() == "nan":
-        return False
-    return n.casefold() == "parc industriel".casefold()
-
-
 def _select_building_ids_for_parcel(
     pk: tuple[str, str, str],
     bids: set[str] | frozenset[str],
@@ -886,7 +753,6 @@ def compute_parcel_row_context_for_export(
     assigned_multi_by_building: dict[str, tuple[str, str, str]],
     multi_decisions: dict[str, dict[str, Any]],
     parcel_geom: dict[tuple[str, str, str], str],
-    iris_for_parcel_key: Any,
     min_default: float,
     min_shared_candidate: float,
     shared_candidate_parcels: set[tuple[str, str, str]],
@@ -901,54 +767,26 @@ def compute_parcel_row_context_for_export(
     )
     if not selected:
         return None
-    ci, ni = iris_for_parcel_key(pk)
     bdetails, footprint_sum = _parcel_building_details_and_footprint_sum(
         pk, selected, by_building, multi_parcel_buildings, multi_decisions
     )
     min_required = min_shared_candidate if pk in shared_candidate_parcels else min_default
-    if footprint_sum <= min_required:
+    apply_landuse_waiver = pk not in shared_candidate_parcels
+    if not footprint_sum_meets_export_threshold(
+        bdetails,
+        footprint_sum,
+        min_required,
+        min_default=min_default,
+        apply_landuse_waiver=apply_landuse_waiver,
+    ):
         return None
     gj = parcel_geom.get(pk, "")
     return {
         "selected": selected,
         "bdetails": bdetails,
         "footprint_sum": footprint_sum,
-        "ci": ci,
-        "ni": ni,
         "gj": gj,
     }
-
-
-def parcel_geometries_union_geojson(
-    parcel_geom: dict[tuple[str, str, str], str],
-    members: list[tuple[str, str, str]],
-) -> tuple[str | None, tuple[float, float] | None]:
-    """Union WGS84 geometries; returns GeoJSON string and (lon, lat) centroid of union."""
-    from shapely.geometry import mapping, shape
-    from shapely.ops import unary_union
-
-    geoms = []
-    for pk in members:
-        s = (parcel_geom.get(pk) or "").strip()
-        if not s:
-            continue
-        try:
-            geoms.append(shape(json.loads(s)))
-        except Exception:
-            continue
-    if not geoms:
-        return None, None
-    try:
-        u = unary_union(geoms)
-    except Exception:
-        return None, None
-    if u.is_empty:
-        return None, None
-    try:
-        c = u.centroid
-        return json.dumps(mapping(u)), (float(c.x), float(c.y))
-    except Exception:
-        return None, None
 
 
 def parcel_pk_to_group_id(
@@ -991,156 +829,6 @@ def parcel_pk_to_group_id(
         gid = tuple(sorted(members))
         for pk in members:
             out[pk] = gid
-    return out
-
-
-def stable_google_fallback_group_id(gid: tuple[tuple[str, str, str], ...]) -> str:
-    raw = json.dumps([list(t) for t in gid], ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def count_osm_pois_with_website_in_group(
-    members: list[tuple[str, str, str]],
-    osm_by_pk: dict[tuple[str, str, str], tuple[list[dict[str, Any]], int, int]],
-) -> int:
-    seen: set[tuple[str, int]] = set()
-    for pk in members:
-        pois, _n, _trunc = osm_by_pk.get(pk, ([], 0, 0))
-        for poi in pois:
-            website = str(poi.get("website") or "").strip()
-            if not website:
-                continue
-            osm_type = str(poi.get("osm_type") or "").strip().lower()[:1]
-            try:
-                osm_id = int(poi.get("osm_id"))
-            except Exception:
-                continue
-            seen.add((osm_type, osm_id))
-    return len(seen)
-
-
-def precompute_google_group_fallback_cache(
-    *,
-    google_fb: bool,
-    etab_available: bool,
-    google_key: str,
-    google_radius_m: float,
-    exported_pks: set[tuple[str, str, str]],
-    parcel_geom: dict[tuple[str, str, str], str],
-    nom_iris_by_pk: dict[tuple[str, str, str], str | None],
-    ppm_payload: Any,
-    voie_index: dict[str, list[tuple[Any, ...]]],
-    etab_rows: list[tuple[Any, ...]],
-    osm_by_pk: dict[tuple[str, str, str], tuple[list[dict[str, Any]], int, int]],
-    google_stats: dict[str, int],
-    pk_to_gid: dict[tuple[str, str, str], tuple[tuple[str, str, str], ...]],
-    log: Callable[[str], None] | None = None,
-) -> dict[tuple[tuple[str, str, str], ...], dict[str, Any]]:
-    """
-    Un appel Google (Nearby + Details + api.gouv) par composante connexe de parcelles exportées
-    reliées par un bâtiment, si au moins une parcelle du groupe est en IRIS Parc Industriel et
-    qu'au moins une parcelle du groupe demande le fallback.
-    """
-    out: dict[tuple[tuple[str, str, str], ...], dict[str, Any]] = {}
-    if not google_fb or not etab_available or not (google_key or "").strip():
-        return out
-
-    emit = log if log is not None else (lambda _m: None)
-    seen_gid: set[tuple[tuple[str, str, str], ...]] = set()
-    pending: list[tuple[tuple[tuple[str, str, str], ...], list[tuple[str, str, str]]]] = []
-    skipped_by_osm_link = 0
-
-    for pk in sorted(exported_pks):
-        gid = pk_to_gid.get(pk)
-        if gid is None or gid in seen_gid:
-            continue
-        seen_gid.add(gid)
-        members = list(gid)
-        has_pi = any(is_parc_industriel_iris(nom_iris_by_pk.get(m)) for m in members)
-        if not has_pi:
-            continue
-        if count_osm_pois_with_website_in_group(members, osm_by_pk) >= 1:
-            skipped_by_osm_link += 1
-            continue
-        pending.append((gid, members))
-
-    emit(
-        f"[v5] Fallback Google (IRIS Parc Industriel) : {len(pending)} groupe(s) éligible(s) "
-        f"({skipped_by_osm_link} filtré(s) car POI OSM avec lien)."
-    )
-
-    for gi, (gid, members) in enumerate(pending, 1):
-        group_id_str = stable_google_fallback_group_id(gid)
-        g_union, ll_g = parcel_geometries_union_geojson(parcel_geom, members)
-        google_row = empty_google_audit()
-        google_row["google_fallback_group_id"] = group_id_str
-        google_row["google_fallback_attempted"] = "true"
-        google_stats["attempted"] += 1
-
-        if not g_union or not ll_g:
-            google_row["google_reject_reason"] = "union_geom_failed"
-            out[gid] = {"google_row": google_row, "rematch": None}
-            emit(
-                f"[v5]   Groupe {gi}/{len(pending)} terminé ({len(members)} parcelle(s), union géom KO) — "
-                f"appels cumulés: nearby={google_stats['nearby_calls']} "
-                f"details={google_stats['details_calls']} api_gouv={google_stats['api_gouv_calls']}"
-            )
-            continue
-
-        lon_g, lat_g = ll_g[0], ll_g[1]
-        gout = run_google_poi_fallback_for_parcel(
-            parcel_geom_geojson=g_union,
-            centroid_lat=lat_g,
-            centroid_lng=lon_g,
-            api_key=google_key,
-            radius_m=float(google_radius_m),
-        )
-        ctr = gout.get("counters") or {}
-        google_stats["nearby_calls"] += int(ctr.get("nearby_calls") or 0)
-        google_stats["details_calls"] += int(ctr.get("details_calls") or 0)
-        google_stats["api_gouv_calls"] += int(ctr.get("api_gouv_calls") or 0)
-        tr = gout.get("trace") or {}
-        google_row["google_nearby_status"] = str(tr.get("nearby_status") or "")
-        google_row["google_nearby_error"] = str(tr.get("nearby_error") or "")
-        google_row["google_raw_nearby_count"] = str(tr.get("raw_nearby_count") or 0)
-        google_row["google_excluded_outside_parcel"] = str(tr.get("excluded_outside_parcel") or 0)
-        google_row["google_nearby_ranked_json"] = str(tr.get("nearby_ranked_json") or "[]")
-        google_row["google_winner_place_id"] = str(tr.get("winner_place_id") or "")
-        google_row["google_winner_name"] = str(tr.get("winner_name") or "")
-        google_row["google_api_gouv_query"] = str(tr.get("api_gouv_query") or "")
-        api_list = gout.get("api_etablissements_at_cp") or []
-        google_row["google_api_gouv_etablissements_count"] = str(len(api_list))
-
-        formatted_g = gout.get("formatted_address")
-        synth_src = (
-            (formatted_g.strip() if isinstance(formatted_g, str) else "")
-            or str(gout.get("anchor_address") or "").strip()
-        )
-        rematch: dict[str, Any] | None = None
-        if synth_src:
-            google_row["google_anchor_address"] = synth_src
-            syn = build_synthetic_ppm_from_google_anchor(synth_src)
-            rematch = match_etablissements_for_parcel(voie_index, etab_rows, syn)
-            if int(rematch.get("siret_count") or 0) > 0:
-                google_row["google_fallback_success"] = "true"
-                mr = str(rematch.get("matching_reason") or "").strip()
-                rematch = {
-                    **rematch,
-                    "matching_reason": f"google_fallback:{mr}" if mr else "google_fallback:match",
-                }
-            else:
-                rr = str(tr.get("reject_reason") or "").strip()
-                google_row["google_reject_reason"] = rr or "local_match_still_empty"
-                rematch = None
-        else:
-            google_row["google_reject_reason"] = str(tr.get("reject_reason") or "") or "no_anchor"
-
-        out[gid] = {"google_row": google_row, "rematch": rematch}
-        emit(
-            f"[v5]   Groupe {gi}/{len(pending)} terminé ({len(members)} parcelle(s)) — "
-            f"appels cumulés: nearby={google_stats['nearby_calls']} "
-            f"details={google_stats['details_calls']} api_gouv={google_stats['api_gouv_calls']}"
-        )
     return out
 
 
@@ -1649,6 +1337,7 @@ def ensure_matching_runtime_indexes(
     ffo_qualified: str,
     osm_buildings_qualified: str,
     osm_landuse_qualified: str | None = None,
+    osm_parking_qualified: str | None = None,
 ) -> None:
     # Index durcissement "best effort": IF NOT EXISTS pour éviter les locks inutiles.
     stmts = [
@@ -1664,6 +1353,10 @@ def ensure_matching_runtime_indexes(
     if osm_landuse_qualified:
         stmts.append(
             f"CREATE INDEX IF NOT EXISTS osm_landuse_geom_gix ON {osm_landuse_qualified} USING GIST (geom)"
+        )
+    if osm_parking_qualified:
+        stmts.append(
+            f"CREATE INDEX IF NOT EXISTS osm_parking_geom_gix ON {osm_parking_qualified} USING GIST (geom)"
         )
     for stmt in stmts:
         cur.execute(stmt)
@@ -1785,6 +1478,34 @@ def write_matching_v5_features_postgres(
     finally:
         conn.close()
 
+    # Rafraîchissement de la vue matérialisée scout_matching_v5_buildings_mv.
+    # REFRESH MATERIALIZED VIEW ne peut pas s'exécuter dans une transaction d'écriture
+    # simultanée : on ouvre une connexion dédiée en autocommit.
+    refresh_conn = psycopg2.connect(url)
+    try:
+        refresh_conn.autocommit = True
+        with refresh_conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY public.scout_matching_v5_buildings_mv"
+                )
+                v5_log("[v5] REFRESH MATERIALIZED VIEW CONCURRENTLY scout_matching_v5_buildings_mv OK")
+            except psycopg2.errors.UndefinedTable:
+                v5_log(
+                    "[v5] scout_matching_v5_buildings_mv absente : appliquer "
+                    "data-pipeline/sql/007_scout_matching_v5_buildings_mv.sql puis relancer."
+                )
+            except psycopg2.errors.FeatureNotSupported:
+                # Premier refresh : pas encore peuplée, CONCURRENTLY refuse. Bascule en mode bloquant.
+                cur.execute(
+                    "REFRESH MATERIALIZED VIEW public.scout_matching_v5_buildings_mv"
+                )
+                v5_log("[v5] REFRESH MATERIALIZED VIEW scout_matching_v5_buildings_mv (initial) OK")
+    except Exception as e:
+        v5_log(f"[v5] REFRESH scout_matching_v5_buildings_mv échoué (non bloquant) : {e!r}")
+    finally:
+        refresh_conn.close()
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Matching V5 discovery (Pessac / commune INSEE).")
@@ -1823,32 +1544,24 @@ def main() -> int:
         help="Valeur colonne source_run (défaut: matching_v5:<code_insee>).",
     )
     ap.add_argument(
-        "--google-fallback",
-        action="store_true",
-        help="Si pas de SIRET après matching passerelle : Nearby + Place Details + api.gouv puis re-match local, "
-        "une fois par groupe de parcelles exportées reliées par un bâtiment si au moins une parcelle est en IRIS Parc Industriel.",
-    )
-    ap.add_argument(
-        "--google-api-key",
-        default=os.getenv("GOOGLE_MAPS_API_KEY") or os.getenv("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY") or "",
-        help="Clé Google Places (sinon GOOGLE_MAPS_API_KEY / NEXT_PUBLIC_GOOGLE_MAPS_API_KEY).",
-    )
-    ap.add_argument(
-        "--google-radius-m",
-        type=float,
-        default=100.0,
-        help="Rayon Nearby Search en mètres (max 500).",
-    )
-    ap.add_argument(
         "--no-osm-poi",
         action="store_true",
         help="Désactive la jointure OSM POI et l'export des colonnes associées.",
     )
     ap.add_argument(
-        "--building-source",
-        choices=("bdnb", "osm"),
-        default="bdnb",
-        help="Source géométrique bâtiment : bdnb (défaut) ou osm (footprints OSM + enrichissement BNDB).",
+        "--no-osm-parking",
+        action="store_true",
+        help="Désactive la jointure parking (OSM + ENR) / bornes et l'export parkings_json.",
+    )
+    ap.add_argument(
+        "--no-enr-parking",
+        action="store_true",
+        help="Désactive uniquement la source ENR (PARK-SUP-500) ; OSM reste actif si présent.",
+    )
+    ap.add_argument(
+        "--no-address-resolve",
+        action="store_true",
+        help="Désactive display_address et le géocodage inverse passerelle SIRENE (OSM / Géoplateforme).",
     )
     ap.add_argument(
         "--osm-parcel-intersection-min-m2",
@@ -1861,6 +1574,14 @@ def main() -> int:
         type=float,
         default=20.0,
         help="Seuil m² d'intersection OSM footprint ↔ BNDB pour valider l'enrichissement BNDB.",
+    )
+    ap.add_argument(
+        "--min-batiment-footprint-m2",
+        type=float,
+        default=400.0,
+        help="Emprise au sol minimum (m², EPSG:2154) pour qu'un bâtiment entre dans la jointure spatiale. "
+        "Dérogation : intersection polygone landuse commercial, industrial ou retail. "
+        "0 = aucun filtre par emprise. Défaut 400.",
     )
     ap.add_argument(
         "--osm-test-limit",
@@ -1906,27 +1627,20 @@ def main() -> int:
         print("Aucune URL Postgres (voir DATABASE_URL, LOCAL_DATABASE_URL, …)", file=sys.stderr)
         return 1
 
-    google_key = str(args.google_api_key or "").strip()
-    google_fb = bool(args.google_fallback) and bool(google_key)
-    if bool(args.google_fallback) and not google_key:
-        print(
-            "[v5] Avertissement: --google-fallback sans clé (GOOGLE_MAPS_API_KEY), fallback désactivé.",
-            file=sys.stderr,
-        )
-
     code_insee = str(args.code_insee).strip()
     constructions_q, bdnb_schema = qualified_bdnb_constructions_table()
     ffo_q = qualified_bdnb_ffo_table(bdnb_schema)
     etab_q = qualified_etablissements_table()
     profiler = PhaseProfiler(enabled=bool(args.profile_json))
     v5_log(
-        f"[v5] Source bâtiment: {args.building_source}"
-        + (
-            f" (matching OSM→BDNB actif, seuil OSM↔parcelle {float(args.osm_parcel_intersection_min_m2):.1f} m², "
-            f"test_limit={int(args.osm_test_limit) if int(args.osm_test_limit) > 0 else 'none'})"
-            if args.building_source == "osm"
-            else ""
-        )
+        "[v5] Empreintes bâtiments : OSM (enrichissement OSM→BDNB si intersection ; "
+        f"seuil OSM↔parcelle {float(args.osm_parcel_intersection_min_m2):.1f} m², "
+        f"test_limit={int(args.osm_test_limit) if int(args.osm_test_limit) > 0 else 'none'})"
+    )
+    _mb = float(args.min_batiment_footprint_m2)
+    v5_log(
+        "[v5] Filtre emprise bâtiment (ST_Area, 2154): "
+        + (f"≥ {_mb:.1f} m²" if _mb > 0 else "désactivé (toutes emprises)")
     )
 
     try:
@@ -1940,15 +1654,11 @@ def main() -> int:
     if not args.no_geojson:
         args.out_geojson.parent.mkdir(parents=True, exist_ok=True)
 
-    with profiler.phase("load_iris"):
-        iris_gdf = load_iris_for_commune(code_insee)
-    v5_log(f"[v5] Commune INSEE {code_insee} — IRIS chargé ({len(iris_gdf)} polygones filtrés).")
-    profiler.set_metric("iris_polygons", len(iris_gdf))
-
     etab_rows: list[tuple[Any, ...]] = []
     voie_index: dict[str, list[tuple[Any, ...]]] = {}
 
     conn = psycopg2.connect(url)
+    etab_available = False
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -1960,47 +1670,41 @@ def main() -> int:
                         constructions_qualified=constructions_q,
                         ffo_qualified=ffo_q,
                         osm_buildings_qualified=qualified_osm_buildings_table(),
-                        osm_landuse_qualified=(
-                            qualified_osm_landuse_table() if args.building_source == "osm" else None
-                        ),
+                        osm_landuse_qualified=qualified_osm_landuse_table(),
+                        osm_parking_qualified=qualified_osm_parking_table(),
                     )
-            if args.building_source == "osm":
-                osm_q = qualified_osm_buildings_table()
-                lu_q = qualified_osm_landuse_table()
-                cur.execute("SELECT to_regclass(%s) IS NOT NULL", (osm_buildings_regclass(),))
-                row = cur.fetchone()
-                if not row or not row[0]:
-                    raise RuntimeError(
-                        "Table OSM footprints absente. Lancez d'abord import_osm_buildings.py --ensure-schema --input ... "
-                        "(ou repassez --building-source bdnb)."
-                    )
-                cur.execute("SELECT to_regclass(%s) IS NOT NULL", (osm_landuse_regclass(),))
-                row_lu = cur.fetchone()
-                if not row_lu or not row_lu[0]:
-                    raise RuntimeError(
-                        "Table OSM landuse absente. Lancez import_osm_landuse.py --ensure-schema "
-                        "(la table peut être vide ; le schéma doit exister)."
-                    )
-                with profiler.phase("fetch_osm_pairs"):
-                    pairs = fetch_osm_building_parcel_pairs(
-                        cur,
-                        code_insee=code_insee,
-                        constructions_qualified=constructions_q,
-                        ffo_qualified=ffo_q,
-                        osm_buildings_qualified=osm_q,
-                        osm_landuse_qualified=lu_q,
-                        min_parcel_intersection_area_m2=float(args.osm_parcel_intersection_min_m2),
-                        min_osm_bdnb_intersection_area_m2=float(args.osm_bdnb_match_min_m2),
-                        osm_test_limit=int(args.osm_test_limit),
-                    )
-            else:
-                with profiler.phase("fetch_bdnb_pairs"):
-                    pairs = fetch_building_parcel_pairs(cur, code_insee, constructions_q, ffo_q)
+            osm_q = qualified_osm_buildings_table()
+            lu_q = qualified_osm_landuse_table()
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", (osm_buildings_regclass(),))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                raise RuntimeError(
+                    "Table OSM footprints absente. Lancez import_osm_buildings.py --ensure-schema --input … "
+                    "(voir data-pipeline/README.md)."
+                )
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", (osm_landuse_regclass(),))
+            row_lu = cur.fetchone()
+            if not row_lu or not row_lu[0]:
+                raise RuntimeError(
+                    "Table OSM landuse absente. Lancez import_osm_landuse.py --ensure-schema "
+                    "(la table peut être vide ; le schéma doit exister)."
+                )
+            with profiler.phase("fetch_osm_pairs"):
+                pairs = fetch_osm_building_parcel_pairs(
+                    cur,
+                    code_insee=code_insee,
+                    constructions_qualified=constructions_q,
+                    ffo_qualified=ffo_q,
+                    osm_buildings_qualified=osm_q,
+                    osm_landuse_qualified=lu_q,
+                    min_parcel_intersection_area_m2=float(args.osm_parcel_intersection_min_m2),
+                    min_osm_bdnb_intersection_area_m2=float(args.osm_bdnb_match_min_m2),
+                    osm_test_limit=int(args.osm_test_limit),
+                    min_batiment_footprint_m2=float(args.min_batiment_footprint_m2),
+                )
             with profiler.phase("fetch_parcel_geometries"):
                 parcel_geom = fetch_parcel_geometries(cur, code_insee)
             ppm: dict[tuple[str, str, str], dict[str, Any]] = {}
-            etab_available = False
-            etab_match_by_parcel: dict[tuple[str, str, str], dict[str, Any]] = {}
             with profiler.phase("load_ppm"):
                 ppm = load_ppm_by_parcel(cur, code_insee)
             try:
@@ -2013,47 +1717,16 @@ def main() -> int:
                 with profiler.phase("fetch_etablissements"):
                     etab_rows = fetch_etablissements_for_commune(cur, etab_q, code_insee)
                     voie_index = build_voie_norm_index(etab_rows)
-                etab_match_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
-                ppm_list = list(ppm.items())
-                n_ppm = len(ppm_list)
-                v5_log(f"[v5] Matching établissements (passerelle PPM) : {n_ppm} parcelle(s) avec lignes PPM.")
-                with profiler.phase("match_etablissements"):
-                    for j, (pk, info) in enumerate(ppm_list, 1):
-                        ck = _etab_match_cache_key(code_insee, info)
-                        if ck not in etab_match_cache:
-                            etab_match_cache[ck] = match_etablissements_for_parcel(voie_index, etab_rows, info)
-                        etab_match_by_parcel[pk] = etab_match_cache[ck]
-                        if args.progress_every > 0 and j % args.progress_every == 0:
-                            v5_log(f"[v5]   PPM → SIRENE : {j}/{n_ppm}")
             else:
-                for pk in ppm.keys():
-                    etab_match_by_parcel[pk] = {
-                        "status_technique": "source_missing",
-                        "status_metier": "none",
-                        "siret_count": 0,
-                        "sirets_json": "[]",
-                        "sirens_json": "[]",
-                        "matching_confidence": 0.0,
-                        "matching_reason": "Table établissements absente.",
-                    }
+                etab_rows = []
+                voie_index = {}
     finally:
         conn.close()
-
-    google_stats = {
-        "attempted": 0,
-        "success": 0,
-        "nearby_calls": 0,
-        "details_calls": 0,
-        "api_gouv_calls": 0,
-    }
 
     by_building: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_parcel: dict[tuple[str, str, str], set[str]] = defaultdict(set)
     for row in pairs:
-        if args.building_source == "osm":
-            bid = format_osm_building_id(str(row.get("osm_type") or "w"), int(row.get("osm_id") or 0))
-        else:
-            bid = str(row["batiment_construction_id"])
+        bid = format_osm_building_id(str(row.get("osm_type") or "w"), int(row.get("osm_id") or 0))
         gid = str(row.get("batiment_groupe_id") or "")
         key = (str(row["code_insee"]), str(row["section"] or ""), str(row["numero_norm"] or ""))
         by_building[bid].append(
@@ -2062,14 +1735,12 @@ def main() -> int:
                 "section": key[1],
                 "numero_norm": key[2],
                 "batiment_groupe_id": gid or None,
-                "batiment_construction_id": (
-                    bid if args.building_source == "osm" else str(row.get("batiment_construction_id") or "").strip() or None
-                ),
+                "batiment_construction_id": bid,
                 "bdnb_batiment_construction_id": str(row.get("batiment_construction_id") or "").strip() or None,
                 "annee_construction": row.get("annee_construction"),
                 "footprint_m2": safe_float(row.get("footprint_m2")),
                 "intersection_area_m2": safe_float(row.get("intersection_area_m2")),
-                "osm_building_id": bid if args.building_source == "osm" else "",
+                "osm_building_id": bid,
                 "osm_match_status": str(row.get("osm_match_status") or ""),
                 "osm_bdnb_intersection_area_m2": safe_float(row.get("osm_bdnb_intersection_area_m2")),
                 "osm_address_text": str(row.get("osm_address_text") or "").strip(),
@@ -2090,6 +1761,108 @@ def main() -> int:
     profiler.set_metric("parcels_with_pairs", len(by_parcel))
     profiler.set_metric("buildings_count", len(by_building))
 
+    parking_index: dict[tuple[str, int], dict[str, Any]] = {}
+    parking_osm_status = "disabled" if args.no_osm_parking else "skipped"
+    parking_enr_status = "disabled" if args.no_osm_parking else "skipped"
+    if not args.no_osm_parking:
+        conn_pk = psycopg2.connect(url)
+        try:
+            with conn_pk.cursor() as cur:
+                osm_rows: list[dict[str, Any]] = []
+                enr_rows: list[dict[str, Any]] = []
+                if not args.no_enr_parking:
+                    osm_rows, parking_osm_status = fetch_parking_parcel_intersections(
+                        cur,
+                        code_insee,
+                        qualified_osm_parking_table(),
+                    )
+                    enr_rows, parking_enr_status = fetch_enr_parking_parcel_intersections(
+                        cur,
+                        code_insee,
+                        qualified_enr_parking_table(),
+                    )
+                else:
+                    osm_rows, parking_osm_status = fetch_parking_parcel_intersections(
+                        cur,
+                        code_insee,
+                        qualified_osm_parking_table(),
+                    )
+                    parking_enr_status = "disabled"
+                n_osm = len({(r["osm_type"], r["osm_id"]) for r in osm_rows})
+                n_enr = len({(r["osm_type"], r["osm_id"]) for r in enr_rows})
+                pk_rows = merge_parking_rows_with_enr_priority(osm_rows, enr_rows)
+                n_merged = len({(r["osm_type"], r["osm_id"]) for r in pk_rows})
+                if parking_osm_status == "ok" or parking_enr_status == "ok" or pk_rows:
+                    parking_index = build_parking_index_from_rows(pk_rows)
+                v5_log(
+                    f"[v5] Parking: osm={parking_osm_status} ({n_osm} polyg.) | "
+                    f"enr={parking_enr_status} ({n_enr} polyg.) | "
+                    f"après fusion={n_merged} indexé(s)={len(parking_index)}"
+                )
+        except Exception as e:
+            parking_osm_status = "error"
+            v5_log(f"[v5] Parking: erreur de jointure ({e}).")
+        finally:
+            conn_pk.close()
+
+    all_osm_ids_early = sorted(
+        {str(bid).strip() for bids in by_parcel.values() for bid in bids if str(bid).strip()}
+    )
+    payload_for_etab: dict[str, dict[str, Any]] = {}
+    if all_osm_ids_early:
+        conn_geom = psycopg2.connect(url)
+        try:
+            with conn_geom.cursor() as cur_geom:
+                payload_for_etab = fetch_osm_geometry_payloads(
+                    cur_geom,
+                    all_osm_ids_early,
+                    qualified_osm_buildings_table(),
+                )
+        finally:
+            conn_geom.close()
+
+    etab_geocoder = None if args.no_address_resolve else GeoplateformeGeocoder()
+    with profiler.phase("augment_ppm_passerelle"):
+        augment_ppm_passerelle_for_etab(
+            ppm,
+            by_parcel,
+            by_building,
+            code_insee=code_insee,
+            parcel_geom=parcel_geom,
+            payload_by_bat=payload_for_etab,
+            geocoder=etab_geocoder,
+            build_synthetic_from_text=build_synthetic_ppm_from_google_anchor,
+            log=v5_log,
+        )
+
+    etab_match_by_parcel: dict[tuple[str, str, str], dict[str, Any]] = {}
+    if etab_available:
+        etab_match_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+        ppm_list = list(ppm.items())
+        n_ppm = len(ppm_list)
+        v5_log(
+            f"[v5] Matching établissements (PPM et/ou adresse bâtiment) : {n_ppm} entrée(s) passerelle."
+        )
+        with profiler.phase("match_etablissements"):
+            for j, (pk, info) in enumerate(ppm_list, 1):
+                ck = _etab_match_cache_key(code_insee, info)
+                if ck not in etab_match_cache:
+                    etab_match_cache[ck] = match_etablissements_for_parcel(voie_index, etab_rows, info)
+                etab_match_by_parcel[pk] = etab_match_cache[ck]
+                if args.progress_every > 0 and j % args.progress_every == 0:
+                    v5_log(f"[v5]   passerelle → SIRENE : {j}/{n_ppm}")
+    else:
+        for pk in ppm.keys():
+            etab_match_by_parcel[pk] = {
+                "status_technique": "source_missing",
+                "status_metier": "none",
+                "siret_count": 0,
+                "sirets_json": "[]",
+                "sirens_json": "[]",
+                "matching_confidence": 0.0,
+                "matching_reason": "Table établissements absente.",
+            }
+
     multi_parcel_buildings = {b for b, lst in by_building.items() if len({(x["section"], x["numero_norm"]) for x in lst}) > 1}
     assigned_multi_by_building, multi_decisions = resolve_multi_parcel_buildings(by_building, ppm)
     shared_candidate_parcels: set[tuple[str, str, str]] = set()
@@ -2101,15 +1874,6 @@ def main() -> int:
         f"[v5] Jointure spatiale : {len(pairs)} paires bâtiment×parcelle — {len(by_building)} bâtiments — "
         f"{len(by_parcel)} parcelles cadastre (≥1 bâtiment) — {len(multi_parcel_buildings)} bât. multi-parcelles"
     )
-
-    def iris_for_parcel_key(pk: tuple[str, str, str]) -> tuple[str | None, str | None]:
-        gj = parcel_geom.get(pk)
-        if not gj:
-            return None, None
-        ll = parcel_centroid_geojson(gj)
-        if not ll:
-            return None, None
-        return iris_for_point(ll[0], ll[1], iris_gdf)
 
     def ppm_payload(pk: tuple[str, str, str]) -> dict[str, Any]:
         info = ppm.get(pk) or {}
@@ -2149,31 +1913,14 @@ def main() -> int:
 
     # Lignes bâtiment (chevauchement multi-parcelles)
     multi_ids = sorted(multi_parcel_buildings)
-    geom_by_bat: dict[str, str] = {}
-    if args.include_building_grain and multi_ids and args.building_source != "osm":
-        conn = psycopg2.connect(url)
-        try:
-            with conn.cursor() as cur:
-                geom_by_bat = fetch_construction_geometries(cur, multi_ids, constructions_q)
-        finally:
-            conn.close()
+    payload_by_bat = payload_for_etab
 
-    all_selected_ids = sorted({str(bid).strip() for bids in by_parcel.values() for bid in bids if str(bid).strip()})
-    payload_by_bat: dict[str, dict[str, Any]] = {}
-    if all_selected_ids:
-        conn = psycopg2.connect(url)
-        try:
-            with conn.cursor() as cur:
-                if args.building_source == "osm":
-                    payload_by_bat = fetch_osm_geometry_payloads(
-                        cur,
-                        all_selected_ids,
-                        qualified_osm_buildings_table(),
-                    )
-                else:
-                    payload_by_bat = fetch_construction_payloads(cur, all_selected_ids, constructions_q)
-        finally:
-            conn.close()
+    address_resolver = DisplayAddressResolver(
+        geocoder=GeoplateformeGeocoder(),
+        enabled=not bool(args.no_address_resolve),
+    )
+    if not args.no_address_resolve:
+        v5_log("[v5] Résolution display_address activée (Géoplateforme).")
 
     if args.include_building_grain:
         for bid in multi_ids:
@@ -2182,15 +1929,12 @@ def main() -> int:
             parcelles = []
             for p in plist:
                 pk = (p["code_insee"], p["section"], p["numero_norm"])
-                ci, ni = iris_for_parcel_key(pk)
                 ppm_d = ppm_payload(pk)
                 parcelles.append(
                     {
                         "code_insee": pk[0],
                         "section": pk[1],
                         "numero_norm": pk[2],
-                        "code_iris": ci,
-                        "nom_iris": ni,
                         **ppm_d,
                     }
                 )
@@ -2204,6 +1948,29 @@ def main() -> int:
                 seen.add(k)
                 dedup.append(item)
             first = plist[0]
+            pk0 = (first["code_insee"], first["section"], first["numero_norm"])
+            ppm0 = ppm_payload(pk0)
+            bdetail0 = enrich_building_detail_with_display(
+                {
+                    "batiment_construction_id": first.get("batiment_construction_id") or bid,
+                    "osm_address_text": first.get("osm_address_text") or "",
+                    "zone_tag": first.get("zone_tag") or "",
+                    "zone_source": first.get("zone_source") or "",
+                    "osm_raw_tags": payload_first.get("raw_tags") or {},
+                    "footprint_m2": first.get("footprint_m2"),
+                },
+                payload=payload_first,
+                ppm_info=ppm0,
+                etab_match=etab_match_by_parcel.get(pk0) or {},
+                code_insee=str(pk0[0]),
+                resolver=address_resolver,
+            )
+            building_display = {
+                "display_address": bdetail0.get("display_address") or "",
+                "display_address_source": bdetail0.get("display_address_source") or "none",
+                "display_address_confidence": bdetail0.get("display_address_confidence") or "none",
+                "display_address_meta_json": bdetail0.get("display_address_meta_json") or "{}",
+            }
             out_rows.append(
                 {
                     "scout_v5_id": f"building:{bid}",
@@ -2225,8 +1992,6 @@ def main() -> int:
                     "code_insee": "",
                     "section": "",
                     "numero_norm": "",
-                    "code_iris": "",
-                    "nom_iris": "",
                     "nb_batiments": 1,
                     "annee_construction": first.get("annee_construction"),
                     "footprint_m2": first.get("footprint_m2"),
@@ -2249,13 +2014,10 @@ def main() -> int:
                     "matching_debug_json": json.dumps(multi_decisions.get(bid) or {}, ensure_ascii=False),
                     "parcelles_json": json.dumps(dedup, ensure_ascii=False),
                     "buildings_json": "",
-                    "geometry_geojson": (
-                        payload_by_bat.get(bid, {}).get("geometry")
-                        if args.building_source == "osm"
-                        else geom_by_bat.get(bid, "")
-                    ),
+                    "geometry_geojson": payload_by_bat.get(bid, {}).get("geometry"),
                     **empty_google_audit(),
                     **building_osm_export_columns(),
+                    **building_display,
                 }
             )
 
@@ -2281,7 +2043,6 @@ def main() -> int:
                 assigned_multi_by_building=assigned_multi_by_building,
                 multi_decisions=multi_decisions,
                 parcel_geom=parcel_geom,
-                iris_for_parcel_key=iris_for_parcel_key,
                 min_default=min_default,
                 min_shared_candidate=min_shared_candidate,
                 shared_candidate_parcels=shared_candidate_parcels,
@@ -2315,30 +2076,33 @@ def main() -> int:
         v5_log(
             f"[v5] OSM POI: status={osm_global_status} sur {len(exported_pks)} parcelle(s) exportées."
         )
-    nom_iris_by_pk: dict[tuple[str, str, str], str | None] = {
-        pk: (row_ctx[pk] or {}).get("ni") for pk in exported_pks
-    }
+
+    charging_by_pk: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    charging_global_status = "disabled" if args.no_osm_parking else "ok"
+    if not args.no_osm_parking and exported_pks and parking_index:
+        conn_chg = psycopg2.connect(url)
+        try:
+            with conn_chg.cursor() as cur:
+                charging_by_pk, charging_global_status = fetch_charging_stations_for_parcel_keys(
+                    cur,
+                    code_insee,
+                    exported_pks,
+                )
+        except Exception as e:
+            charging_global_status = "error"
+            v5_log(f"[v5] OSM bornes: erreur de jointure ({e}).")
+        finally:
+            conn_chg.close()
+        if exported_pks:
+            v5_log(
+                f"[v5] OSM bornes: status={charging_global_status} sur {len(exported_pks)} parcelle(s)."
+            )
+
     pk_to_gid: dict[tuple[str, str, str], tuple[tuple[str, str, str], ...]] = (
         parcel_pk_to_group_id(exported_pks, by_building) if exported_pks else {}
     )
     n_comp = len({pk_to_gid[p] for p in exported_pks}) if exported_pks else 0
     v5_log(f"[v5] Composantes connexes (parcelles exportées reliées par un bâtiment) : {n_comp}")
-    google_group_cache = precompute_google_group_fallback_cache(
-        google_fb=google_fb,
-        etab_available=etab_available,
-        google_key=google_key,
-        google_radius_m=float(args.google_radius_m),
-        exported_pks=exported_pks,
-        parcel_geom=parcel_geom,
-        nom_iris_by_pk=nom_iris_by_pk,
-        ppm_payload=ppm_payload,
-        voie_index=voie_index,
-        etab_rows=etab_rows,
-        osm_by_pk=osm_by_pk,
-        google_stats=google_stats,
-        pk_to_gid=pk_to_gid,
-        log=v5_log,
-    )
 
     written = 0
     for pk, bids in by_parcel.items():
@@ -2350,13 +2114,10 @@ def main() -> int:
             v5_log(f"[v5]   Assemblage lignes export {written}/{len(exported_pks)}")
         selected = ctx["selected"]
         bdetails = ctx["bdetails"]
+        ppm_d = ppm_payload(pk)
         bdetails_enriched: list[dict[str, Any]] = []
         for item in bdetails:
-            payload_key = (
-                item.get("osm_building_id")
-                if args.building_source == "osm"
-                else item.get("batiment_construction_id")
-            )
+            payload_key = item.get("osm_building_id")
             payload = payload_by_bat.get(str(payload_key or "").strip(), {}) if payload_key else {}
             enriched = dict(item)
             enriched["osm_name"] = payload.get("name") or ""
@@ -2366,35 +2127,48 @@ def main() -> int:
             enriched["osm_poi_primary_value"] = payload.get("poi_primary_value") or ""
             enriched["osm_poi_type_label"] = payload.get("poi_type_label") or ""
             enriched["osm_raw_tags"] = payload.get("raw_tags") or {}
+            enriched = enrich_building_detail_with_display(
+                enriched,
+                payload=payload,
+                ppm_info=ppm_d,
+                etab_match=etab_match_by_parcel.get(pk) or {},
+                code_insee=pk[0],
+                resolver=address_resolver,
+            )
             bdetails_enriched.append(enriched)
+        if not args.no_osm_parking and parking_index:
+            bdetails_enriched = attach_parkings_to_bdetails(
+                bdetails_enriched,
+                by_building=by_building,
+                parking_index=parking_index,
+                charging_by_pk=charging_by_pk,
+            )
+        parking_geometries_payload = (
+            []
+            if args.light_export or args.no_osm_parking or not parking_index
+            else collect_parking_geometries_for_bdetails(bdetails_enriched, parking_index)
+        )
         footprint_sum = ctx["footprint_sum"]
-        ci = ctx["ci"]
-        ni = ctx["ni"]
         gj = ctx["gj"]
-        ppm_d = ppm_payload(pk)
         google_row = empty_google_audit()
-        gid = pk_to_gid.get(pk)
-        if (
-            gid is not None
-            and gid in google_group_cache
-            and google_fb
-            and etab_available
-        ):
-            gr = google_group_cache[gid]
-            google_row = dict(gr["google_row"])
-            rematch = gr.get("rematch")
-            if rematch and int(rematch.get("siret_count") or 0) > 0:
-                google_stats["success"] += 1
-                ppm_d = {
-                    **ppm_d,
-                    "status_technique": rematch.get("status_technique") or ppm_d["status_technique"],
-                    "status_metier": rematch.get("status_metier") or ppm_d["status_metier"],
-                    "siret_count": rematch.get("siret_count", 0),
-                    "sirets_json": rematch.get("sirets_json", "[]"),
-                    "sirens_json": rematch.get("sirens_json", "[]"),
-                    "matching_confidence": float(rematch.get("matching_confidence") or 0.0),
-                    "matching_reason": rematch.get("matching_reason", ""),
-                }
+        parcel_display = pick_parcel_display_from_buildings(bdetails_enriched)
+        if parcel_display.get("display_address_confidence") != "confirmed":
+            zone_src = ""
+            zone_tag = ""
+            for it in bdetails_enriched:
+                if str(it.get("zone_source") or "") == "landuse" and str(it.get("zone_tag") or ""):
+                    zone_src = str(it.get("zone_source") or "")
+                    zone_tag = str(it.get("zone_tag") or "")
+                    break
+            parcel_display = resolve_parcel_centroid_fallback(
+                address_resolver,
+                code_insee=pk[0],
+                parcel_geom_geojson=parcel_geom.get(pk),
+                ppm_info=ppm_d,
+                etab_match=etab_match_by_parcel.get(pk) or {},
+                zone_source=zone_src,
+                zone_tag=zone_tag,
+            )
 
         scout_id = f"parcelle:{pk[0]}:{pk[1]}:{pk[2]}"
         out_rows.append(
@@ -2411,8 +2185,6 @@ def main() -> int:
                 "code_insee": pk[0],
                 "section": pk[1],
                 "numero_norm": pk[2],
-                "code_iris": ci or "",
-                "nom_iris": ni or "",
                 "nb_batiments": len(selected),
                 "annee_construction": "",
                 "footprint_m2": "",
@@ -2435,6 +2207,7 @@ def main() -> int:
                 "matching_debug_json": "",
                 "parcelles_json": "",
                 "buildings_json": json.dumps(bdetails_enriched, ensure_ascii=False),
+                "parking_geometries_json": json.dumps(parking_geometries_payload, ensure_ascii=False),
                 "building_geometries_json": (
                     "[]"
                     if args.light_export
@@ -2465,11 +2238,7 @@ def main() -> int:
                                 "geometry": json.loads((payload_by_bat.get(payload_key, {}) or {})["geometry"]),
                             }
                             for item in bdetails_enriched
-                            for payload_key in [
-                                item.get("osm_building_id")
-                                if args.building_source == "osm"
-                                else item.get("batiment_construction_id")
-                            ]
+                            for payload_key in [item.get("osm_building_id")]
                             if payload_key in payload_by_bat
                         ],
                         ensure_ascii=False,
@@ -2484,8 +2253,35 @@ def main() -> int:
                     osm_data_as_of=osm_data_as_of,
                     disabled=bool(args.no_osm_poi),
                 ),
+                **parcel_display,
             }
         )
+
+    if not args.no_osm_parking and parking_index:
+        for r in out_rows:
+            if str(r.get("grain") or "") != "building":
+                continue
+            bid = str(r.get("osm_building_id") or "").strip()
+            if not bid:
+                continue
+            stub = [
+                {
+                    "osm_building_id": bid,
+                    "batiment_construction_id": r.get("batiment_construction_id") or bid,
+                }
+            ]
+            enriched_stub = attach_parkings_to_bdetails(
+                stub,
+                by_building=by_building,
+                parking_index=parking_index,
+                charging_by_pk=charging_by_pk,
+            )
+            r["buildings_json"] = json.dumps(enriched_stub, ensure_ascii=False)
+            if not args.light_export:
+                r["parking_geometries_json"] = json.dumps(
+                    collect_parking_geometries_for_bdetails(enriched_stub, parking_index),
+                    ensure_ascii=False,
+                )
 
     fieldnames = [
         "scout_v5_id",
@@ -2500,8 +2296,6 @@ def main() -> int:
         "code_insee",
         "section",
         "numero_norm",
-        "code_iris",
-        "nom_iris",
         "nb_batiments",
         "annee_construction",
         "footprint_m2",
@@ -2514,6 +2308,10 @@ def main() -> int:
         "passerelle_indice_norm",
         "passerelle_numero_match",
         "passerelle_addresses_json",
+        "display_address",
+        "display_address_source",
+        "display_address_confidence",
+        "display_address_meta_json",
         "sirets_json",
         "sirens_json",
         "matching_confidence",
@@ -2525,6 +2323,7 @@ def main() -> int:
         "parcelles_json",
         "buildings_json",
         "building_geometries_json",
+        "parking_geometries_json",
         "google_fallback_attempted",
         "google_fallback_success",
         "google_fallback_group_id",
@@ -2553,17 +2352,6 @@ def main() -> int:
             for r in out_rows:
                 w.writerow(r)
     print(f"[v5] CSV écrit: {args.out_csv} ({len(out_rows)} lignes)")
-    if google_fb:
-        gsum = (
-            "[v5] Bilan Google fallback — "
-            f"groupes tentés={google_stats['attempted']} parcelles enrichies (succès)={google_stats['success']} | "
-            f"appels API: nearby={google_stats['nearby_calls']} details={google_stats['details_calls']} "
-            f"api_gouv={google_stats['api_gouv_calls']}"
-        )
-        print(gsum)
-        if args.quiet:
-            # même synthèse sur stderr si --quiet (stdout seul peut être redirigé)
-            print(gsum, file=sys.stderr, flush=True)
 
     if not args.no_geojson:
         with profiler.phase("write_geojson"):
@@ -2596,7 +2384,7 @@ def main() -> int:
 
     if args.profile_json:
         profiler.set_metric("out_rows", len(out_rows))
-        profiler.set_metric("building_source", args.building_source)
+        profiler.set_metric("building_source", "osm")
         args.profile_json.parent.mkdir(parents=True, exist_ok=True)
         args.profile_json.write_text(json.dumps(profiler.to_payload(), ensure_ascii=False, indent=2), encoding="utf-8")
         v5_log(f"[v5] Profiling JSON écrit: {args.profile_json}")

@@ -10,6 +10,7 @@ import {
 import Image from "next/image";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -130,6 +131,8 @@ import {
   collectSirensFromMatchingV5Row,
   collectSirensFromMatchingV5Rows,
   formatDiscoveryDrawerHeroAddress,
+  formatDiscoveryDrawerHeroAddressSourceLabel,
+  resolveDiscoveryDrawerHeroAddressSource,
   mergeOsmBuildingContactsFromRows,
   mergeOsmPoisFromParcelleRows,
   parseGoogleNearbyRankedJson,
@@ -142,11 +145,25 @@ import {
   type V5OsmPoiEntry,
   type V5PasserellePpmEntry,
 } from "@/lib/scout-matching-v5-map";
+import {
+  collectSortedDiscoveryComboBuildingEntries,
+  discoveryComboFootprintSumM2,
+} from "@/lib/discovery-combo-building-labels";
+import {
+  discoveryBuildingSelectionIdFromEntry,
+  isDiscoveryBuildingSelected,
+} from "@/lib/discovery-combo-building-selection";
+import {
+  discoveryComboActivityHeroBadgeLabel,
+  discoveryZoneTagsForDrawer,
+} from "@/lib/discovery-osm-activity-tags";
 import { DiscoverySolaireProjectCards } from "@/components/discovery/DiscoverySolaireProjectCards";
 import { DiscoveryDrawerEquipmentPanel } from "@/components/discovery/DiscoveryDrawerEquipmentPanel";
+import { DiscoveryDrawerParkingSection } from "@/components/discovery/DiscoveryDrawerParkingSection";
+import { collectParkingsFromMatchingRows, isChargingStationPoi } from "@/lib/matching-v5-parking";
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
-import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback";
-import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
+import { latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
+import { polygonAreaM2ApproxWgs84, polygonAreaM2ApproxWithPointFallback } from "@/lib/geojson-polygon-area-m2";
 import type { Prospect, ProspectContact, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 import { DiscoveryDrawerPoiContactsDialogCell } from "@/components/discovery/DiscoveryDrawerPoiContactsSheet";
 
@@ -422,6 +439,7 @@ function discoveryParcellePasserelleLabel(pr: ScoutMatchingV5Row): string {
 function ProspectDrawerDiscoverySection({
   row,
   linkedParcelleRows,
+  discoveryComboZoneTags,
   isOpen,
   onPipelineFinanceInputsChange,
   pipelineProject,
@@ -432,10 +450,17 @@ function ProspectDrawerDiscoverySection({
   discoverySimulationSummary,
   discoveryDailySimulationBattery,
   onDiscoveryMatchingV5Persisted,
+  discoverySelectedBuildingIds,
+  onDiscoveryToggleBuilding,
+  discoveryEditMode = false,
+  onDiscoveryEditModeChange,
+  discoveryEffectiveParcelleCount,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
   linkedParcelleRows: ScoutMatchingV5Row[];
+  /** `zone_tags` du combo SQL (overview), sinon dérivé des parcelles liées. */
+  discoveryComboZoneTags?: string[] | null;
   isOpen: boolean;
   /** Données PV + surface pour estimer prix / B-E dans le pied du drawer (pipeline). */
   onPipelineFinanceInputsChange?: (payload: DiscoveryDrawerFinancialInputs | null) => void;
@@ -453,6 +478,11 @@ function ProspectDrawerDiscoverySection({
   /** Même pack batterie que le résumé, pour la vue journalière. */
   discoveryDailySimulationBattery: { ref: BatteryReference; count: number } | null;
   onDiscoveryMatchingV5Persisted?: () => void;
+  discoverySelectedBuildingIds?: ReadonlySet<string>;
+  onDiscoveryToggleBuilding?: (selectionId: string) => void;
+  discoveryEditMode?: boolean;
+  onDiscoveryEditModeChange?: (enabled: boolean) => void;
+  discoveryEffectiveParcelleCount?: number;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -470,7 +500,16 @@ function ProspectDrawerDiscoverySection({
     return [row];
   }, [parcelleCluster, row]);
   const discoveryOsmPoisNamed = useMemo(
-    () => mergeOsmPoisFromParcelleRows(discoveryOsmSourceRows).filter((p) => p.name.trim() !== ""),
+    () =>
+      mergeOsmPoisFromParcelleRows(discoveryOsmSourceRows)
+        .filter((p) => p.name.trim() !== "")
+        .filter(
+          (p) =>
+            !isChargingStationPoi({
+              poiPrimaryValue: p.poi_primary_value ?? undefined,
+              typeLabel: p.poi_type_label,
+            })
+        ),
     [discoveryOsmSourceRows]
   );
   const discoveryGooglePoisNamed = useMemo(() => {
@@ -847,76 +886,27 @@ function ProspectDrawerDiscoverySection({
   }, [parcelleCluster, row.statusMetier, sirets.length, uniqueSirenPasserelle.size]);
 
   /** Lignes `buildings_json` ; pour une ligne `building` sans JSON, une ligne synthétique à partir de la row. Tri décroissant par empreinte (sans empreinte en fin de liste). */
-  const buildingDetailRows = useMemo((): V5BuildingsJsonEntry[] => {
-    const byBc = new Map<string, V5BuildingsJsonEntry>();
-    for (const pr of parcelleCluster.length > 0 ? parcelleCluster : []) {
-      for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
-        if (!byBc.has(b.batimentConstructionId)) byBc.set(b.batimentConstructionId, b);
-      }
-    }
-    let raw: V5BuildingsJsonEntry[];
-    if (byBc.size > 0) {
-      raw = Array.from(byBc.values());
-    } else {
-      const parsed = parseMatchingV5BuildingsJson(row.buildingsJson);
-      if (parsed.length > 0) {
-        raw = parsed;
-      } else if (row.grain !== "building") {
-        raw = [];
-      } else {
-        const bc = row.batimentConstructionId?.trim() || "";
-        const bg = row.batimentGroupeId?.trim() || null;
-        if (!bc && !bg) {
-          raw = [];
-        } else {
-          const props = row.properties ?? {};
-          const annRaw = props.annee_construction;
-          const ann =
-            typeof annRaw === "number" && Number.isFinite(annRaw)
-              ? annRaw
-              : (() => {
-                  const n = Number(String(annRaw ?? "").trim());
-                  return Number.isFinite(n) ? n : null;
-                })();
-          const fpRaw = props.footprint_m2;
-          const fpFromProps =
-            typeof fpRaw === "number" && Number.isFinite(fpRaw)
-              ? fpRaw
-              : (() => {
-                  const n = Number(String(fpRaw ?? "").trim());
-                  return Number.isFinite(n) ? n : null;
-                })();
-          const footprintM2 = fpFromProps ?? (row.footprintSumM2 > 0 ? row.footprintSumM2 : null);
-          const ms = String(props.matching_status ?? "").trim();
-          const md = String(props.matching_decision ?? "").trim();
-          const mss = String(props.matching_siren_selected ?? "").trim();
-          raw = [
-            {
-              batimentConstructionId: bc || "—",
-              batimentGroupeId: bg,
-              anneeConstruction: ann,
-              footprintM2,
-              intersectionAreaM2: null,
-              matchingStatus: ms || "—",
-              matchingDecision: md,
-              matchingSirenSelected: mss,
-            },
-          ];
-        }
-      }
-    }
-    return [...raw].sort((a, b) => {
-      const fa = a.footprintM2;
-      const fb = b.footprintM2;
-      if (fa == null && fb == null) {
-        return a.batimentConstructionId.localeCompare(b.batimentConstructionId, "fr");
-      }
-      if (fa == null) return 1;
-      if (fb == null) return -1;
-      if (fb !== fa) return fb - fa;
-      return a.batimentConstructionId.localeCompare(b.batimentConstructionId, "fr");
+  const buildingDetailRows = useMemo(
+    (): V5BuildingsJsonEntry[] =>
+      collectSortedDiscoveryComboBuildingEntries(parcelleCluster, row),
+    [row, parcelleCluster]
+  );
+
+  const discoveryParkings = useMemo(() => {
+    const sourceRows =
+      parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [row];
+    const fromRows = collectParkingsFromMatchingRows(sourceRows);
+    if (fromRows.length > 0) return fromRows;
+    const fromBuildings = buildingDetailRows.flatMap((b) => b.parkings ?? []);
+    const seen = new Set<string>();
+    return fromBuildings.filter((p) => {
+      const key = `${p.osmParkingType}:${p.osmParkingId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
-  }, [row, parcelleCluster]);
+  }, [parcelleCluster, row, buildingDetailRows]);
+
   /** Uniquement les établissements issus du matching adresse (SIRET), pas la liste PPM brute. */
   const discoverySiretRows = useMemo(
     () => sirets.map((e) => ({ key: e.siret, e })),
@@ -924,18 +914,25 @@ function ProspectDrawerDiscoverySection({
   );
 
   const footprintSumTotal = useMemo(() => {
-    if (parcelleCluster.length > 0) {
-      return parcelleCluster.reduce((s, p) => s + p.footprintSumM2, 0);
-    }
-    return row.footprintSumM2;
-  }, [parcelleCluster, row.footprintSumM2]);
+    const filtered = discoveryComboFootprintSumM2(
+      parcelleCluster,
+      row,
+      discoverySelectedBuildingIds
+    );
+    if (filtered != null) return filtered;
+    return footprintSumTotalFromV5(row, parcelleCluster);
+  }, [row, parcelleCluster, discoverySelectedBuildingIds]);
 
   const panelRef = typeof window !== "undefined" ? getRecommendedPanelReferenceSync() : null;
   /** Plafond kWp (toute la surface utilisable) — « Highest production ». */
   const kwpMaxDiscovery = surfaceToKwp(footprintSumTotal, undefined, undefined, panelRef);
   const cartePolygonAreaM2 = useMemo(() => {
-    if (parcelleCluster.length === 0) return polygonAreaM2ApproxWgs84(row.geometry);
-    return parcelleCluster.reduce((sum, p) => sum + polygonAreaM2ApproxWgs84(p.geometry), 0);
+    if (parcelleCluster.length === 0)
+      return polygonAreaM2ApproxWithPointFallback(row.geometry, row.footprintSumM2);
+    return parcelleCluster.reduce(
+      (sum, p) => sum + polygonAreaM2ApproxWithPointFallback(p.geometry, p.footprintSumM2),
+      0
+    );
   }, [parcelleCluster, row.geometry]);
 
   const scoreDisplay = useMemo(() => {
@@ -949,11 +946,12 @@ function ProspectDrawerDiscoverySection({
   const centroid = useMemo(() => {
     const w = centroidWeightedFromParcelleRowGeometries(parcelleCluster);
     if (w) return w;
-    return centroidFromGeoJsonPolygonLike(row.geometry);
+    return latLngFromMatchingGeometry(row.geometry);
   }, [parcelleCluster, row.geometry]);
 
   const discoveryFootprintAzimuth = useMemo(
-    () => pvgisAzimuthFromFootprintGeometry(row.geometry),
+    () =>
+      row.geometry.type === "Point" ? null : pvgisAzimuthFromFootprintGeometry(row.geometry),
     [row.geometry]
   );
 
@@ -1519,6 +1517,15 @@ function ProspectDrawerDiscoverySection({
     () => formatDiscoveryDrawerHeroAddress(row, parcelleCluster),
     [row, parcelleCluster]
   );
+  const heroAddressSourceLabel = useMemo(() => {
+    const source = resolveDiscoveryDrawerHeroAddressSource(row, parcelleCluster);
+    return formatDiscoveryDrawerHeroAddressSourceLabel(source);
+  }, [row, parcelleCluster]);
+
+  const comboActivityBadgeLabel = useMemo(() => {
+    const tags = discoveryZoneTagsForDrawer(row, parcelleCluster, discoveryComboZoneTags);
+    return discoveryComboActivityHeroBadgeLabel(tags);
+  }, [row, parcelleCluster, discoveryComboZoneTags]);
 
   const discoveryRecapShowBdnb = Number.isFinite(footprintSumTotal) && footprintSumTotal > 0;
   const discoveryRecapShowParcel = Number.isFinite(cartePolygonAreaM2) && cartePolygonAreaM2 > 0;
@@ -1539,8 +1546,6 @@ function ProspectDrawerDiscoverySection({
       : "Aire du polygone affiché (bâtiment) sur la carte";
 
   const geoPillLabel = (() => {
-    const n = (row.nomIris || "").trim().replace(/\s+/g, " ");
-    if (n) return n.slice(0, 26).toUpperCase();
     const ci = (row.codeInsee || "").trim();
     if (ci.length >= 2) return `DEPT. ${ci.slice(0, 2)}`;
     return "ZONE";
@@ -1560,7 +1565,15 @@ function ProspectDrawerDiscoverySection({
           {row.label}
         </h3>
         <p className="drawer-discovery-hero-address" title={heroAddress}>
-          {heroAddress}
+          <span className="drawer-discovery-hero-address-text">{heroAddress}</span>
+          {heroAddressSourceLabel ? (
+            <span
+              className="drawer-discovery-hero-address-source"
+              aria-label={`Source de l’adresse : ${heroAddressSourceLabel}`}
+            >
+              {heroAddressSourceLabel}
+            </span>
+          ) : null}
         </p>
         {discoveryRecapShowBdnb || discoveryRecapShowParcel || discoveryRecapShowAzimuth ? (
           <div className="flex w-full flex-nowrap gap-3 border-b border-border/80 pb-2.5 pt-0.5 sm:gap-4">
@@ -1648,10 +1661,19 @@ function ProspectDrawerDiscoverySection({
           <Badge
             variant="outline"
             className="h-6 min-h-6 rounded-md border border-border bg-muted/80 px-2 py-0 text-[10px] font-semibold uppercase leading-none tracking-wide text-foreground backdrop-blur-[2px] transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
-            title={row.nomIris || row.codeInsee}
+            title={row.codeInsee}
           >
             {geoPillLabel}
           </Badge>
+          {comboActivityBadgeLabel ? (
+            <Badge
+              variant="outline"
+              className="h-6 max-w-[11rem] min-h-6 truncate rounded-md border border-border/80 bg-background/60 px-2 py-0 text-[10px] font-semibold leading-none tracking-wide text-muted-foreground transition-[transform,box-shadow] duration-200 hover:-translate-y-px hover:shadow-xs"
+              title={`Activité de la zone : ${comboActivityBadgeLabel}`}
+            >
+              {comboActivityBadgeLabel}
+            </Badge>
+          ) : null}
           {multiEntreprises ? (
             <Badge
               variant="secondary"
@@ -1798,6 +1820,9 @@ function ProspectDrawerDiscoverySection({
               <Table className="text-xs">
                 <TableHeader>
                   <TableRow className="border-0 hover:bg-transparent">
+                    <TableHead className="w-7 pr-0">
+                      <span className="sr-only">Inclure</span>
+                    </TableHead>
                     <TableHead className="whitespace-nowrap">N°</TableHead>
                     <TableHead className="whitespace-nowrap">Année</TableHead>
                     <TableHead className="whitespace-nowrap">Empreinte</TableHead>
@@ -1807,8 +1832,34 @@ function ProspectDrawerDiscoverySection({
                 <TableBody>
                   {buildingDetailRows.map((b, i) => {
                     const osmName = (b.osmName || "").trim();
+                    const selectionId = discoveryBuildingSelectionIdFromEntry(b);
+                    const buildingSelected =
+                      !discoverySelectedBuildingIds ||
+                      !selectionId ||
+                      isDiscoveryBuildingSelected(discoverySelectedBuildingIds, selectionId);
+                    const canToggle = Boolean(selectionId && onDiscoveryToggleBuilding);
                     return (
-                      <TableRow key={`${b.batimentConstructionId}-${i}`} className="border-0">
+                      <TableRow
+                        key={`${b.batimentConstructionId}-${i}`}
+                        className={cn(
+                          "border-0",
+                          canToggle && "cursor-pointer",
+                          !buildingSelected && "opacity-40"
+                        )}
+                        onClick={() => {
+                          if (!canToggle) return;
+                          onDiscoveryToggleBuilding!(selectionId);
+                        }}
+                      >
+                        <TableCell className="w-7 pr-0 align-middle" onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={buildingSelected}
+                            disabled={!canToggle}
+                            onCheckedChange={() => onDiscoveryToggleBuilding?.(selectionId)}
+                            aria-label={`Inclure le bâtiment ${i + 1}`}
+                            className="size-3 rounded-md border-zinc-400 data-[state=checked]:border-primary [&_svg]:!size-2"
+                          />
+                        </TableCell>
                         <TableCell
                           className="min-w-0 whitespace-nowrap font-mono tabular-nums"
                           title={
@@ -1843,6 +1894,8 @@ function ProspectDrawerDiscoverySection({
           )}
         </section>
 
+        <DiscoveryDrawerParkingSection parkings={discoveryParkings} />
+
         <section aria-labelledby="discovery-info-parcelles" className="space-y-3 border-t border-border pt-5">
           <h4
             id="discovery-info-parcelles"
@@ -1859,10 +1912,29 @@ function ProspectDrawerDiscoverySection({
               />
               <span className="truncate text-base uppercase tracking-tight text-black">Parcelle</span>
             </span>
-            <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
-              {informationParcellesRows.length}
+            <span className="ml-auto flex shrink-0 items-center gap-2">
+              {onDiscoveryEditModeChange ? (
+                <Button
+                  type="button"
+                  variant={discoveryEditMode ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 rounded-lg px-2.5 text-[10px] font-medium uppercase tracking-wide"
+                  onClick={() => onDiscoveryEditModeChange(!discoveryEditMode)}
+                >
+                  {discoveryEditMode ? "Terminer" : "Modifier le périmètre"}
+                </Button>
+              ) : null}
+              <span className="inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+                {discoveryEffectiveParcelleCount ?? informationParcellesRows.length}
+              </span>
             </span>
           </h4>
+          {discoveryEditMode ? (
+            <p className="text-[11px] text-muted-foreground">
+              Parcelles voisines : clic pour ajouter (pointillés) ou retirer (plein bleu), y compris sans
+              matching V5. Fusion automatique si la parcelle appartient déjà à un combo en base.
+            </p>
+          ) : null}
           {informationParcellesRows.length === 0 && passerelleOrphanGroups.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
               Aucune parcelle liée.
@@ -1892,7 +1964,10 @@ function ProspectDrawerDiscoverySection({
                     const plLabel = discoveryParcellePasserelleLabel(parcelle);
                     const ppmList = passerellePpmByLabel.get(plLabel) ?? [];
                     const numero = `${parcelle.section || "—"} ${parcelle.numeroNorm || "—"}`.trim();
-                    const surfaceM2 = polygonAreaM2ApproxWgs84(parcelle.geometry);
+                    const surfaceM2 = polygonAreaM2ApproxWithPointFallback(
+                      parcelle.geometry,
+                      parcelle.footprintSumM2
+                    );
                     const surfaceLabel = `${surfaceM2.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} m²`;
                     const rowPpms = ppmList.length > 0 ? ppmList : [null];
                     return rowPpms.map((p, j) => (
@@ -2131,6 +2206,14 @@ interface ProspectDrawerProps {
   onDiscoveryPipelineAdded?: () => void;
   /** Après enregistrement POI Google live en base (Découverte) : ex. forcer un refetch des features. */
   onDiscoveryMatchingV5Persisted?: () => void;
+  /** Tags activité OSM agrégés du combo (`scout_matching_v5_combos.zone_tags`). */
+  discoveryComboZoneTags?: string[] | null;
+  /** Bâtiments inclus dans le combo personnalisé (tous sélectionnés par défaut). */
+  discoverySelectedBuildingIds?: ReadonlySet<string>;
+  onDiscoveryToggleBuilding?: (selectionId: string) => void;
+  discoveryEditMode?: boolean;
+  onDiscoveryEditModeChange?: (enabled: boolean) => void;
+  discoveryEffectiveParcelleCount?: number;
 }
 
 export function ProspectDrawer({
@@ -2147,6 +2230,12 @@ export function ProspectDrawer({
   discoveryExistingPipelineProspect = null,
   onDiscoveryPipelineAdded,
   onDiscoveryMatchingV5Persisted,
+  discoveryComboZoneTags = null,
+  discoverySelectedBuildingIds,
+  onDiscoveryToggleBuilding,
+  discoveryEditMode = false,
+  onDiscoveryEditModeChange,
+  discoveryEffectiveParcelleCount,
 }: ProspectDrawerProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -2603,8 +2692,14 @@ export function ProspectDrawer({
   const discoveryFootprintSumM2 = useMemo(() => {
     if (!discoveryRow) return 0;
     const cluster = getParcelleClusterForV5(discoveryRow, discoveryLinkedParcelleRows);
+    const filtered = discoveryComboFootprintSumM2(
+      cluster,
+      discoveryRow,
+      discoverySelectedBuildingIds
+    );
+    if (filtered != null) return filtered;
     return footprintSumTotalFromV5(discoveryRow, cluster);
-  }, [discoveryRow, discoveryLinkedParcelleRows]);
+  }, [discoveryRow, discoveryLinkedParcelleRows, discoverySelectedBuildingIds]);
 
   const discoveryPipelineMapHref = useMemo(() => {
     if (!discoveryExistingPipelineProspect) return null;
@@ -2621,7 +2716,10 @@ export function ProspectDrawer({
       let pvgis: PVGISData | null = null;
       if (centroid && validateCoordinates(centroid)) {
         try {
-          const footprintAz = pvgisAzimuthFromFootprintGeometry(discoveryRow.geometry);
+          const footprintAz =
+            discoveryRow.geometry.type === "Point"
+              ? null
+              : pvgisAzimuthFromFootprintGeometry(discoveryRow.geometry);
           pvgis = await getPVGISData(
             centroid,
             footprintAz != null
@@ -2632,9 +2730,16 @@ export function ProspectDrawer({
           pvgis = null;
         }
       }
+      const parcelleIds = cluster.map((r) => r.id);
+      const buildingSelectionIds = discoverySelectedBuildingIds
+        ? Array.from(discoverySelectedBuildingIds)
+        : [];
       const draft = matchingV5RowsToProspectDraft(discoveryRow, discoveryLinkedParcelleRows, {
         panelRef,
         pvgisData: pvgis,
+        matchingV5ParcelleIds: parcelleIds,
+        matchingV5BuildingSelectionIds: buildingSelectionIds,
+        footprintSumM2Override: discoveryFootprintSumM2,
       });
       const draftForPipeline =
         discoveryFinancialSummary != null
@@ -3377,6 +3482,7 @@ export function ProspectDrawer({
                 discoveryLinkedParcelleRows ??
                 (discoveryRow.grain === "parcelle" ? [discoveryRow] : [])
               }
+              discoveryComboZoneTags={discoveryComboZoneTags}
               isOpen={isOpen}
               onPipelineFinanceInputsChange={setDiscoveryPipelineFinanceInputs}
               pipelineProject={
@@ -3418,6 +3524,11 @@ export function ProspectDrawer({
               discoverySimulationSummary={discoveryFinancialSummary}
               discoveryDailySimulationBattery={discoveryDailySimulationBattery}
               onDiscoveryMatchingV5Persisted={onDiscoveryMatchingV5Persisted}
+              discoverySelectedBuildingIds={discoverySelectedBuildingIds}
+              onDiscoveryToggleBuilding={onDiscoveryToggleBuilding}
+              discoveryEditMode={discoveryEditMode}
+              onDiscoveryEditModeChange={onDiscoveryEditModeChange}
+              discoveryEffectiveParcelleCount={discoveryEffectiveParcelleCount}
             />
           ) : prospect ? (
             <>

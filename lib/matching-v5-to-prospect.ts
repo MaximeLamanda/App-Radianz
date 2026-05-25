@@ -3,10 +3,12 @@
  * Aligné sur les agrégations du drawer (`ProspectDrawerDiscoverySection`).
  */
 
-import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
-import { polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
+import { latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
+import { polygonAreaM2ApproxWithPointFallback, polygonAreaM2ApproxWgs84 } from "@/lib/geojson-polygon-area-m2";
 import {
   centroidWeightedFromParcelleRowGeometries,
+  confirmedDisplayAddressFromRow,
+  footprintSumM2DedupedFromParcelleCluster,
   parsePasserelleAddressesJson,
   parseSiretsMatchJson,
   type ScoutMatchingV5Row,
@@ -51,6 +53,8 @@ export function footprintSumTotalFromV5(
   parcelleCluster: ScoutMatchingV5Row[]
 ): number {
   if (parcelleCluster.length > 0) {
+    const deduped = footprintSumM2DedupedFromParcelleCluster(parcelleCluster);
+    if (deduped != null) return deduped;
     return parcelleCluster.reduce((s, p) => s + p.footprintSumM2, 0);
   }
   return row.footprintSumM2;
@@ -62,9 +66,12 @@ export function parcelContourAreaM2FromV5Row(
   parcelleCluster: ScoutMatchingV5Row[]
 ): number {
   if (parcelleCluster.length === 0) {
-    return Math.max(0, polygonAreaM2ApproxWgs84(row.geometry));
+    return polygonAreaM2ApproxWithPointFallback(row.geometry, row.footprintSumM2);
   }
-  return parcelleCluster.reduce((sum, p) => sum + polygonAreaM2ApproxWgs84(p.geometry), 0);
+  return parcelleCluster.reduce(
+    (sum, p) => sum + polygonAreaM2ApproxWithPointFallback(p.geometry, p.footprintSumM2),
+    0
+  );
 }
 
 export function discoveryScoreDisplayFromV5(
@@ -84,7 +91,7 @@ export function discoveryCentroidFromV5(
 ): AddressCoordinates | null {
   const w = centroidWeightedFromParcelleRowGeometries(parcelleCluster);
   if (w) return { lat: w.lat, lng: w.lng };
-  const c = centroidFromGeoJsonPolygonLike(row.geometry);
+  const c = latLngFromMatchingGeometry(row.geometry);
   if (!c) return null;
   return { lat: c.lat, lng: c.lng };
 }
@@ -111,6 +118,24 @@ function syntheticRoofSurface(areaM2: number, geometry: GeoJSON.Polygon | GeoJSO
   };
 }
 
+function syntheticRoofSurfaceFromMatchingRow(areaM2: number, row: ScoutMatchingV5Row): RoofSurface {
+  const g = row.geometry;
+  if (g.type === "Point") {
+    const c = latLngFromMatchingGeometry(g);
+    if (!c) {
+      return { id: "discovery-footprint", area: Math.max(0, areaM2), polygon: [] };
+    }
+    const d = 0.00005;
+    const polygon = [
+      { lat: c.lat - d, lng: c.lng - d },
+      { lat: c.lat - d, lng: c.lng + d },
+      { lat: c.lat + d, lng: c.lng },
+    ];
+    return { id: "discovery-footprint", area: Math.max(0, areaM2), polygon };
+  }
+  return syntheticRoofSurface(areaM2, g);
+}
+
 function collectSiretsUnique(row: ScoutMatchingV5Row, parcelleCluster: ScoutMatchingV5Row[]) {
   const seen = new Set<string>();
   const out: ReturnType<typeof parseSiretsMatchJson> = [];
@@ -128,6 +153,13 @@ function collectSiretsUnique(row: ScoutMatchingV5Row, parcelleCluster: ScoutMatc
 }
 
 function primaryAddress(row: ScoutMatchingV5Row, parcelleCluster: ScoutMatchingV5Row[]): string {
+  const cluster = parcelleCluster.length > 0 ? parcelleCluster : [row];
+  for (const r of cluster) {
+    const confirmed = confirmedDisplayAddressFromRow(r);
+    if (confirmed) return confirmed;
+  }
+  const rowConfirmed = confirmedDisplayAddressFromRow(row);
+  if (rowConfirmed) return rowConfirmed;
   const fromRow = String(row.passerelleAddress || "").trim();
   if (fromRow) return fromRow;
   for (const pr of parcelleCluster.length > 0 ? parcelleCluster : [row]) {
@@ -223,6 +255,12 @@ export interface MatchingV5ToProspectDraftOptions {
   panelRef?: PanelReference | null;
   /** Données PVGIS déjà chargées dans le drawer (évite un second appel si fourni). */
   pvgisData?: PVGISData | null;
+  /** Périmètre parcelles personnalisé (session édition combo). */
+  matchingV5ParcelleIds?: string[];
+  /** Bâtiments cochés (`bc:` / `osm:`). */
+  matchingV5BuildingSelectionIds?: string[];
+  /** Empreinte Σ si filtre bâtiments actif (sinon calcul classique). */
+  footprintSumM2Override?: number;
 }
 
 /**
@@ -235,11 +273,14 @@ export function matchingV5RowsToProspectDraft(
 ): Prospect {
   const parcelleCluster = getParcelleClusterForV5(row, linkedParcelleRows);
   const parcelContourM2 = parcelContourAreaM2FromV5Row(row, parcelleCluster);
-  const footprintSum = footprintSumTotalFromV5(row, parcelleCluster);
+  const footprintSum =
+    options?.footprintSumM2Override != null && Number.isFinite(options.footprintSumM2Override)
+      ? options.footprintSumM2Override
+      : footprintSumTotalFromV5(row, parcelleCluster);
   const centroid = discoveryCentroidFromV5(row, parcelleCluster);
   const coordinates = centroid ?? DISCOVERY_FALLBACK_CENTER;
   const kwp = estimateKwpFromFootprintM2(footprintSum, options?.panelRef ?? null);
-  const roofSurface = syntheticRoofSurface(footprintSum, row.geometry);
+  const roofSurface = syntheticRoofSurfaceFromMatchingRow(footprintSum, row);
   const address = primaryAddress(row, parcelleCluster);
   const name = displayName(row, parcelleCluster);
   const qualityScore = discoveryScoreDisplayFromV5(row, parcelleCluster);
@@ -259,6 +300,12 @@ export function matchingV5RowsToProspectDraft(
     configurationMode: "perfect_fit",
     pipelineEntrySource: "discovery_v5",
     matchingV5RowId: row.id,
+    ...(options?.matchingV5ParcelleIds?.length
+      ? { matchingV5ParcelleIds: [...options.matchingV5ParcelleIds] }
+      : {}),
+    ...(options?.matchingV5BuildingSelectionIds?.length
+      ? { matchingV5BuildingSelectionIds: [...options.matchingV5BuildingSelectionIds] }
+      : {}),
     ...company,
     ...(solarPotential ? { solarPotential } : {}),
     ...(parcelContourM2 > 0 ? { parcelContourAreaM2: Math.round(parcelContourM2) } : {}),

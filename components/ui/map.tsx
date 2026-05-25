@@ -5,6 +5,13 @@ import { createPortal } from "react-dom";
 import { renderToString } from "react-dom/server";
 import { MapPin, Minus, Plus } from "lucide-react";
 import L from "leaflet";
+import {
+  BRAND_INK,
+  BRAND_LIME,
+  BRAND_LIME_FOREGROUND,
+  BRAND_LIME_HOVER,
+} from "@/lib/brand-colors";
+import { disableLeafletDefaultMarkerIcon } from "@/lib/leaflet-marker-icon";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import "leaflet/dist/leaflet.css";
@@ -14,6 +21,8 @@ import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import type { MapContainerProps, MarkerProps, TileLayerProps } from "react-leaflet";
 import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-markercluster";
+
+disableLeafletDefaultMarkerIcon();
 
 /** Instance de cluster Leaflet.markercluster (pas typée dans `@types/leaflet`). */
 type LeafletMarkerCluster = L.Marker & { getChildCount(): number };
@@ -184,12 +193,37 @@ export function MapZoomControl({
 export type MapMarkerProps = Omit<MarkerProps, "icon"> & {
   icon?: React.ReactNode;
   iconAnchor?: [number, number];
+  /** Pastille lime (sélection Discovery, etc.). */
+  selected?: boolean;
 };
 
-export function MapMarker({ icon, iconAnchor = [12, 12], ...props }: MapMarkerProps) {
+export function MapMarker({
+  icon,
+  iconAnchor = [12, 12],
+  selected = false,
+  zIndexOffset,
+  ...props
+}: MapMarkerProps) {
   const leafletIcon = useMemo(() => {
-    const node = icon ?? <MapPin className="size-3.5 text-zinc-900" aria-hidden />;
-    const wrap = (
+    const node = icon ?? (
+      <MapPin
+        className="size-3.5"
+        style={{ color: selected ? BRAND_LIME_FOREGROUND : BRAND_INK }}
+        aria-hidden
+      />
+    );
+    const wrap = selected ? (
+      <div
+        className="flex size-7 items-center justify-center rounded-full border-2 shadow-md [&>svg]:shrink-0"
+        style={{
+          borderColor: BRAND_LIME_HOVER,
+          backgroundColor: BRAND_LIME,
+          boxShadow: `0 0 0 2px ${BRAND_LIME}99`,
+        }}
+      >
+        {node}
+      </div>
+    ) : (
       <div className="flex size-6 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-900 shadow-sm [&>svg]:shrink-0">
         {node}
       </div>
@@ -199,11 +233,17 @@ export function MapMarker({ icon, iconAnchor = [12, 12], ...props }: MapMarkerPr
       html,
       className: "!flex !items-center !justify-center !bg-transparent",
       iconAnchor: L.point(iconAnchor[0], iconAnchor[1]),
-      iconSize: [24, 24],
+      iconSize: selected ? [28, 28] : [24, 24],
     });
-  }, [icon, iconAnchor]);
+  }, [icon, iconAnchor, selected]);
 
-  return <Marker icon={leafletIcon} {...props} />;
+  return (
+    <Marker
+      icon={leafletIcon}
+      zIndexOffset={zIndexOffset ?? (selected ? 1000 : 0)}
+      {...props}
+    />
+  );
 }
 
 export type MapMarkerClusterGroupProps = Omit<

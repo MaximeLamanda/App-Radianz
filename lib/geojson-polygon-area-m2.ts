@@ -55,3 +55,15 @@ export function polygonAreaM2ApproxWgs84(geometry: GeoJSON.Polygon | GeoJSON.Mul
   }
   return sum;
 }
+
+/**
+ * Aire emprise matching V5 : polygone comme `polygonAreaM2ApproxWgs84` ;
+ * `Point` (overview carte) → repli sur `footprintSumM2` côté appelant.
+ */
+export function polygonAreaM2ApproxWithPointFallback(
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | GeoJSON.Point,
+  footprintSumM2: number
+): number {
+  if (geometry.type === "Point") return Math.max(0, footprintSumM2);
+  return Math.max(0, polygonAreaM2ApproxWgs84(geometry));
+}

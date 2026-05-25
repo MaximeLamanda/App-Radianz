@@ -13,6 +13,7 @@ Pour la **vue métier** des entrées / sorties du matching (sans chemins techniq
 | `datasource/cadastre/` | GeoJSON cadastre gzip (imports locaux) |
 | `datasource/parcelles-personnes-morales/` | Parquet PPM (passerelle parcelles ↔ personnes morales) |
 | `datasource/Siren/` | Fichiers stock établissement / SIRENE (CSV, etc.) |
+| `datasource/enr/` | GPKG Portail ENR (parking > 500 m², non versionné git) |
 | `datasource/exports/` | Sorties miroir optionnelles (à créer si besoin) |
 
 ## 1) OSM
@@ -29,9 +30,11 @@ Pour la **vue métier** des entrées / sorties du matching (sans chemins techniq
 
 ## 3) Cadastre
 
-- **GeoJSON gzip** (exemple Pessac / dep 33) : `datasource/cadastre/cadastre-33-parcelles.json.gz`
+- **GeoJSON gzip** (exemple dep 33) : `datasource/cadastre/cadastre-33-parcelles.json.gz` — souvent absent du git (fichier lourd).
+- **National** (open data « cadastre feuilles ») : `datasource/cadastre/cadastre-france-feuilles.json.gz` — le script filtre par commune (`--code-insee`) ou par département (`--dep`, ex. `31`).
 - **Table** : `public.cadastre_france_feuilles_geom`
-- Import : `npm run import:cadastre-33-parcelles:pessac`
+- Import : `npm run import:cadastre-33-parcelles:pessac` ou `npm run import:cadastre-33-parcelles:dep`
+- **Haute-Garonne (31)** sans fichier pré-découpé : placer le `.json.gz` national au chemin ci-dessus, puis `npm run import:cadastre-dep-31-from-national`. Sinon, créer ou télécharger un extrait `cadastre-31-parcelles.json.gz` et utiliser `npm run import:cadastre-31-parcelles:dep`.
 
 ## 4) Parcelles personnes morales (PPM)
 
@@ -45,7 +48,17 @@ Pour la **vue métier** des entrées / sorties du matching (sans chemins techniq
 - Recherche entreprises : `https://recherche-entreprises.api.gouv.fr/search`
 - Google Places (fallback) : Nearby Search + Place Details
 
-## 6) Sorties matching
+## 6) Parking ENR (Portail énergies renouvelables)
+
+- **Jeu** : « Surfaces de parking supérieures à 500 m² » (`ENR_2-0_PARK-SUP-500`, fév. 2026)
+- **Archive** : `datasource/enr/ENR_2-0_PARK-SUP-500.7z` (~33 Mo) — `npm run pipeline:enr-parking:download`
+- **GPKG extrait** : `datasource/enr/ENR_2-0_PARK-SUP-500_GPKG_WLD_WM_2026-02-01/1_DONNEES_LIVRAISON/L15_Parkings_sup500m2_EPSG4326.gpkg`
+- **Table** : `public.enr_parking_areas` (couche GPKG `Parkings_sup500m2`, fichier `L15_Parkings_sup500m2_EPSG4326.gpkg`, EPSG:4326)
+- **Attributs importés** : `Surfm2`, `TYPE`, `Typologie`, `DPT`, `NumCom` (code INSEE), `NomCom` → `tags` JSONB ; `enr_id` = hash stable
+- Import : `npm run pipeline:enr-parking:schema` puis `pipeline:enr-parking:import`
+- Matching V5 : union avec `osm_parking_areas` (priorité ENR si chevauchement ≥ 50 %)
+
+## 7) Sorties matching
 
 - CSV V5 : `data-pipeline/out/matching/v5/matching_v5.csv`
 - GeoJSON V5 (ex. Pessac) : `public/geo/matching-v5-33318.geojson` (généré par `npm run pipeline:matching-v5:run`)

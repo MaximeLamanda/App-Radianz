@@ -10,6 +10,12 @@ import { MapErrorBoundary } from "@/components/solar-scout/MapErrorBoundary";
 import { surfaceToKwp } from "@/lib/surface-to-kwp";
 import { loadProspectSurfaces, saveProspectSurfaces, deleteProspectSurfaces } from "@/lib/prospect-storage";
 import { loadMapPosition, saveMapPosition, getDefaultMapPosition } from "@/lib/map-position-storage";
+import {
+  DISCOVERY_FEATURES_BOUNDS_PADDING,
+  expandMapBounds,
+} from "@/lib/discovery-viewport-bounds";
+import { shouldSkipMatchingFeaturesFetch } from "@/lib/discovery-matching-fetch-policy";
+import { matchingDataModeFromZoom, type DiscoveryMatchingDataMode } from "@/lib/discovery-zoom-modes";
 import { getProspectById, updateProspectInPipeline } from "@/lib/firestore";
 import { useDrawer } from "@/lib/drawer-context";
 import { useAuth } from "@/lib/auth-context";
@@ -24,11 +30,6 @@ import {
   parseMatchingV5GeoJsonFeatureCollection,
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
-
-const MATCHING_V5_DEFAULT_CODE_INSEE =
-  (typeof process !== "undefined" &&
-    process.env.NEXT_PUBLIC_SCOUT_MATCHING_V5_CODE_INSEE?.trim()) ||
-  "33318";
 
 function calculateQualityScore(area: number, placeType: string): number {
   let score = 0;
@@ -53,10 +54,12 @@ function SolarScoutContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const discoveryParam = searchParams.get("discovery");
+  /** Par défaut : Postgres comme Discovery. Fichier local : `?discovery=static` ou `NEXT_PUBLIC_SCOUT_MATCHING_V5_SOURCE=static`. */
   const discoverySource: "static" | "postgres" = useMemo(() => {
     if (discoveryParam === "db" || discoveryParam === "postgres") return "postgres";
     if (discoveryParam === "static" || discoveryParam === "geojson") return "static";
-    return process.env.NEXT_PUBLIC_SCOUT_MATCHING_V5_SOURCE === "postgres" ? "postgres" : "static";
+    if (process.env.NEXT_PUBLIC_SCOUT_MATCHING_V5_SOURCE === "static") return "static";
+    return "postgres";
   }, [discoveryParam]);
   const { user, loading: authLoading } = useAuth();
   const { data: userProfile, isLoading: profileLoading } = useUserProfile(user?.uid ?? null);
@@ -75,14 +78,19 @@ function SolarScoutContent() {
   const [matchingV5BuildingFeatures, setMatchingV5BuildingFeatures] = useState<GeoJSON.Feature[]>([]);
   const [matchingV5SharedParcelFeatures, setMatchingV5SharedParcelFeatures] = useState<GeoJSON.Feature[]>([]);
   const [matchingV5ViewBounds, setMatchingV5ViewBounds] = useState<MapBounds | null>(null);
+  const [matchingV5ViewportZoom, setMatchingV5ViewportZoom] = useState(() => {
+    const p = loadMapPosition();
+    const z = p?.zoom;
+    return typeof z === "number" && Number.isFinite(z) ? z : 14;
+  });
 
-  const matchingV5BoundsKey = useMemo(
-    () =>
-      matchingV5ViewBounds
-        ? `${matchingV5ViewBounds.sw.lat},${matchingV5ViewBounds.sw.lng},${matchingV5ViewBounds.ne.lat},${matchingV5ViewBounds.ne.lng}`
-        : "",
-    [matchingV5ViewBounds]
-  );
+  const lastSuccessfulQueryBoundsRef = useRef<MapBounds | null>(null);
+  const lastFetchModeRef = useRef<DiscoveryMatchingDataMode | null>(null);
+
+  useEffect(() => {
+    lastSuccessfulQueryBoundsRef.current = null;
+    lastFetchModeRef.current = null;
+  }, [matchingV5FetchKey, discoverySource]);
 
   useEffect(() => {
     if (discoverySource !== "static") return;
@@ -124,25 +132,45 @@ function SolarScoutContent() {
   }, [matchingV5FetchKey, discoverySource]);
 
   useEffect(() => {
-    if (discoverySource !== "postgres") return;
+    if (discoverySource !== "postgres" || !user) return;
+    if (matchingV5ViewBounds == null) return;
+
+    const nextMode = matchingDataModeFromZoom(matchingV5ViewportZoom);
+    if (
+      shouldSkipMatchingFeaturesFetch({
+        forceRefetch: false,
+        viewportBounds: matchingV5ViewBounds,
+        lastQueryBounds: lastSuccessfulQueryBoundsRef.current,
+        lastMode: lastFetchModeRef.current,
+        nextMode,
+      })
+    ) {
+      return;
+    }
+
     let cancelled = false;
     setIsMatchingV5Loading(true);
     setMatchingV5Error(null);
+    const queryBounds = expandMapBounds(matchingV5ViewBounds, DISCOVERY_FEATURES_BOUNDS_PADDING);
+
     void (async () => {
       try {
-        const params = new URLSearchParams({
-          code_insee: MATCHING_V5_DEFAULT_CODE_INSEE,
-          limit: "3000",
-        });
-        if (matchingV5ViewBounds) {
-          params.set("minLat", String(matchingV5ViewBounds.sw.lat));
-          params.set("maxLat", String(matchingV5ViewBounds.ne.lat));
-          params.set("minLng", String(matchingV5ViewBounds.sw.lng));
-          params.set("maxLng", String(matchingV5ViewBounds.ne.lng));
+        const params = new URLSearchParams();
+        if (nextMode === "overview") {
+          params.set("mode", "overview");
+          params.set("limit", "35000");
+        } else {
+          params.set("limit", "5000");
         }
+        params.set("minLat", String(queryBounds.sw.lat));
+        params.set("maxLat", String(queryBounds.ne.lat));
+        params.set("minLng", String(queryBounds.sw.lng));
+        params.set("maxLng", String(queryBounds.ne.lng));
         const res = await fetchWithAuth(`/api/matching-v5/features?${params.toString()}`);
         if (!res.ok) {
           if (!cancelled) {
+            lastSuccessfulQueryBoundsRef.current = null;
+            lastFetchModeRef.current = null;
             setMatchingV5Error(
               res.status === 500
                 ? "Erreur serveur lors du chargement discovery (Postgres)."
@@ -154,12 +182,23 @@ function SolarScoutContent() {
         }
         const json: unknown = await res.json();
         if (cancelled) return;
-        const { rows, error } = parseMatchingV5GeoJsonFeatureCollection(json);
-        if (error) setMatchingV5Error(error);
-        else setMatchingV5Error(null);
+        const { rows, error: parseErr } = parseMatchingV5GeoJsonFeatureCollection(json);
+        if (parseErr) {
+          lastSuccessfulQueryBoundsRef.current = null;
+          lastFetchModeRef.current = null;
+          setMatchingV5Error(parseErr);
+        } else {
+          setMatchingV5Error(null);
+        }
         setMatchingV5Rows(rows);
+        if (!parseErr) {
+          lastSuccessfulQueryBoundsRef.current = queryBounds;
+          lastFetchModeRef.current = nextMode;
+        }
       } catch (e) {
         if (!cancelled) {
+          lastSuccessfulQueryBoundsRef.current = null;
+          lastFetchModeRef.current = null;
           setMatchingV5Error(e instanceof Error ? e.message : "Erreur chargement discovery (Postgres)");
           setMatchingV5Rows([]);
         }
@@ -167,10 +206,11 @@ function SolarScoutContent() {
         if (!cancelled) setIsMatchingV5Loading(false);
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [matchingV5FetchKey, discoverySource, matchingV5BoundsKey]);
+  }, [discoverySource, user, matchingV5ViewBounds, matchingV5ViewportZoom, matchingV5FetchKey]);
 
   useEffect(() => {
     if (!matchingV5SelectedId) return;
@@ -482,6 +522,11 @@ function SolarScoutContent() {
               onGetMapBounds={handleGetMapBounds}
               onViewBoundsChange={
                 discoverySource === "postgres" ? (b) => setMatchingV5ViewBounds(b) : undefined
+              }
+              onViewportZoomChange={
+                discoverySource === "postgres"
+                  ? (z) => setMatchingV5ViewportZoom((prev) => (prev === z ? prev : z))
+                  : undefined
               }
               matchingV5Rows={matchingV5Rows}
               showMatchingV5Layer={true}

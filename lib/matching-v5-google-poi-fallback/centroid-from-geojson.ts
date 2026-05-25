@@ -82,3 +82,18 @@ export function centroidFromGeoJsonPolygonLike(
   if (sumA <= 0) return null;
   return { lat: sumLat / sumA, lng: sumLng / sumA };
 }
+
+export type MatchingFootprintGeometry = GeoJSON.Polygon | GeoJSON.MultiPolygon | GeoJSON.Point;
+
+/** Point = coordonnées directes ; polygone = centroïde (aire pondérée si MultiPolygon). */
+export function latLngFromMatchingGeometry(geometry: MatchingFootprintGeometry): { lat: number; lng: number } | null {
+  if (geometry.type === "Point") {
+    const c = geometry.coordinates;
+    if (!c || c.length < 2) return null;
+    const lng = c[0]!;
+    const lat = c[1]!;
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    return { lat, lng };
+  }
+  return centroidFromGeoJsonPolygonLike(geometry);
+}

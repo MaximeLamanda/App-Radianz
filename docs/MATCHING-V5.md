@@ -1,4 +1,4 @@
-# Matching V5 (discovery) — Cadastre × IRIS × BDNB × Passerelle (PPM)
+# Matching V5 (discovery) — Cadastre × BDNB × OSM × Passerelle (PPM)
 
 > **Pour ajouter une commune** à Discovery / Matching V5, suivre la procédure unique [`docs/PROCEDURE-AJOUT-COMMUNE.md`](PROCEDURE-AJOUT-COMMUNE.md). Le présent document reste la **référence technique** du pipeline (tables, options, sorties) et ne doit pas être suivi pas-à-pas pour ajouter une nouvelle commune.
 
@@ -8,7 +8,7 @@ Ce document décrit le **Matching V5** (mode discovery) implémenté dans `data-
 
 Partir du **cadastre** et produire un export exploitable pour qualification “prospection” :
 
-- **Parcelle (passerelle)** : liste / agrégats de bâtiments associés, surface totale “footprint”, IRIS, statut SIREN.
+- **Parcelle (passerelle)** : liste / agrégats de bâtiments associés, surface totale “footprint”, statut SIREN.
 - **Adresse passerelle** : remonter l’adresse issue de la table passerelle **PPM** (`parcelles_personnes_morales`) pour pouvoir, dans un second temps, faire une **recherche entreprise par adresse**.
 
 ## Indépendance
@@ -41,9 +41,6 @@ Toutes les tables listées ci-dessous servent à **produire** l’export V5 sur 
     - attendue : `batiment_construction_id`, `batiment_groupe_id`, `geom_cstr` (EPSG:2154), `code_commune_insee`
     - `annee_construction` est enrichie via **FFO** (`batiment_groupe_ffo_bat.annee_construction`) joinée par `batiment_groupe_id` (pas de fallback DPE ici).
 
-- **IRIS** : `public/geo/iris-bordeaux-metropole.geojson` (servi en `/geo/…`)
-  - jointure : centroïde de parcelle → “within” IRIS
-
 - **POI OpenStreetMap (optionnel)** : `public.osm_poi` (schéma [`data-pipeline/sql/004_osm_poi.sql`](../data-pipeline/sql/004_osm_poi.sql))
   - remplissage : script [`data-pipeline/matching_v5/import_osm_poi.py`](../data-pipeline/matching_v5/import_osm_poi.py) à partir d’un extrait `.osm.pbf` (voir [`data-pipeline/README.md`](../data-pipeline/README.md) section « POI OpenStreetMap »). Le schéma est **appliqué automatiquement** au lancement de l’import (inutile d’exécuter `psql` à la main si `psql` n’est pas installé).
   - jointure : pour chaque **parcelle retenue** à l’export (source bâtiment `bdnb` ou `osm`), les points `osm_poi` avec `ST_Within(geom, parcelle.geom)` (EPSG:4326), tri par distance au `PointOnSurface` de la parcelle, plafond **`--osm-poi-max`** (défaut 50).
@@ -60,6 +57,18 @@ Toutes les tables listées ci-dessous servent à **produire** l’export V5 sur 
   - remplissage : [`data-pipeline/matching_v5/import_osm_landuse.py`](../data-pipeline/matching_v5/import_osm_landuse.py) sur le même `.osm.pbf` que les footprints ; scripts npm `pipeline:osm-landuse:schema` et `pipeline:osm-landuse:import`.
   - la table peut être **vide** (aucune zone retenue), mais le **schéma doit exister** pour lancer V5 en mode OSM (jointure spatiale ; valeurs `landuse` filtrées à l’import selon une liste configurable, voir `--allowed-landuse`).
   - surcharge : variable d’environnement **`OSM_LANDUSE_TABLE`** (identifiants SQL validés, comme `OSM_BUILDINGS_TABLE`).
+
+- **Polygones parking OpenStreetMap** : `public.osm_parking_areas` (schéma [`data-pipeline/sql/008_osm_parking_areas.sql`](../data-pipeline/sql/008_osm_parking_areas.sql))
+  - tags : `amenity=parking`, `leisure=parking`, `landuse=parking`
+  - import : [`data-pipeline/matching_v5/import_osm_parking.py`](../data-pipeline/matching_v5/import_osm_parking.py) ; npm `pipeline:osm-parking:schema` / `pipeline:osm-parking:import`
+- **Polygones parking Portail ENR** (> 500 m²) : `public.enr_parking_areas` (schéma [`data-pipeline/sql/009_enr_parking_areas.sql`](../data-pipeline/sql/009_enr_parking_areas.sql))
+  - jeu : `ENR_2-0_PARK-SUP-500` (couche `L15_Parkings_sup500m2_EPSG4326`) — voir [`datasource/README.md`](../datasource/README.md)
+  - import : [`data-pipeline/matching_v5/import_enr_parking.py`](../data-pipeline/matching_v5/import_enr_parking.py) ; npm `pipeline:enr-parking:download` / `pipeline:enr-parking:import`
+  - matching : **union OSM + ENR** ; si chevauchement ≥ 50 % en Lambert-93, **priorité ENR** (OSM retiré)
+  - export : `parking_source` (`osm` \| `enr`), clés carte `osm_parking_type` / `osm_parking_id` (`e` + `enr_id` pour ENR)
+  - lien bâtiment : au moins une **parcelle cadastrale commune** ; toutes les parcelles intersectées dans `parking_parcels_json`
+  - export : `parkings_json` (dans `buildings_json`), `parking_geometries_json` ; bornes sur parcelles communes dans `charging_stations_json` (OSM uniquement)
+  - désactivation : **`--no-osm-parking`** (OSM + ENR + bornes) ; **`--no-enr-parking`** (ENR seul)
 
 ## Règles de matching (building ↔ parcelle)
 
@@ -95,11 +104,14 @@ En pratique, l’usage courant est de sortir **les parcelles uniquement** (passe
 
 ## Filtre principal
 
-On conserve uniquement les parcelles dont la **somme des footprints** des bâtiments (m²) est **> 1000** :
+On conserve les parcelles dont la **somme des footprints** des bâtiments (m²) est **> seuil** :
 
-- paramètre : `--min-parcelle-footprint-sum-m2` (défaut 400)
+- paramètre : `--min-parcelle-footprint-sum-m2` (défaut **400**)
+- paramètre bâtiment (entrée SQL) : `--min-batiment-footprint-m2` (défaut **400**)
 
-Le script npm `pipeline:matching-v5:run` applique ce filtre par défaut.
+**Dérogation landuse pro** : un bâtiment ou une parcelle sous le seuil est tout de même retenu si au moins un bâtiment intersecte un polygone `osm_landuse_areas` avec `landuse` ∈ **commercial**, **industrial**, **retail** (critère sur le polygone landuse, pas sur `building=*` seul). Le résidentiel et les autres landuse restent soumis au plancher 400 m². La dérogation au grain parcelle ne s’applique pas au seuil « partage » (500 m²). Voir [`docs/plans/2026-05-18-matching-v5-landuse-footprint-waiver-design.md`](plans/2026-05-18-matching-v5-landuse-footprint-waiver-design.md).
+
+Le script npm `pipeline:matching-v5:run` applique ce filtre par défaut. Après modification de cette règle, **re-lancer le matching** (`--write-postgres`) pour les communes concernées.
 
 ## Adresse passerelle (PPM)
 
@@ -127,10 +139,21 @@ JSON listant les candidats “par SIREN” (quand les SIREN sont valides), avec 
 - **`street_number_match_set`** : plages du type `12-14` → ensemble `{12, 14}` ; bonus **match / zéros à gauche** (`008` vs `8`) ou **ratio** sur le numéro (`numero_fuzzy`) ; un écart fort applique une **pénalité** `numero_mismatch` (le SIRET n’est plus exclu).
 - **Indice** : BIS / TER / QUATER — accord = bonus ; désaccord = **pénalité** `indice_mismatch` (plus d’exclusion systématique).
 - **Seuil** : score minimal **52** pour retenir un SIRET (la passerelle a toujours un numéro si le matching tourne).
-- **Numéro passerelle obligatoire** : sans `numero_voirie` exploitable (ensemble `passerelle_numero_match_set` / `passerelle_numero_norm` vide après agrégat PPM), **aucun** appariement SIRENE n’est tenté (`status_technique = no_passerelle_numero`). Pas de repli sur le seul texte de l’adresse concaténée.
+- **Numéro passerelle obligatoire** : sans `numero_voirie` exploitable côté PPM, la passerelle PPM **n’est pas** utilisée pour le matching SIRENE. Repli avant `match_etablissements` : adresse OSM du footprint (si numéro extractible), puis **géocodage inverse Géoplateforme** au centroïde bâtiment (numéro + `citycode` + seuils distance/score). Sinon `status_technique = no_passerelle_numero`.
 - **Établissements sans numéro** : les lignes `scout_etablissements` avec `numero_norm` vide **ne sont pas** candidates (non comparées).
 
 Champs d’export utiles pour le contrôle : `passerelle_indice_norm`, `passerelle_numero_match` (liste triée, séparée par des virgules).
+
+### `display_address` (affichage confirmé)
+
+Cascade conservative au **centroïde bâtiment** (repli centroïde parcelle si aucun bâtiment confirmé), stockée dans `properties_json` et dans chaque entrée de `buildings_json` :
+
+1. OSM `addr:full` ou (`addr:street` + `addr:housenumber`) sur l’empreinte
+2. PPM `passerelle_address` si numéro présent **et** corroboration géocodage inverse Géoplateforme
+3. Géocodage inverse Géoplateforme (`https://data.geopf.fr/geocodage/reverse`) — seuils stricts (0,85 / 25 m ; 0,88 / 20 m en zone `landuse` commercial / industrial / retail)
+4. Adresse SIRENE du match si géocodage direct à ≤ 50 m du bâtiment
+
+`display_address_confidence` vaut `confirmed` ou `none` (pas d’adresse affichée si non confirmée). Désactivation : `--no-address-resolve` sur `run_matching_v5.py`. Détail : [`docs/plans/2026-05-18-matching-v5-address-resolver-design.md`](plans/2026-05-18-matching-v5-address-resolver-design.md).
 
 ## Sorties
 
@@ -143,7 +166,6 @@ Champs clés (properties) :
 
 - `grain`
 - `code_insee`, `section`, `numero_norm`
-- `code_iris`, `nom_iris`
 - `nb_batiments`
 - `footprint_sum_m2` (somme des footprints BDNB des bâtiments associés)
 - `siren_status` : `none | single | multiple` (technique PPM)
@@ -152,6 +174,7 @@ Champs clés (properties) :
 - `siret_count`, `sirets_json`, `sirens_json`
 - `matching_confidence`, `matching_reason`
 - `passerelle_address`, `passerelle_indice_norm`, `passerelle_numero_match`, `passerelle_addresses_json`
+- `display_address`, `display_address_source`, `display_address_confidence`, `display_address_meta_json`
 - `matching_status` : `mono | partage`
 - `matching_decision` : `mono | shared_siren | unique_by_intersection`
 - `matching_siren_selected` : SIREN retenu pour un cas `partage` avec SIREN commun
@@ -298,21 +321,36 @@ Activable en ligne de commande sur `run_matching_v5.py`. Chaîne : **Nearby Sear
 
 ### Conditions métier
 
-- **IRIS** : le fallback n’est déclenché que pour une **composante connexe** de parcelles **déjà retenues à l’export** (même filtre footprint que les lignes CSV) dans laquelle **au moins une** parcelle a `nom_iris` égal à **Parc Industriel** (comparaison insensible à la casse, libellé IRIS Bordeaux Métropole).
-- **Déclenchement** : la composante devient éligible dès qu’elle contient au moins une parcelle en IRIS **Parc Industriel** (pas de condition sur `siret_count` / `status_technique`).
+- **Composante connexe** : parcelles **déjà retenues à l’export** (même filtre footprint que les lignes CSV), reliées transitivement par bâtiment partagé.
 - **Signal OSM** : si la composante contient **au moins 1 POI OSM distinct** avec `website` non vide (tags `website` / `contact:website` / `url` normalisés), le fallback Google est **ignoré** pour cette composante.
   - le comptage est fait sur l’union des parcelles du groupe, avec dédoublonnage par paire `(osm_type, osm_id)`.
 - **Groupement « domino »** : deux parcelles exportées sont reliées si un même `batiment_construction_id` intersecte les deux ; la relation est **transitive** (chaîne A–B–C → une seule composante).
 - **Un appel par composante** : géométrie passée à Google = **union Shapely** des polygones parcelle des membres exportés du groupe ; un seul centroïde pour Nearby. Les compteurs `nearby` / `details` / `api_gouv` du log sont incrémentés **une fois par groupe** ayant tenté l’appel.
-- **Propagation** : le résultat du re-match local (même ancrage pour tout le groupe) est appliqué à **chaque** parcelle exportée de la composante, y compris si son IRIS n’est pas « Parc Industriel » (tant qu’au moins une autre parcelle du groupe l’est).
+- **Propagation** : le résultat du re-match local (même ancrage pour tout le groupe) est appliqué à **chaque** parcelle exportée de la composante.
 - **Traçabilité** : colonne `google_fallback_group_id` (hash stable des clés parcelle du groupe) renseignée sur les lignes avec `google_fallback_attempted = true`.
 
 ### Hors script
 
-- L’API Next `POST /api/matching-v5/google-poi-fallback` reste un outil de test manuel ; elle n’applique pas automatiquement les mêmes règles IRIS / groupement que le pipeline.
+- L’API Next `POST /api/matching-v5/google-poi-fallback` reste un outil de test manuel ; elle n’applique pas automatiquement les mêmes règles de groupement que le pipeline.
+
+## Discovery — clusters combo et filtre surface SQL
+
+En mode carte **overview** (zoom ≤ 15), Discovery affiche **un marqueur par combo** (groupe de parcelles liées par `matching_status === "partage"`). Agrégats pré-calculés dans `public.scout_matching_v5_combos` : `footprint_sum_m2` et `parking_sum_m2` (filtres surface building / parking en SQL), `zone_tags` (activité), `construction_years` (année de construction), `owner_sirens` / `domiciliation_sirens` / `naf_divisions` (filtres entreprise). Servis par `GET /api/matching-v5/combos-overview` (`minFootprintM2` / `maxFootprintM2`, `minParkingM2` / `maxParkingM2`, `sirenRole` + `siren`, `nafDivision` en domiciliation) ; activité et année filtrées côté client sur ces champs pour garder la continuité clusters ↔ MVT au changement de zoom. Design parking : [`docs/plans/2026-05-20-discovery-combo-parking-surface-sql-design.md`](plans/2026-05-20-discovery-combo-parking-surface-sql-design.md). Filtres SIREN / NAF : [`docs/plans/2026-05-21-discovery-combo-siren-naf-filter-design.md`](plans/2026-05-21-discovery-combo-siren-naf-filter-design.md).
+
+Enchaînement après matching + backfill :
+
+```text
+run_matching_v5.py --write-postgres --code-insee=…
+  → npm run scout:matching-v5:buildings-mv:refresh
+  → npm run pipeline:matching-v5:combos -- --code-insee=…
+```
+
+Département entier (ex. Gironde) : `npm run pipeline:matching-v5:pipeline-dep-33`.
+
+Design : [`docs/plans/2026-05-20-discovery-combo-surface-sql-design.md`](plans/2026-05-20-discovery-combo-surface-sql-design.md). Clusters (sans SQL surface) : [`docs/plans/2026-05-20-discovery-combo-clusters-design.md`](plans/2026-05-20-discovery-combo-clusters-design.md).
 
 ## Points d’attention / prochaines étapes
 
 - Les parcelles sans PPM n’auront pas d’adresse passerelle (c’est attendu).
-- Le fallback Google consomme des quotas Google et api.gouv ; limiter son usage aux besoins (déjà filtré IRIS Parc Industriel + groupes exportés + OSM avec lien).
+- Le fallback Google consomme des quotas Google et api.gouv ; limiter son usage aux besoins (groupes exportés + signal OSM website).
 

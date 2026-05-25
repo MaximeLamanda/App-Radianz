@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any
 
 IDENT = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# landuse OSM (colonne lu.landuse) : lève le plancher --min-batiment-footprint-m2 / parcelle.
+LANDUSE_WAIVES_MIN_FOOTPRINT_M2 = frozenset({"commercial", "industrial", "retail"})
 
 
 def parse_qualified_table(raw: str, default_schema: str, default_table: str, label: str) -> tuple[str, str]:
@@ -41,6 +45,66 @@ def qualified_osm_landuse_table() -> str:
     validate_ident(schema, "Schéma OSM landuse")
     validate_ident(table, "Table OSM landuse")
     return f'"{schema}"."{table}"'
+
+
+def building_has_pro_landuse_waiver(
+    bdetail: dict[str, Any],
+    waiver_set: frozenset[str] | None = None,
+) -> bool:
+    """Dérogation emprise si zone_tag provient d'un polygone landuse pro (commercial / industrial / retail)."""
+    if str(bdetail.get("zone_source") or "").strip() != "landuse":
+        return False
+    waiver = waiver_set if waiver_set is not None else LANDUSE_WAIVES_MIN_FOOTPRINT_M2
+    tag = str(bdetail.get("zone_tag") or "").strip().lower()
+    return tag in waiver
+
+
+def footprint_sum_meets_export_threshold(
+    bdetails: list[dict[str, Any]],
+    footprint_sum: float,
+    min_required: float,
+    *,
+    min_default: float,
+    apply_landuse_waiver: bool,
+    waiver_set: frozenset[str] | None = None,
+) -> bool:
+    if footprint_sum > min_required:
+        return True
+    if not apply_landuse_waiver or float(min_required) != float(min_default):
+        return False
+    return any(building_has_pro_landuse_waiver(b, waiver_set) for b in bdetails)
+
+
+def build_osm_min_footprint_filter_sql(
+    min_batiment_footprint_m2: float,
+    osm_landuse_qualified: str,
+    landuse_waiver: frozenset[str] | None = None,
+) -> tuple[str, tuple[Any, ...]]:
+    """Fragment SQL + paramètres pour le filtre emprise dans osm_src_raw."""
+    if float(min_batiment_footprint_m2) <= 0:
+        return "", ()
+    min_m2 = float(min_batiment_footprint_m2)
+    waiver = landuse_waiver if landuse_waiver is not None else LANDUSE_WAIVES_MIN_FOOTPRINT_M2
+    if not waiver:
+        return (
+            "        AND ST_Area(ST_Transform(b.geom, 2154)) >= %s\n",
+            (min_m2,),
+        )
+    waiver_list = sorted(waiver)
+    return (
+        f"""        AND (
+          ST_Area(ST_Transform(b.geom, 2154)) >= %s
+          OR EXISTS (
+            SELECT 1
+            FROM {osm_landuse_qualified} lu
+            WHERE b.geom && lu.geom
+              AND ST_Intersects(b.geom, lu.geom)
+              AND lu.landuse = ANY(%s::text[])
+          )
+        )
+""",
+        (min_m2, waiver_list),
+    )
 
 
 def osm_landuse_regclass() -> str:

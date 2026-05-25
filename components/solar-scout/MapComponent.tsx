@@ -10,7 +10,9 @@ import type { Prospect, AddressCoordinates, RoofSurface, Contact, PlaceType, Exp
 import { convertPlaceType, extractContact } from "@/lib/places";
 import { getPlaceDetailsNew } from "@/lib/places-new-api";
 import { geojsonPolygonToGooglePathParts } from "@/lib/geojson-google-polygon";
+import { latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
 import type { ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
+import { MarkerClusterer } from "@googlemaps/markerclusterer";
 import { toast } from "sonner";
 import { BRAND_LIME, BRAND_LIME_HOVER } from "@/lib/brand-colors";
 
@@ -26,6 +28,8 @@ interface MapComponentProps {
   /** Appelé au début/fin de l'enrichissement (geocode + BDNB + POI) pour afficher le loading */
   onOsmEnrichmentChange?: (enriching: boolean) => void;
   onViewBoundsChange?: (bounds: MapBounds | null) => void;
+  /** Zoom courant (après idle) — ex. mode overview / détail matching v5 comme Discovery */
+  onViewportZoomChange?: (zoom: number) => void;
   /** Couche découverte (export GeoJSON matching v5) */
   matchingV5Rows?: ScoutMatchingV5Row[];
   showMatchingV5Layer?: boolean;
@@ -47,6 +51,7 @@ export function MapComponent({
   onBdnbInfo,
   onOsmEnrichmentChange,
   onViewBoundsChange,
+  onViewportZoomChange,
   matchingV5Rows = [],
   showMatchingV5Layer = false,
   selectedMatchingV5Id = null,
@@ -72,6 +77,10 @@ export function MapComponent({
   currentProspectRef.current = currentProspect;
   const onProspectUpdateRef = useRef(onProspectUpdate);
   onProspectUpdateRef.current = onProspectUpdate;
+  const onMatchingV5SelectRef = useRef(onMatchingV5Select);
+  onMatchingV5SelectRef.current = onMatchingV5Select;
+
+  const matchingV5ClustererRef = useRef<MarkerClusterer | null>(null);
 
   // Fonction pour obtenir le centre de la carte - toujours disponible via ref
   const getMapCenterFunc = useRef<(() => AddressCoordinates | null) | null>(null);
@@ -81,6 +90,8 @@ export function MapComponent({
   const boundsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Dernière clé quantifiée (3 décimales) pour éviter setViewBounds si identique */
   const lastQuantizedKeyRef = useRef<string | null>(null);
+  const onViewportZoomChangeRef = useRef(onViewportZoomChange);
+  onViewportZoomChangeRef.current = onViewportZoomChange;
 
   // Stocker le dernier centre connu comme fallback
   const lastKnownCenterRef = useRef<AddressCoordinates | null>(null);
@@ -250,6 +261,10 @@ export function MapComponent({
         // Mise à jour des bounds viewport (debounce 600ms)
         if (boundsDebounceRef.current) clearTimeout(boundsDebounceRef.current);
         boundsDebounceRef.current = setTimeout(() => {
+          const zoom = map.getZoom();
+          if (typeof zoom === "number" && Number.isFinite(zoom)) {
+            onViewportZoomChangeRef.current?.(zoom);
+          }
           const bounds = map.getBounds();
           if (bounds) {
             const ne = bounds.getNorthEast();
@@ -713,6 +728,42 @@ export function MapComponent({
     }
   }, [centerCoordinates]);
 
+  /** Mode overview (Postgres) : géométries `Point` — regroupement comme sur Discovery. */
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !window.google?.maps) return;
+
+    matchingV5ClustererRef.current?.clearMarkers();
+    matchingV5ClustererRef.current = null;
+
+    if (!showMatchingV5Layer || matchingV5Rows.length === 0) return;
+
+    const pointRows = matchingV5Rows.filter((r) => r.geometry?.type === "Point");
+    if (pointRows.length === 0) return;
+
+    const maps = window.google.maps;
+    const markers: google.maps.Marker[] = [];
+    for (const row of pointRows) {
+      const c = latLngFromMatchingGeometry(row.geometry);
+      if (!c) continue;
+      const marker = new maps.Marker({
+        position: { lat: c.lat, lng: c.lng },
+      });
+      marker.addListener("click", () => onMatchingV5SelectRef.current?.(row));
+      markers.push(marker);
+    }
+    if (markers.length === 0) return;
+
+    const clusterer = new MarkerClusterer({ map, markers });
+    matchingV5ClustererRef.current = clusterer;
+
+    return () => {
+      clusterer.clearMarkers();
+      markers.forEach((m) => m.setMap(null));
+      matchingV5ClustererRef.current = null;
+    };
+  }, [matchingV5Rows, showMatchingV5Layer]);
+
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map || !window.google?.maps) return;
@@ -734,6 +785,7 @@ export function MapComponent({
       selectedMatchingV5GroupIds.length > 0 ? new Set(selectedMatchingV5GroupIds) : null;
 
     for (const row of matchingV5Rows) {
+      if (row.geometry.type === "Point") continue;
       const selected = groupSet ? groupSet.has(row.id) : row.id === selectedMatchingV5Id;
       const pathParts = geojsonPolygonToGooglePathParts(row.geometry);
       const isBuilding = row.grain === "building";
@@ -753,7 +805,7 @@ export function MapComponent({
           zIndex: isBuilding ? 4 : 3,
         });
         poly.addListener("click", () => {
-          onMatchingV5Select?.(row);
+          onMatchingV5SelectRef.current?.(row);
           const centerBounds = new maps.LatLngBounds();
           for (const ring of rings) {
             for (const pt of ring) centerBounds.extend(pt);

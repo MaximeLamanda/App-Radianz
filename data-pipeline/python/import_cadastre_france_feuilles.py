@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import sys
+import time
 from pathlib import Path
 from typing import Generator
 
@@ -83,13 +85,33 @@ def iter_geojson_features_from_gz(path: Path, chunk_size: int = 1_048_576) -> Ge
 
 
 def main() -> None:
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(
+        description="Import cadastre GeoJSON.gz vers public.cadastre_france_feuilles_geom. "
+        "Sans filtre : tout le fichier. --code-insee : une commune. --dep : préfixe INSEE (tout le département)."
+    )
     p.add_argument("--geojson-gz", type=Path, required=True, help="Chemin vers cadastre-france-feuilles.json.gz")
-    p.add_argument("--code-insee", default=None, help="Filtre optionnel (ex: 33318)")
+    p.add_argument("--code-insee", default=None, help="Filtre optionnel : une commune (ex. 33318)")
+    p.add_argument(
+        "--dep",
+        default=None,
+        metavar="DEPT",
+        help="Filtre par département : ne garde que les parcelles dont code_insee commence par cette chaîne "
+        "(ex. 33, 971, 2A). Avec --truncate : DELETE des lignes de ce préfixe uniquement (pas TRUNCATE global).",
+    )
     p.add_argument("--apply-schema", action="store_true")
     p.add_argument("--truncate", action="store_true")
     p.add_argument("--batch-size", type=int, default=400)
+    p.add_argument(
+        "--progress-every",
+        type=int,
+        default=50_000,
+        help="Afficher une ligne d'avancement sur stderr tous les N features lus du fichier (0 = désactivé).",
+    )
+    p.add_argument("--quiet", action="store_true", help="Pas de jalons intermédiaires.")
     args = p.parse_args()
+
+    if args.code_insee and args.dep:
+        raise SystemExit("Utiliser soit --code-insee soit --dep, pas les deux.")
 
     url = resolve_database_url()
     if not url:
@@ -101,24 +123,44 @@ def main() -> None:
     if not schema_path.is_file():
         raise SystemExit(f"Schéma introuvable: {schema_path}")
 
+    def log(msg: str) -> None:
+        if not args.quiet:
+            print(msg, file=sys.stderr, flush=True)
+
     conn = psycopg2.connect(url)
     inserted = 0
     skipped = 0
     batch: list[tuple[str | None, str | None, str | None, str | None, str | None, str, str]] = []
+    dep_filter = str(args.dep).strip() if args.dep else None
+    t0 = time.perf_counter()
     try:
         if args.apply_schema:
+            log("[import-cadastre] Application du schéma SQL…")
             apply_schema(conn, schema_path)
 
         with conn.cursor() as cur:
             if args.truncate:
                 if args.code_insee:
+                    log(f"[import-cadastre] DELETE parcelles code_insee={args.code_insee}…")
                     cur.execute(
                         "DELETE FROM public.cadastre_france_feuilles_geom WHERE code_insee = %s",
                         (args.code_insee,),
                     )
+                elif args.dep:
+                    pat = f"{dep_filter}%"
+                    log(f"[import-cadastre] DELETE parcelles code_insee LIKE {pat!r}…")
+                    cur.execute(
+                        "DELETE FROM public.cadastre_france_feuilles_geom WHERE code_insee LIKE %s",
+                        (pat,),
+                    )
                 else:
+                    log("[import-cadastre] TRUNCATE cadastre_france_feuilles_geom…")
                     cur.execute("TRUNCATE TABLE public.cadastre_france_feuilles_geom")
         conn.commit()
+        if args.truncate:
+            log(f"[import-cadastre] Purge terminée ({time.perf_counter() - t0:.1f}s), lecture {args.geojson_gz.name}…")
+        else:
+            log(f"[import-cadastre] Lecture {args.geojson_gz.name}…")
 
         def flush() -> None:
             nonlocal inserted, batch
@@ -150,7 +192,15 @@ def main() -> None:
             inserted += len(batch)
             batch = []
 
+        features_read = 0
         for feat in iter_geojson_features_from_gz(args.geojson_gz):
+            features_read += 1
+            pe = int(args.progress_every)
+            if pe > 0 and not args.quiet and features_read % pe == 0:
+                log(
+                    f"[import-cadastre] … {features_read} features lus du fichier, "
+                    f"{inserted} parcelles écrites en base, {skipped} ignorées (filtre / géométrie)"
+                )
             if not isinstance(feat, dict):
                 skipped += 1
                 continue
@@ -167,6 +217,9 @@ def main() -> None:
             code_insee = str(props.get("commune") or "").strip() or None
             if args.code_insee and code_insee != str(args.code_insee):
                 continue
+            if dep_filter is not None:
+                if not code_insee or not str(code_insee).startswith(dep_filter):
+                    continue
             section = str(props.get("section") or "").strip() or None
             numero = str(props.get("numero") or "").strip() or None
             numero_norm = normalize_numero(numero)
@@ -190,8 +243,16 @@ def main() -> None:
                 flush()
 
         flush()
+        scope = (
+            f"code_insee={args.code_insee}"
+            if args.code_insee
+            else (f"dep={args.dep!r}" if args.dep else "ALL (fichier entier)")
+        )
+        dt = time.perf_counter() - t0
         print(
-            f"[import-cadastre] code_insee={args.code_insee or 'ALL'} inserted_or_updated={inserted} skipped={skipped}"
+            f"[import-cadastre] {scope} features_lus={features_read} "
+            f"inserted_or_updated={inserted} skipped={skipped} ({dt:.1f}s)",
+            flush=True,
         )
     finally:
         conn.close()

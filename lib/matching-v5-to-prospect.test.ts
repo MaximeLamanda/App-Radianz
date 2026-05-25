@@ -36,8 +36,6 @@ function rowParcelle(
     codeInsee: "33318",
     section: "A",
     numeroNorm: "0001",
-    codeIris: "",
-    nomIris: "",
     nbBatiments: 0,
     footprintSumM2: footprint,
     sirenStatus: "",
@@ -79,12 +77,47 @@ describe("getParcelleClusterForV5", () => {
   });
 });
 
+function buildingsJsonForTest(
+  entries: { bc: string; fp: number }[]
+): string {
+  return JSON.stringify(
+    entries.map((e) => ({
+      batiment_construction_id: e.bc,
+      footprint_m2: e.fp,
+    }))
+  );
+}
+
 describe("footprintSumTotalFromV5", () => {
-  it("somme les empreintes du cluster", () => {
-    const p1 = rowParcelle("p1", 100, 50, ringPessac);
-    const p2 = rowParcelle("p2", 250, 60, ringPessac);
+  it("somme les empreintes distinctes du cluster", () => {
+    const p1 = {
+      ...rowParcelle("p1", 100, 50, ringPessac),
+      buildingsJson: buildingsJsonForTest([{ bc: "bc-a", fp: 100 }]),
+    };
+    const p2 = {
+      ...rowParcelle("p2", 250, 60, ringPessac),
+      buildingsJson: buildingsJsonForTest([{ bc: "bc-b", fp: 250 }]),
+    };
     const b = { ...p1, id: "b1", grain: "building" as const };
     expect(footprintSumTotalFromV5(b, [p1, p2])).toBe(350);
+  });
+
+  it("déduplique un bâtiment partagé entre deux parcelles", () => {
+    const sharedBc = "bc-shared";
+    const p1 = {
+      ...rowParcelle("p1", 551, 50, ringPessac),
+      footprintSumM2: 551,
+      buildingsJson: buildingsJsonForTest([{ bc: sharedBc, fp: 551 }]),
+    };
+    const p2 = {
+      ...rowParcelle("p2", 684, 60, ringPessac),
+      footprintSumM2: 684,
+      buildingsJson: buildingsJsonForTest([
+        { bc: sharedBc, fp: 551 },
+        { bc: "bc-other", fp: 133 },
+      ]),
+    };
+    expect(footprintSumTotalFromV5(p1, [p1, p2])).toBe(684);
   });
 });
 
@@ -123,6 +156,17 @@ describe("parcelContourAreaM2FromV5Row", () => {
 });
 
 describe("matchingV5RowsToProspectDraft", () => {
+  it("priorise display_address confirmée à la passerelle PPM", () => {
+    const p = {
+      ...rowParcelle("row-display", 500, 70, ringPessac),
+      passerelleAddress: "99 rue PPM 33600 Pessac",
+      displayAddress: "12 rue Confirmée 33600 Pessac",
+      displayAddressConfidence: "confirmed",
+    };
+    const draft = matchingV5RowsToProspectDraft(p, [p], { panelRef: testPanel });
+    expect(draft.address).toBe("12 rue Confirmée 33600 Pessac");
+  });
+
   it("remplit pipelineEntrySource, matchingV5RowId, qualityScore et adresse", () => {
     const p = rowParcelle("row-abc", 800, 73, ringPessac);
     const draft = matchingV5RowsToProspectDraft(p, [p], { panelRef: testPanel });

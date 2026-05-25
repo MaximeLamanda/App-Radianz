@@ -54,6 +54,16 @@ export function viewportContainedInQueryBounds(viewport: MapBounds, query: MapBo
 
 type GeoBBox = { minLng: number; maxLng: number; minLat: number; maxLat: number };
 
+/** Bbox d’un Point GeoJSON [lng, lat]. */
+function getPointBBox(geometry: GeoJSON.Point): GeoBBox | null {
+  const c = geometry.coordinates;
+  if (!c || c.length < 2) return null;
+  const lng = c[0]!;
+  const lat = c[1]!;
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  return { minLng: lng, maxLng: lng, minLat: lat, maxLat: lat };
+}
+
 /** Bbox englobante d’un Polygon / MultiPolygon GeoJSON (coordonnées [lng, lat]). */
 function getPolygonLikeBBox(geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): GeoBBox | null {
   let minLng = Infinity;
@@ -94,7 +104,13 @@ export function filterScoutMatchingV5RowsByMapBounds(
 ): ScoutMatchingV5Row[] {
   const vb = expandMapBounds(viewport, paddingFraction);
   return rows.filter((row) => {
-    const bb = getPolygonLikeBBox(row.geometry);
+    const g = row.geometry;
+    const bb =
+      g.type === "Point"
+        ? getPointBBox(g)
+        : g.type === "Polygon" || g.type === "MultiPolygon"
+          ? getPolygonLikeBBox(g)
+          : null;
     if (!bb) return true;
     if (bb.maxLat < vb.sw.lat || bb.minLat > vb.ne.lat) return false;
     if (bb.maxLng < vb.sw.lng || bb.minLng > vb.ne.lng) return false;

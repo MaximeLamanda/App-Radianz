@@ -9,17 +9,37 @@ import {
   findMatchingV5ParcelleRowsForBuilding,
   findMatchingV5RowIdForBatimentFootprint,
   formatDiscoveryDrawerHeroAddress,
+  formatDiscoveryDrawerHeroAddressSourceLabel,
+  resolveDiscoveryDrawerHeroAddressSource,
+  formatV5ZoneTagLabel,
   formatV5OsmPoiTypeLabelForDisplay,
   mergeOsmBuildingContactsFromRows,
   mergeOsmPoisFromParcelleRows,
   osmBrowseUrlFromBuildingId,
   isV5OsmActivityZoneTag,
   parseGoogleNearbyRankedJson,
+  listValidOsmBuildingIdsInBuildingsJson,
+  listValidOsmBuildingIdsInBuildingGeometriesJson,
   parseMatchingV5BuildingGeometriesJson,
   parseMatchingV5BuildingsJson,
   parseOsmPoisJson,
   parseSiretsMatchJson,
 } from "./scout-matching-v5-map";
+
+describe("formatV5ZoneTagLabel", () => {
+  it("retourne les libellés FR pour landuse / leisure courants", () => {
+    expect(formatV5ZoneTagLabel("residential")).toBe("Zone résidentielle");
+    expect(formatV5ZoneTagLabel("education")).toBe("École · université · campus");
+    expect(formatV5ZoneTagLabel("farmland")).toBe("Zone agricole");
+    expect(formatV5ZoneTagLabel("sports_centre")).toBe("Centre sportif");
+    expect(formatV5ZoneTagLabel("pitch")).toBe("Terrain de sport");
+  });
+
+  it("retourne une chaîne vide si tag absent", () => {
+    expect(formatV5ZoneTagLabel("")).toBe("");
+    expect(formatV5ZoneTagLabel(null)).toBe("");
+  });
+});
 
 describe("isV5OsmActivityZoneTag", () => {
   it("retourne true pour industrial/commercial/retail", () => {
@@ -36,11 +56,7 @@ describe("isV5OsmActivityZoneTag", () => {
 });
 
 function parcelle(
-  partial: Pick<ScoutMatchingV5Row, "id" | "section" | "numeroNorm" | "codeInsee"> & {
-    buildingsJson?: string;
-    buildingGeometriesJson?: string;
-    osmPoisJson?: string;
-  }
+  partial: Partial<ScoutMatchingV5Row> & Pick<ScoutMatchingV5Row, "id" | "section" | "numeroNorm" | "codeInsee">
 ): ScoutMatchingV5Row {
   return {
     grain: "parcelle",
@@ -48,8 +64,6 @@ function parcelle(
     label: "",
     batimentConstructionId: null,
     batimentGroupeId: null,
-    codeIris: "",
-    nomIris: "",
     nbBatiments: 0,
     footprintSumM2: 0,
     sirenStatus: "",
@@ -80,8 +94,6 @@ function buildingRow(id: string, parcellesJson: string): ScoutMatchingV5Row {
     codeInsee: "33318",
     section: "",
     numeroNorm: "",
-    codeIris: "",
-    nomIris: "",
     nbBatiments: 1,
     footprintSumM2: 1200,
     sirenStatus: "",
@@ -138,6 +150,20 @@ describe("formatV5OsmPoiTypeLabelForDisplay", () => {
 });
 
 describe("formatDiscoveryDrawerHeroAddress", () => {
+  it("priorise display_address confirmée à Google et PPM", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HC",
+      numeroNorm: "0045",
+      displayAddress: "14 rue Confirmée 33600 Pessac",
+      displayAddressConfidence: "confirmed",
+      passerelleAddress: "12 rue PPM 33600 Pessac",
+      properties: { google_anchor_address: "8 avenue du POI 33600 Pessac" },
+    });
+    expect(formatDiscoveryDrawerHeroAddress(p, [p])).toBe("14 rue Confirmée 33600 Pessac");
+  });
+
   it("priorise google_anchor_address à la passerelle", () => {
     const p = parcelle({
       id: "p1",
@@ -212,6 +238,55 @@ describe("formatDiscoveryDrawerHeroAddress", () => {
       passerelleAddressesJson: "",
     });
     expect(formatDiscoveryDrawerHeroAddress(p2, [p2])).toBe("Parcelle ZZ 0001 · 33318");
+  });
+});
+
+describe("resolveDiscoveryDrawerHeroAddressSource", () => {
+  it("expose display_address_source quand adresse confirmée", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HC",
+      numeroNorm: "0045",
+      displayAddress: "14 rue Confirmée",
+      displayAddressConfidence: "confirmed",
+      displayAddressSource: "ban_reverse",
+      passerelleAddress: "12 rue PPM",
+    });
+    expect(resolveDiscoveryDrawerHeroAddressSource(p, [p])).toBe("ban_reverse");
+    expect(formatDiscoveryDrawerHeroAddressSourceLabel("ban_reverse")).toBe("BAN");
+  });
+
+  it("retourne google si ancre Google sans display_address", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HC",
+      numeroNorm: "0045",
+      properties: { google_anchor_address: "8 avenue du POI" },
+    });
+    expect(resolveDiscoveryDrawerHeroAddressSource(p, [p])).toBe("google");
+  });
+
+  it("retourne ppm pour passerelle seule", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HC",
+      numeroNorm: "0999",
+      passerelleAddress: "Adresse ppm seule",
+    });
+    expect(resolveDiscoveryDrawerHeroAddressSource(p, [p])).toBe("ppm");
+  });
+
+  it("retourne cadastre sans source ppm/google/display", () => {
+    const p = parcelle({
+      id: "p2",
+      codeInsee: "33318",
+      section: "ZZ",
+      numeroNorm: "0001",
+    });
+    expect(resolveDiscoveryDrawerHeroAddressSource(p, [p])).toBe("cadastre");
   });
 });
 
@@ -524,6 +599,42 @@ describe("parseMatchingV5BuildingsJson", () => {
     expect(rows[0]!.anneeConstruction).toBe(2017);
     expect(rows[0]!.footprintM2).toBeCloseTo(1188.18, 1);
     expect(rows[0]!.matchingStatus).toBe("mono");
+  });
+});
+
+describe("listValidOsmBuildingIdsInBuildingsJson", () => {
+  it("retourne [] si vide ou invalide", () => {
+    expect(listValidOsmBuildingIdsInBuildingsJson("")).toEqual([]);
+    expect(listValidOsmBuildingIdsInBuildingsJson("{")).toEqual([]);
+  });
+
+  it("extrait osm_building_id même sans batiment_construction_id", () => {
+    const raw = JSON.stringify([{ osm_building_id: "w:42" }, { osm_building_id: "n:7" }]);
+    expect(listValidOsmBuildingIdsInBuildingsJson(raw)).toEqual(["w:42", "n:7"]);
+  });
+
+  it("ignore les ids mal formés", () => {
+    const raw = JSON.stringify([
+      { osm_building_id: "w:42" },
+      { osm_building_id: "bad" },
+      { osm_building_id: "" },
+    ]);
+    expect(listValidOsmBuildingIdsInBuildingsJson(raw)).toEqual(["w:42"]);
+  });
+});
+
+describe("listValidOsmBuildingIdsInBuildingGeometriesJson", () => {
+  it("retourne [] si vide ou invalide", () => {
+    expect(listValidOsmBuildingIdsInBuildingGeometriesJson("")).toEqual([]);
+    expect(listValidOsmBuildingIdsInBuildingGeometriesJson("{")).toEqual([]);
+  });
+
+  it("extrait r:/w:/n: même sans batiment_construction_id ni geometry", () => {
+    const raw = JSON.stringify([
+      { osm_building_id: "r:383523600", footprint_m2: 120 },
+      { osm_building_id: "w:1" },
+    ]);
+    expect(listValidOsmBuildingIdsInBuildingGeometriesJson(raw)).toEqual(["r:383523600", "w:1"]);
   });
 });
 

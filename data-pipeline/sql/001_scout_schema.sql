@@ -109,22 +109,33 @@ CREATE INDEX IF NOT EXISTS scout_etab_voie_commune_idx
 CREATE INDEX IF NOT EXISTS scout_etab_num_voie_idx
   ON public.scout_etablissements (numero_norm, voie_norm);
 
--- Vue enrichie des leads Pessac avec infos métier personne morale.
-CREATE OR REPLACE VIEW public.scout_leads_pessac_enriched AS
-WITH ppm_agg AS (
+-- Communes couvertes par la boîte leads : ajouter des lignes ici (INSERT), pas de vue par commune.
+CREATE TABLE IF NOT EXISTS public.scout_leads_communes (
+  code_insee TEXT PRIMARY KEY CHECK (code_insee ~ '^\d{5}$')
+);
+
+INSERT INTO public.scout_leads_communes (code_insee) VALUES ('33318'), ('33522'), ('33192')
+ON CONFLICT (code_insee) DO NOTHING;
+
+-- Vue enrichie : leads dont la commune est dans scout_leads_communes + agrégation PPM sur ce même périmètre.
+CREATE OR REPLACE VIEW public.scout_leads_enriched AS
+WITH territoire AS (
+  SELECT code_insee FROM public.scout_leads_communes
+),
+ppm_agg AS (
   SELECT
-    numero_siren,
-    MAX(NULLIF(denomination, '')) AS company_legal_name,
-    MAX(NULLIF(forme_juridique_libelle, '')) AS company_legal_form,
+    ppm.numero_siren,
+    MAX(NULLIF(ppm.denomination, '')) AS company_legal_name,
+    MAX(NULLIF(ppm.forme_juridique_libelle, '')) AS company_legal_form,
     STRING_AGG(
-      DISTINCT NULLIF(TRIM(CONCAT_WS(' ', numero_voirie, indice_repetition, nature_voie, nom_voie)), ''),
+      DISTINCT NULLIF(TRIM(CONCAT_WS(' ', ppm.numero_voirie, ppm.indice_repetition, ppm.nature_voie, ppm.nom_voie)), ''),
       ' | '
     ) AS company_address,
     COUNT(*)::int AS parcelles_count,
-    MAX(code_insee) AS code_insee
-  FROM public.parcelles_personnes_morales
-  WHERE code_insee = '33318'
-  GROUP BY numero_siren
+    MAX(ppm.code_insee) AS code_insee
+  FROM public.parcelles_personnes_morales ppm
+  WHERE ppm.code_insee IN (SELECT code_insee FROM territoire)
+  GROUP BY ppm.numero_siren
 )
 SELECT
   l.lead_id,
@@ -147,4 +158,6 @@ SELECT
   COALESCE(p.parcelles_count, 0) AS parcelles_count
 FROM public.scout_leads l
 LEFT JOIN ppm_agg p ON p.numero_siren = l.siren
-WHERE l.code_commune_insee = '33318';
+WHERE l.code_commune_insee IN (SELECT code_insee FROM territoire);
+
+DROP VIEW IF EXISTS public.scout_leads_pessac_enriched;

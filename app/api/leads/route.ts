@@ -7,6 +7,7 @@ import {
   getServerDatabaseUrlEnvPresence,
 } from "@/lib/server-database-url";
 import { mapPostgresLeadRow } from "@/lib/server/leads-row-mapper";
+import { parseOptionalCodeInseeListFromSearchParams } from "@/lib/scout-leads-code-insee";
 
 type DbLeadRow = {
   id: string;
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const codeInsee = request.nextUrl.searchParams.get("codeInsee") ?? "33318";
+  const codeInseeFilter = parseOptionalCodeInseeListFromSearchParams(request.nextUrl.searchParams);
   const limit = Math.min(
     1000,
     Math.max(1, parseInt(request.nextUrl.searchParams.get("limit") ?? "200", 10) || 200)
@@ -49,8 +50,7 @@ export async function GET(request: NextRequest) {
   await client.connect();
 
   try {
-    const { rows } = await client.query<DbLeadRow>(
-      `
+    const baseFrom = `
       SELECT
         lead_id::text AS id,
         COALESCE(denomination, 'Lead') AS name,
@@ -65,13 +65,19 @@ export async function GET(request: NextRequest) {
         company_address,
         parcelles_count,
         code_insee
-      FROM public.scout_leads_pessac_enriched
-      WHERE code_insee = $1
+      FROM public.scout_leads_enriched`;
+    const sql =
+      codeInseeFilter === null
+        ? `${baseFrom}
       ORDER BY created_at DESC
-      LIMIT $2
-      `,
-      [codeInsee, limit]
-    );
+      LIMIT $1`
+        : `${baseFrom}
+      WHERE code_insee = ANY($1::text[])
+      ORDER BY created_at DESC
+      LIMIT $2`;
+    const params: unknown[] = codeInseeFilter === null ? [limit] : [codeInseeFilter, limit];
+
+    const { rows } = await client.query<DbLeadRow>(sql, params);
 
     return NextResponse.json({
       leads: rows.map((r) => mapPostgresLeadRow(r)),
@@ -83,7 +89,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Vue scout_leads_pessac_enriched absente. Applique le schéma SQL puis importe le parquet parcelles-personnes-morales.",
+            "Vue scout_leads_enriched ou table scout_leads_communes absente. Applique data-pipeline/sql/001_scout_schema.sql, peuple scout_leads_communes (INSERT code_insee), importe PPM si besoin.",
           detail: msg,
         },
         { status: 503 }
