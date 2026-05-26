@@ -14,20 +14,33 @@ import {
   parseMatchingV5BuildingsJson,
   collectMatchingV5BuildingFeatures,
   parseMatchingV5GeoJsonFeatureCollection,
+  matchingV5RowDetailHydrationSig,
+  matchingV5RowDetailHydrationWouldChange,
+  matchingV5RowNeedsDetailHydration,
+  mergeMatchingV5RowsPreservingDetail,
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
 import { buildDiscoveryComboBuildingNumberLabels, defaultDiscoveryComboBuildingSelectionIds } from "@/lib/discovery-combo-building-labels";
 import {
   discoveryBuildingSelectionIdFromFeature,
+  discoveryBuildingSelectionSetsEqual,
+  discoveryBuildingSelectionSignature,
   toggleDiscoveryBuildingSelection,
 } from "@/lib/discovery-combo-building-selection";
 import {
   applyDiscoveryParcelleEditToggle,
+  cloneDiscoveryComboParcelleEditState,
   emptyDiscoveryComboParcelleEditState,
+  parcelleEditStateFromPersistedParcelleIds,
   parcelleIdsForComboMerge,
   resolveDiscoveryEffectiveParcelleRows,
   type DiscoveryComboParcelleEditState,
 } from "@/lib/discovery-combo-effective-parcelles";
+import { parcelleScoutV5IdsFromComboMarker } from "@/lib/discovery-combo-marker-parcelles";
+import {
+  discoveryComboHeroSurfaces,
+  type DiscoveryComboSqlSurfaceHint,
+} from "@/lib/discovery-combo-hero-surfaces";
 import {
   buildParcellesAdjacentSearchParams,
   type DiscoveryAdjacentParcelle,
@@ -37,8 +50,8 @@ import { scoutMatchingV5RowFromAdjacentCadastreParcel } from "@/lib/discovery-ca
 import { collectMatchingV5ParkingFeatures } from "@/lib/matching-v5-parking";
 import { useProspectsForPipeline, type MapBounds } from "@/lib/swr-hooks";
 import {
+  legacyComboIdFromProspect,
   linkedParcelleRowsForV5DrawerAnchor,
-  matchingV5SelectionMatchesProspect,
 } from "@/lib/discovery-pipeline-match";
 import { discoveryBoundsKey, discoveryDebug } from "@/lib/discovery-debug";
 import {
@@ -56,7 +69,6 @@ import {
 import {
   buildCombosOverviewSearchParams,
   isCombosOverviewNafDivision,
-  isCombosOverviewSirenExact,
   type CombosOverviewSirenRole,
 } from "@/lib/discovery-combos-overview-http";
 import {
@@ -65,6 +77,7 @@ import {
 } from "@/lib/discovery-combos-overview";
 import { shouldSkipDiscoveryFetch } from "@/lib/discovery-matching-fetch-policy";
 import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
+import type { Prospect } from "@/types";
 import type { DiscoveryOsmBuildingDisplayFilter } from "@/components/discovery/DiscoveryMvtBuildingsLayer";
 
 /** Leaflet / react-leaflet touchent `window` à l’import — pas de bundle carte sur le SSR. */
@@ -80,9 +93,13 @@ const DiscoveryMapView = dynamic(
     ),
   }
 );
+import { DiscoveryEditModeStatusBanner } from "@/components/discovery/DiscoveryEditModeStatusBanner";
 import { DiscoveryFiltersPanel } from "@/components/discovery/DiscoveryFiltersPanel";
 import { Spinner } from "@/components/ui/spinner";
-import { DISCOVERY_FOCUS_QUERY } from "@/lib/discovery-focus-href";
+import {
+  DISCOVERY_FOCUS_QUERY,
+  selectionFromDiscoveryUrlFocus,
+} from "@/lib/discovery-focus-href";
 import {
   DISCOVERY_FOOTPRINT_RATIO_SLIDER_DEFAULT_MAX_PCT,
   DISCOVERY_FOOTPRINT_RATIO_SLIDER_DEFAULT_MIN_PCT,
@@ -208,11 +225,12 @@ function DiscoveryContent() {
   );
   const [selectedOsmActivityTag, setSelectedOsmActivityTag] = useState<string | null>(null);
   const [sirenRole, setSirenRole] = useState<CombosOverviewSirenRole>("owner");
-  const [sirenQuery, setSirenQuery] = useState("");
+  const [selectedSirens, setSelectedSirens] = useState<string[]>([]);
+  const [sirenDraft, setSirenDraft] = useState("");
   const [nafDivisionQuery, setNafDivisionQuery] = useState("");
   const [appliedSirenFilter, setAppliedSirenFilter] = useState<{
     role: CombosOverviewSirenRole;
-    siren: string;
+    sirens: string[];
   } | null>(null);
   const [appliedNafDivision, setAppliedNafDivision] = useState<string | null>(null);
   const [appliedSurfaceRange, setAppliedSurfaceRange] = useState<{ min: number; max: number }>({
@@ -257,7 +275,7 @@ function DiscoveryContent() {
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [selectedOsmBuildingId, setSelectedOsmBuildingId] = useState<string | null>(null);
   const [selectedComboId, setSelectedComboId] = useState<string | null>(null);
-  const [selectedBuildingIds, setSelectedBuildingIds] = useState<Set<string>>(() => new Set());
+  const [selectedBuildingIds, setSelectedBuildingIds] = useState<Set<string> | undefined>(undefined);
   const [discoveryEditMode, setDiscoveryEditMode] = useState(false);
   const [parcelleEditState, setParcelleEditState] = useState<DiscoveryComboParcelleEditState>(
     emptyDiscoveryComboParcelleEditState
@@ -269,12 +287,22 @@ function DiscoveryContent() {
   const [extraMatchingV5Rows, setExtraMatchingV5Rows] = useState<ScoutMatchingV5Row[]>([]);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number; zoom?: number } | null>(null);
 
-  /** Deep link pipeline → sélection ligne après chargement des features dans la bbox. */
+  /** Deep link pipeline → sélection combo / ligne après chargement carte. */
   const pendingFocusRowIdRef = useRef<string | null>(null);
+  const pendingFocusComboIdRef = useRef<string | null>(null);
   const appliedUrlFocusSigRef = useRef<string | null>(null);
   const focusFailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Parcelles déjà dans le périmètre au début du mode édition (exclues de l’API voisins, pas les ajouts). */
   const adjacentExcludeAtEditStartRef = useRef<string[] | null>(null);
+  const adjacentFetchGenRef = useRef(0);
+  const discoveryEditSessionSnapshotRef = useRef<{
+    parcelleEdit: DiscoveryComboParcelleEditState;
+    buildingIds: Set<string>;
+  } | null>(null);
+  /** Une tentative d’hydratation par signature (évite rafales si le viewport réécrase la ligne). */
+  const lastRowHydrationAttemptSigRef = useRef<string>("");
+  /** Évite de réappliquer la sélection bâtiments par défaut à chaque `setDrawerContent` (remount). */
+  const lastDefaultBuildingInitKeyRef = useRef<string>("");
 
   const handleFlyToConsumed = useCallback(() => {
     setFlyToTarget(null);
@@ -323,16 +351,18 @@ function DiscoveryContent() {
 
   useEffect(() => {
     const row = searchParams.get(DISCOVERY_FOCUS_QUERY.focusRow);
+    const combo = searchParams.get(DISCOVERY_FOCUS_QUERY.focusCombo);
     const latS = searchParams.get(DISCOVERY_FOCUS_QUERY.lat);
     const lngS = searchParams.get(DISCOVERY_FOCUS_QUERY.lng);
     if (!row || !latS || !lngS) return;
     const lat = Number(latS);
     const lng = Number(lngS);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-    const sig = `${row}\0${lat}\0${lng}`;
+    const sig = `${row}\0${combo ?? ""}\0${lat}\0${lng}`;
     if (appliedUrlFocusSigRef.current === sig) return;
     appliedUrlFocusSigRef.current = sig;
     pendingFocusRowIdRef.current = row;
+    pendingFocusComboIdRef.current = combo?.trim() || null;
     if (focusFailTimerRef.current) {
       clearTimeout(focusFailTimerRef.current);
       focusFailTimerRef.current = null;
@@ -347,22 +377,11 @@ function DiscoveryContent() {
           description: "Déplacez la carte ou vérifiez que le lead correspond toujours à l’export.",
         });
         pendingFocusRowIdRef.current = null;
+        pendingFocusComboIdRef.current = null;
         setFlyToTarget(null);
       }
     }, 20_000);
   }, [searchParams, router]);
-
-  useEffect(() => {
-    const id = pendingFocusRowIdRef.current;
-    if (!id) return;
-    if (!matchingV5Rows.some((r) => r.id === id)) return;
-    setSelectedRowId(id);
-    pendingFocusRowIdRef.current = null;
-    if (focusFailTimerRef.current) {
-      clearTimeout(focusFailTimerRef.current);
-      focusFailTimerRef.current = null;
-    }
-  }, [matchingV5Rows]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -437,18 +456,21 @@ function DiscoveryContent() {
 
   useEffect(() => {
     const tid = setTimeout(() => {
-      if (isCombosOverviewSirenExact(sirenQuery)) {
-        setAppliedSirenFilter((prev) =>
-          prev?.role === sirenRole && prev.siren === sirenQuery
-            ? prev
-            : { role: sirenRole, siren: sirenQuery }
-        );
+      if (selectedSirens.length > 0) {
+        setAppliedSirenFilter((prev) => {
+          const sameRole = prev?.role === sirenRole;
+          const sameSirens =
+            sameRole &&
+            prev!.sirens.length === selectedSirens.length &&
+            prev!.sirens.every((s, i) => s === selectedSirens[i]);
+          return sameSirens ? prev : { role: sirenRole, sirens: [...selectedSirens] };
+        });
       } else {
         setAppliedSirenFilter((prev) => (prev == null ? prev : null));
       }
     }, 200);
     return () => clearTimeout(tid);
-  }, [sirenQuery, sirenRole]);
+  }, [selectedSirens, sirenRole]);
 
   useEffect(() => {
     const tid = setTimeout(() => {
@@ -572,7 +594,7 @@ function DiscoveryContent() {
           } else {
             setError(null);
           }
-          setMatchingV5Rows(rows);
+          setMatchingV5Rows((prev) => mergeMatchingV5RowsPreservingDetail(prev, rows));
           if (!parseErr) {
             lastFeaturesQueryBoundsRef.current = queryBounds;
             lastFeaturesFetchModeRef.current = nextMode;
@@ -621,7 +643,7 @@ function DiscoveryContent() {
     const justEnteredOverview = isOverview && !wasMatchingOverviewZoomRef.current;
     wasMatchingOverviewZoomRef.current = isOverview;
 
-    const filterSig = `${apiSurfaceRange.min}:${apiSurfaceRange.max}:${parkingFilterEnabled ? 1 : 0}:${apiParkingRange.min}:${apiParkingRange.max}:${apiFootprintRatioRange.min}:${apiFootprintRatioRange.max}:${appliedSirenFilter?.role ?? ""}:${appliedSirenFilter?.siren ?? ""}:${appliedNafDivision ?? ""}`;
+    const filterSig = `${apiSurfaceRange.min}:${apiSurfaceRange.max}:${parkingFilterEnabled ? 1 : 0}:${apiParkingRange.min}:${apiParkingRange.max}:${apiFootprintRatioRange.min}:${apiFootprintRatioRange.max}:${appliedSirenFilter?.role ?? ""}:${appliedSirenFilter?.sirens.join(",") ?? ""}:${appliedNafDivision ?? ""}`;
     const overviewFilterChanged =
       lastCombosOverviewFilterSigRef.current !== "" &&
       lastCombosOverviewFilterSigRef.current !== filterSig;
@@ -678,7 +700,7 @@ function DiscoveryContent() {
             minFootprintRatioPct: apiFootprintRatioRange.min,
             maxFootprintRatioPct: apiFootprintRatioRange.max,
             sirenRole: appliedSirenFilter?.role,
-            siren: appliedSirenFilter?.siren,
+            sirens: appliedSirenFilter?.sirens,
             nafDivision: appliedNafDivision ?? undefined,
             limit: DISCOVERY_COMBOS_OVERVIEW_CLIENT_LIMIT,
           });
@@ -731,7 +753,7 @@ function DiscoveryContent() {
     apiFootprintRatioRange.min,
     apiFootprintRatioRange.max,
     appliedSirenFilter?.role,
-    appliedSirenFilter?.siren,
+    appliedSirenFilter?.sirens.join("\u0001"),
     appliedNafDivision,
   ]);
 
@@ -879,14 +901,34 @@ function DiscoveryContent() {
     };
   }, [user, selectedOsmBuildingId, matchingV5Rows]);
 
+  const selectedRowInMatchingRows = useMemo(
+    () => (selectedRowId ? matchingV5Rows.some((r) => r.id === selectedRowId) : false),
+    [matchingV5Rows, selectedRowId]
+  );
+
+  /**
+   * Signature d’hydratation (type géom. + taille building_geometries_json), pas la ref du tableau
+   * `matchingV5Rows` — évite une boucle fetch/setState quand seule la référence change.
+   */
+  const selectedRowHydrationSig = useMemo(() => {
+    if (!selectedRowId) return "";
+    const row = matchingV5Rows.find((r) => r.id === selectedRowId);
+    if (!row) return `${selectedRowId}:missing`;
+    return `${selectedRowId}:${matchingV5RowDetailHydrationSig(row)}`;
+  }, [selectedRowId, matchingV5Rows]);
+
+  useEffect(() => {
+    lastRowHydrationAttemptSigRef.current = "";
+  }, [selectedRowId]);
+
   /** Hydratation détail (polygone parcelle + building_geometries_json) après sélection en mode overview. */
   useEffect(() => {
     if (!user || !selectedRowId) return;
     const row = matchingV5Rows.find((r) => r.id === selectedRowId);
-    if (!row) return;
-    const needsPolygon = row.geometry.type === "Point";
-    const needsBuildingGeoms = !String(row.buildingGeometriesJson ?? "").trim();
-    if (!needsPolygon && !needsBuildingGeoms) return;
+    if (!row || !matchingV5RowNeedsDetailHydration(row)) return;
+    if (lastRowHydrationAttemptSigRef.current === selectedRowHydrationSig) return;
+    lastRowHydrationAttemptSigRef.current = selectedRowHydrationSig;
+
     let cancelled = false;
     void (async () => {
       try {
@@ -899,8 +941,12 @@ function DiscoveryContent() {
         const { rows, error: parseErr } = parseMatchingV5GeoJsonFeatureCollection(json);
         if (parseErr || !rows[0]) return;
         const full = rows[0]!;
-        if (needsPolygon && full.geometry.type === "Point") return;
-        setMatchingV5Rows((prev) => prev.map((r) => (r.id === selectedRowId ? full : r)));
+        if (row.geometry.type === "Point" && full.geometry.type === "Point") return;
+        setMatchingV5Rows((prev) => {
+          const cur = prev.find((r) => r.id === selectedRowId);
+          if (!cur || !matchingV5RowDetailHydrationWouldChange(cur, full)) return prev;
+          return prev.map((r) => (r.id === selectedRowId ? full : r));
+        });
       } catch {
         /* ignore */
       }
@@ -908,16 +954,14 @@ function DiscoveryContent() {
     return () => {
       cancelled = true;
     };
-  }, [user, selectedRowId, matchingV5Rows]);
+  }, [user, selectedRowId, selectedRowHydrationSig]);
 
   /**
    * Si la ligne canonique n'est pas dans matchingV5Rows (selectedOsmBuildingId clic hors viewport
    * features, ou parcelle absente de la dernière fetch), on la récupère ponctuellement.
    */
   useEffect(() => {
-    if (!user || !selectedRowId) return;
-    const has = matchingV5Rows.some((r) => r.id === selectedRowId);
-    if (has) return;
+    if (!user || !selectedRowId || selectedRowInMatchingRows) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -938,7 +982,7 @@ function DiscoveryContent() {
     return () => {
       cancelled = true;
     };
-  }, [user, selectedRowId, matchingV5Rows]);
+  }, [user, selectedRowId, selectedRowInMatchingRows]);
 
   /** Comptages alignés sur les clusters SQL (viewport + filtre surface), pas sur features partielles. */
   const osmActivityOptions = useMemo(() => {
@@ -1002,6 +1046,36 @@ function DiscoveryContent() {
     appliedConstructionYearRange,
     constructionYearSliderMax,
   ]);
+
+  /** Deep link pipeline → sélection combo (marqueur surligné + tiroir). */
+  useEffect(() => {
+    const rowPending = pendingFocusRowIdRef.current;
+    const comboPending = pendingFocusComboIdRef.current;
+    if (!rowPending && !comboPending) return;
+
+    const sel = selectionFromDiscoveryUrlFocus({
+      focusComboId: comboPending,
+      focusRowId: rowPending,
+      rows: matchingV5Rows,
+      markers: overviewComboMarkers,
+    });
+    if (!sel) {
+      if (rowPending && matchingV5Rows.some((r) => r.id === rowPending)) {
+        setSelectedRowId(rowPending);
+      }
+      return;
+    }
+
+    setSelectedComboId(sel.comboId);
+    setSelectedRowId(sel.anchorParcelleId);
+    setSelectedOsmBuildingId(sel.representativeOsmBuildingId || null);
+    pendingFocusRowIdRef.current = null;
+    pendingFocusComboIdRef.current = null;
+    if (focusFailTimerRef.current) {
+      clearTimeout(focusFailTimerRef.current);
+      focusFailTimerRef.current = null;
+    }
+  }, [matchingV5Rows, overviewComboMarkers]);
 
   /**
    * Carte (clusters + MVT) : les points / tuiles ne passent pas par `filteredFootprints`.
@@ -1068,18 +1142,36 @@ function DiscoveryContent() {
     return findMatchingV5LinkedParcelleRowsTransitive(selectedRow, matchingV5Rows);
   }, [selectedRow, matchingV5Rows]);
 
+  const discoveryLinkedParcelleIdsKey = useMemo(
+    () => discoveryLinkedParcelleRows.map((r) => r.id).sort().join("\u0001"),
+    [discoveryLinkedParcelleRows]
+  );
+
   /** Prospect pipeline déjà créé pour cette emprise (même matching V5). */
-  const discoveryPipelineMatch = useMemo(() => {
-    if (!selectedRow || !pipelineProspects?.length) return null;
-    for (const p of pipelineProspects) {
-      if (
-        matchingV5SelectionMatchesProspect(selectedRow, discoveryLinkedParcelleRows, matchingV5Rows, p)
-      ) {
-        return p;
-      }
-    }
-    return null;
-  }, [selectedRow, discoveryLinkedParcelleRows, matchingV5Rows, pipelineProspects]);
+  const selectedComboParcelleIds = useMemo(
+    () => parcelleScoutV5IdsFromComboMarker(selectedComboId, overviewComboMarkers),
+    [selectedComboId, overviewComboMarkers]
+  );
+
+  const selectedComboMarker = useMemo(() => {
+    if (!selectedComboId) return null;
+    return (
+      overviewComboMarkers.find((c) => c.comboId === selectedComboId) ??
+      comboMarkers.find((c) => c.comboId === selectedComboId) ??
+      null
+    );
+  }, [selectedComboId, overviewComboMarkers, comboMarkers]);
+
+  const discoveryComboSqlSurfaceHint = useMemo((): DiscoveryComboSqlSurfaceHint | null => {
+    const marker = selectedComboMarker;
+    const ids = marker?.parcelleScoutV5Ids;
+    if (!marker || !ids?.length) return null;
+    return {
+      footprintSumM2: marker.footprintSumM2,
+      parcelContourSumM2: marker.parcelContourSumM2 ?? 0,
+      expectedParcelleCount: ids.length,
+    };
+  }, [selectedComboMarker]);
 
   const allMatchingRowsForCombo = useMemo(() => {
     const byId = new Map<string, ScoutMatchingV5Row>();
@@ -1090,26 +1182,16 @@ function DiscoveryContent() {
 
   const matchingLinkedForEffective = useMemo(() => {
     if (!selectedRow) return EMPTY_DISCOVERY_LINKED_ROWS;
-    const mid = discoveryPipelineMatch?.matchingV5RowId;
-    const persisted = discoveryPipelineMatch?.matchingV5ParcelleIds?.filter(Boolean) ?? [];
-    if (persisted.length > 0) {
+    if (selectedComboParcelleIds?.length) {
       const rows: ScoutMatchingV5Row[] = [];
-      for (const id of persisted) {
-        const r = allMatchingRowsForCombo.find((x) => x.id === id);
-        if (r?.grain === "parcelle") rows.push(r);
+      for (const id of selectedComboParcelleIds) {
+        const r = allMatchingRowsForCombo.find((x) => x.id === id && x.grain === "parcelle");
+        if (r) rows.push(r);
       }
       if (rows.length > 0) return rows;
     }
-    if (!mid) return discoveryLinkedParcelleRows;
-    const canonical = allMatchingRowsForCombo.find((r) => r.id === mid);
-    if (!canonical) return discoveryLinkedParcelleRows;
-    return linkedParcelleRowsForV5DrawerAnchor(canonical, allMatchingRowsForCombo);
-  }, [
-    selectedRow,
-    discoveryPipelineMatch,
-    allMatchingRowsForCombo,
-    discoveryLinkedParcelleRows,
-  ]);
+    return discoveryLinkedParcelleRows;
+  }, [selectedRow, selectedComboParcelleIds, allMatchingRowsForCombo, discoveryLinkedParcelleRows]);
 
   /**
    * Combo effectif : matching (ou périmètre pipeline) ± édition session.
@@ -1126,6 +1208,54 @@ function DiscoveryContent() {
   const effectiveParcelleIdSet = useMemo(
     () => new Set(effectiveDiscoveryLinkedParcelleRows.map((r) => r.id)),
     [effectiveDiscoveryLinkedParcelleRows]
+  );
+
+  const discoveryProspectByComboId = useMemo(() => {
+    const m = new Map<string, Prospect>();
+    if (!pipelineProspects?.length) return m;
+    for (const p of pipelineProspects) {
+      const key = legacyComboIdFromProspect(p);
+      if (key && !m.has(key)) m.set(key, p);
+    }
+    return m;
+  }, [pipelineProspects]);
+
+  /** Prospect pipeline lié au combo cliqué (`matchingV5ComboId` strict). */
+  const discoveryPipelineMatch = useMemo(() => {
+    if (!selectedComboId) return null;
+    return discoveryProspectByComboId.get(selectedComboId) ?? null;
+  }, [selectedComboId, discoveryProspectByComboId]);
+
+  const discoveryHeroSurfaces = useMemo(() => {
+    if (!selectedRow) return { footprintM2: 0, parcelM2: 0 };
+    return discoveryComboHeroSurfaces({
+      anchorRow: selectedRow,
+      parcelleRows: effectiveDiscoveryLinkedParcelleRows,
+      selectedBuildingIds,
+      sqlHint: discoveryComboSqlSurfaceHint,
+      comboFootprintFromOverview: selectedComboMarker?.footprintSumM2 ?? 0,
+    });
+  }, [
+    selectedRow,
+    effectiveDiscoveryLinkedParcelleRows,
+    selectedBuildingIds,
+    discoveryComboSqlSurfaceHint,
+    selectedComboMarker?.footprintSumM2,
+  ]);
+
+  /** IDs parcelle pour l’API voisins (lignes résolues + customs pas encore hydratés). */
+  const effectiveAnchorParcelleIds = useMemo(() => {
+    if (!selectedRow) return [] as string[];
+    const ids = new Set(effectiveDiscoveryLinkedParcelleRows.map((r) => r.id));
+    for (const id of Array.from(parcelleEditState.customParcelleIds)) {
+      if (!parcelleEditState.removedParcelleIds.has(id)) ids.add(id);
+    }
+    return Array.from(ids).sort();
+  }, [selectedRow, effectiveDiscoveryLinkedParcelleRows, parcelleEditState]);
+
+  const effectiveParcelleIdsSignature = useMemo(
+    () => effectiveAnchorParcelleIds.join("\u0001"),
+    [effectiveAnchorParcelleIds]
   );
 
   const addableParcellesFc = useMemo(
@@ -1166,34 +1296,121 @@ function DiscoveryContent() {
 
   const discoveryComboSelectionKey = selectedComboId ?? selectedRowId ?? "";
 
-  /** Combo changé → tous les bâtiments sélectionnés par défaut (sauf périmètre pipeline déjà enregistré). */
+  const selectedBuildingIdsKey = discoveryBuildingSelectionSignature(selectedBuildingIds);
+
+  const pipelineBuildingSelectionKey =
+    discoveryPipelineMatch?.matchingV5BuildingSelectionIds?.join("\u0001") ?? "";
+
+  const effectiveLinkedParcelleIdsKey = useMemo(
+    () => effectiveDiscoveryLinkedParcelleRows.map((r) => r.id).join("\u0001"),
+    [effectiveDiscoveryLinkedParcelleRows]
+  );
+
+  const handleDiscoveryPipelineAdded = useCallback(() => {
+    onDiscoveryPipelineAdded();
+  }, [onDiscoveryPipelineAdded]);
+
+  const buildingHighlightFeatureSig = useMemo(
+    () =>
+      buildingHighlightFc.features
+        .map((f) => discoveryBuildingSelectionIdFromFeature(f))
+        .filter(Boolean)
+        .sort()
+        .join("\u0001"),
+    [buildingHighlightFc]
+  );
+
+  /** Changement de combo : Firebase si prospect pipeline, sinon état classique. */
   useLayoutEffect(() => {
-    if (!selectedRow) {
-      setSelectedBuildingIds(new Set());
+    lastDefaultBuildingInitKeyRef.current = "";
+
+    discoveryEditSessionSnapshotRef.current = null;
+    setDiscoveryEditMode(false);
+    setAdjacentParcelleCandidates([]);
+    adjacentExcludeAtEditStartRef.current = null;
+    adjacentFetchGenRef.current += 1;
+
+    if (!discoveryComboSelectionKey) {
+      setParcelleEditState(emptyDiscoveryComboParcelleEditState());
+      setSelectedBuildingIds((prev) => (prev === undefined ? prev : undefined));
       return;
     }
-    if (discoveryPipelineMatch?.matchingV5BuildingSelectionIds?.length) return;
-    setSelectedBuildingIds(
-      defaultDiscoveryComboBuildingSelectionIds(
-        effectiveDiscoveryLinkedParcelleRows,
-        selectedRow
-      )
-    );
+
+    const persistedParcelleIds =
+      discoveryPipelineMatch?.matchingV5ParcelleIds?.map((id) => id.trim()).filter(Boolean) ?? [];
+    const matchingBaselineIds = matchingLinkedForEffective.map((r) => r.id);
+
+    if (persistedParcelleIds.length > 0) {
+      setParcelleEditState(
+        parcelleEditStateFromPersistedParcelleIds(persistedParcelleIds, matchingBaselineIds)
+      );
+      const pipelineBuildingIds = discoveryPipelineMatch?.matchingV5BuildingSelectionIds;
+      if (pipelineBuildingIds?.length) {
+        const next = new Set(pipelineBuildingIds);
+        setSelectedBuildingIds((prev) =>
+          discoveryBuildingSelectionSetsEqual(prev, next) ? prev : next
+        );
+      } else {
+        setSelectedBuildingIds((prev) => (prev === undefined ? prev : undefined));
+      }
+      return;
+    }
+
+    setParcelleEditState(emptyDiscoveryComboParcelleEditState());
+    setSelectedBuildingIds((prev) => (prev === undefined ? prev : undefined));
   }, [
     discoveryComboSelectionKey,
-    selectedRow,
-    effectiveDiscoveryLinkedParcelleRows,
-    discoveryPipelineMatch?.matchingV5BuildingSelectionIds,
+    discoveryPipelineMatch?.id,
+    discoveryPipelineMatch?.matchingV5ParcelleIds?.join("\u0001"),
+    discoveryPipelineMatch?.matchingV5BuildingSelectionIds?.join("\u0001"),
+    matchingLinkedForEffective.map((r) => r.id).sort().join("\u0001"),
+  ]);
+
+  /** Nouveau combo sélectionné → tous les bâtiments cochés par défaut (pas lors d’un ajout/retrait parcelle en édition). */
+  useLayoutEffect(() => {
+    if (!selectedRow) {
+      lastDefaultBuildingInitKeyRef.current = "";
+      setSelectedBuildingIds((prev) => (prev === undefined ? prev : undefined));
+      return;
+    }
+    if (pipelineBuildingSelectionKey) return;
+
+    const next = defaultDiscoveryComboBuildingSelectionIds(
+      effectiveDiscoveryLinkedParcelleRows,
+      selectedRow,
+      buildingHighlightFc
+    );
+    if (next.size === 0) return;
+
+    if (lastDefaultBuildingInitKeyRef.current === discoveryComboSelectionKey) {
+      setSelectedBuildingIds((prev) =>
+        discoveryBuildingSelectionSetsEqual(prev, next) ? prev : next
+      );
+      return;
+    }
+
+    setSelectedBuildingIds((prev) =>
+      discoveryBuildingSelectionSetsEqual(prev, next) ? prev : next
+    );
+    lastDefaultBuildingInitKeyRef.current = discoveryComboSelectionKey;
+  }, [
+    discoveryComboSelectionKey,
+    selectedRow?.id,
+    effectiveLinkedParcelleIdsKey,
+    buildingHighlightFeatureSig,
+    pipelineBuildingSelectionKey,
   ]);
 
   /** Géométries hydratées après coup → nouveaux bâtiments sélectionnés par défaut. */
   useEffect(() => {
     if (!selectedRow) return;
+    if (discoveryPipelineMatch?.matchingV5BuildingSelectionIds?.length) return;
+    if (!buildingHighlightFeatureSig) return;
     setSelectedBuildingIds((prev) => {
+      if (prev === undefined) return prev;
       let changed = false;
       const next = new Set(prev);
-      for (const feature of buildingHighlightFc.features) {
-        const id = discoveryBuildingSelectionIdFromFeature(feature);
+      for (const id of buildingHighlightFeatureSig.split("\u0001")) {
         if (id && !next.has(id)) {
           next.add(id);
           changed = true;
@@ -1201,10 +1418,68 @@ function DiscoveryContent() {
       }
       return changed ? next : prev;
     });
-  }, [buildingHighlightFc, selectedRow]);
+  }, [
+    buildingHighlightFeatureSig,
+    selectedRow?.id,
+    discoveryComboSelectionKey,
+    discoveryPipelineMatch?.matchingV5BuildingSelectionIds,
+  ]);
 
-  const onToggleDiscoveryBuilding = useCallback((selectionId: string) => {
-    setSelectedBuildingIds((prev) => toggleDiscoveryBuildingSelection(prev, selectionId));
+  const onToggleDiscoveryBuilding = useCallback(
+    (selectionId: string) => {
+      setSelectedBuildingIds((prev) => {
+        if (!selectedRow) return prev;
+        const baseline =
+          prev ??
+          defaultDiscoveryComboBuildingSelectionIds(
+            effectiveDiscoveryLinkedParcelleRows,
+            selectedRow,
+            buildingHighlightFc
+          );
+        return toggleDiscoveryBuildingSelection(baseline, selectionId);
+      });
+    },
+    [selectedRow, effectiveDiscoveryLinkedParcelleRows, buildingHighlightFc]
+  );
+
+  const onDiscoveryEditStart = useCallback(() => {
+    const buildingIds =
+      selectedBuildingIds ??
+      (selectedRow
+        ? defaultDiscoveryComboBuildingSelectionIds(
+            effectiveDiscoveryLinkedParcelleRows,
+            selectedRow,
+            buildingHighlightFc
+          )
+        : new Set<string>());
+    discoveryEditSessionSnapshotRef.current = {
+      parcelleEdit: cloneDiscoveryComboParcelleEditState(parcelleEditState),
+      buildingIds: new Set(buildingIds),
+    };
+    setDiscoveryEditMode(true);
+  }, [
+    parcelleEditState,
+    selectedBuildingIds,
+    selectedRow,
+    effectiveDiscoveryLinkedParcelleRows,
+    buildingHighlightFc,
+  ]);
+
+  const onDiscoveryEditValidate = useCallback(() => {
+    discoveryEditSessionSnapshotRef.current = null;
+    setDiscoveryEditMode(false);
+  }, []);
+
+  const onDiscoveryEditCancel = useCallback(() => {
+    const snap = discoveryEditSessionSnapshotRef.current;
+    if (snap) {
+      setParcelleEditState(cloneDiscoveryComboParcelleEditState(snap.parcelleEdit));
+      setSelectedBuildingIds(new Set(snap.buildingIds));
+    } else {
+      setParcelleEditState(emptyDiscoveryComboParcelleEditState());
+    }
+    discoveryEditSessionSnapshotRef.current = null;
+    setDiscoveryEditMode(false);
   }, []);
 
   const fetchMatchingRowById = useCallback(async (scoutV5Id: string): Promise<ScoutMatchingV5Row | null> => {
@@ -1248,6 +1523,54 @@ function DiscoveryContent() {
     [allMatchingRowsForCombo, fetchMatchingRowById, adjacentParcelleCandidates]
   );
 
+  const refetchAdjacentParcelles = useCallback(
+    async (
+      anchorParcelleIds: readonly string[],
+      options?: { notifyIfEmpty?: boolean }
+    ) => {
+      const ids = anchorParcelleIds.map((id) => id.trim()).filter(Boolean);
+      if (ids.length === 0) {
+        setAdjacentParcelleCandidates([]);
+        return;
+      }
+      if (adjacentExcludeAtEditStartRef.current === null) {
+        adjacentExcludeAtEditStartRef.current = [...ids];
+      }
+      const gen = ++adjacentFetchGenRef.current;
+      const sp = buildParcellesAdjacentSearchParams({
+        parcelleIds: ids,
+        excludeIds: adjacentExcludeAtEditStartRef.current,
+        bufferM: 5,
+      });
+      setAdjacentParcellesLoading(true);
+      try {
+        const res = await fetchWithAuth(`/api/matching-v5/parcelles-adjacent?${sp.toString()}`);
+        if (adjacentFetchGenRef.current !== gen) return;
+        if (!res.ok) {
+          setAdjacentParcelleCandidates([]);
+          toast.error("Impossible de charger les parcelles voisines.");
+          return;
+        }
+        const json = (await res.json()) as { parcelles?: DiscoveryAdjacentParcelle[] };
+        if (adjacentFetchGenRef.current !== gen) return;
+        const parcelles = Array.isArray(json.parcelles) ? json.parcelles : [];
+        setAdjacentParcelleCandidates(parcelles);
+        if (parcelles.length === 0 && options?.notifyIfEmpty) {
+          toast.info("Aucune parcelle cadastrale voisine trouvée à proximité.");
+        }
+      } catch {
+        if (adjacentFetchGenRef.current !== gen) return;
+        setAdjacentParcelleCandidates([]);
+        toast.error("Impossible de charger les parcelles voisines.");
+      } finally {
+        if (adjacentFetchGenRef.current === gen) {
+          setAdjacentParcellesLoading(false);
+        }
+      }
+    },
+    []
+  );
+
   const onToggleDiscoveryParcelle = useCallback(
     async (parcelleId: string, include: boolean) => {
       const candidate = adjacentParcelleCandidates.find((c) => c.scout_v5_id === parcelleId);
@@ -1275,8 +1598,10 @@ function DiscoveryContent() {
           include,
           include ? mergeIds : undefined
         );
-        if (include && next === prev) {
-          toast.info("Cette parcelle fait déjà partie du périmètre.");
+        if (next === prev) {
+          if (include) {
+            toast.info("Cette parcelle fait déjà partie du périmètre.");
+          }
           return prev;
         }
         if (include) {
@@ -1305,81 +1630,93 @@ function DiscoveryContent() {
   useEffect(() => {
     if (!discoveryEditMode) {
       adjacentExcludeAtEditStartRef.current = null;
+      adjacentFetchGenRef.current += 1;
       setAdjacentParcelleCandidates([]);
+      setAdjacentParcellesLoading(false);
       return;
     }
-    if (effectiveDiscoveryLinkedParcelleRows.length === 0) return;
+    if (effectiveAnchorParcelleIds.length === 0) return;
 
-    if (adjacentExcludeAtEditStartRef.current === null) {
-      adjacentExcludeAtEditStartRef.current = effectiveDiscoveryLinkedParcelleRows.map((r) => r.id);
+    void refetchAdjacentParcelles(effectiveAnchorParcelleIds, { notifyIfEmpty: true });
+  }, [
+    discoveryEditMode,
+    discoveryComboSelectionKey,
+    effectiveParcelleIdsSignature,
+    refetchAdjacentParcelles,
+    effectiveAnchorParcelleIds,
+  ]);
+
+  useEffect(() => {
+    const ids = discoveryPipelineMatch?.matchingV5BuildingSelectionIds;
+    if (!pipelineBuildingSelectionKey || !ids?.length) return;
+    const next = new Set(ids);
+    setSelectedBuildingIds((prev) =>
+      discoveryBuildingSelectionSetsEqual(prev, next) ? prev : next
+    );
+  }, [discoveryPipelineMatch?.matchingV5RowId, pipelineBuildingSelectionKey]);
+
+  useEffect(() => {
+    const ids = new Set<string>();
+    if (selectedRowId) ids.add(selectedRowId);
+    for (const id of selectedComboParcelleIds ?? []) {
+      if (id.trim()) ids.add(id.trim());
     }
+    for (const id of discoveryPipelineMatch?.matchingV5ParcelleIds ?? []) {
+      if (id.trim()) ids.add(id.trim());
+    }
+    if (ids.size === 0) return;
+    void ensureMatchingRowsLoaded(Array.from(ids));
+  }, [
+    selectedRowId,
+    selectedComboParcelleIds,
+    discoveryPipelineMatch?.matchingV5RowId,
+    ensureMatchingRowsLoaded,
+  ]);
+
+  /** Remplace les géométries `Point` (overview) par les polygones parcelle pour tout le combo. */
+  useEffect(() => {
+    if (!user || !selectedRowId) return;
+    const ids = new Set<string>();
+    ids.add(selectedRowId);
+    for (const id of selectedComboParcelleIds ?? []) {
+      if (id.trim()) ids.add(id.trim());
+    }
+    for (const id of discoveryPipelineMatch?.matchingV5ParcelleIds ?? []) {
+      if (id.trim()) ids.add(id.trim());
+    }
+    const needHydration = Array.from(ids).filter((id) => {
+      const row = allMatchingRowsForCombo.find((r) => r.id === id);
+      return row && matchingV5RowNeedsDetailHydration(row);
+    });
+    if (needHydration.length === 0) return;
 
     let cancelled = false;
-    const ids = effectiveDiscoveryLinkedParcelleRows.map((r) => r.id);
-    const sp = buildParcellesAdjacentSearchParams({
-      parcelleIds: ids,
-      excludeIds: adjacentExcludeAtEditStartRef.current,
-      bufferM: 5,
-    });
-    setAdjacentParcellesLoading(true);
     void (async () => {
-      try {
-        const res = await fetchWithAuth(`/api/matching-v5/parcelles-adjacent?${sp.toString()}`);
-        if (!res.ok || cancelled) return;
-        const json = (await res.json()) as { parcelles?: DiscoveryAdjacentParcelle[] };
-        if (!cancelled && Array.isArray(json.parcelles)) {
-          setAdjacentParcelleCandidates(json.parcelles);
-          if (json.parcelles.length === 0) {
-            toast.info("Aucune parcelle cadastrale voisine trouvée à proximité.");
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setAdjacentParcelleCandidates([]);
-          toast.error("Impossible de charger les parcelles voisines.");
-        }
-      } finally {
-        if (!cancelled) setAdjacentParcellesLoading(false);
+      for (const id of needHydration) {
+        if (cancelled) return;
+        const full = await fetchMatchingRowById(id);
+        if (!full) continue;
+        const mergeRow = (prev: ScoutMatchingV5Row[]) => {
+          const cur = prev.find((r) => r.id === id);
+          if (!cur || !matchingV5RowDetailHydrationWouldChange(cur, full)) return prev;
+          return prev.map((r) => (r.id === id ? full : r));
+        };
+        setMatchingV5Rows(mergeRow);
+        setExtraMatchingV5Rows(mergeRow);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [discoveryEditMode, discoveryComboSelectionKey, effectiveDiscoveryLinkedParcelleRows]);
-
-  useEffect(() => {
-    const persisted = discoveryPipelineMatch?.matchingV5ParcelleIds?.filter(Boolean) ?? [];
-    if (persisted.length === 0 || !selectedRow) return;
-    void ensureMatchingRowsLoaded(persisted);
-    const matchingIds = new Set(discoveryLinkedParcelleRows.map((r) => r.id));
-    const custom = new Set<string>();
-    for (const id of persisted) {
-      if (!matchingIds.has(id)) custom.add(id);
-    }
-    if (custom.size > 0) {
-      setParcelleEditState({ customParcelleIds: custom, removedParcelleIds: new Set() });
-    }
   }, [
+    user,
+    selectedRowId,
+    discoveryComboSelectionKey,
+    selectedComboParcelleIds,
     discoveryPipelineMatch?.matchingV5RowId,
-    discoveryPipelineMatch?.matchingV5ParcelleIds,
-    selectedRow?.id,
-    discoveryLinkedParcelleRows,
-    ensureMatchingRowsLoaded,
-    selectedRow,
+    allMatchingRowsForCombo,
+    fetchMatchingRowById,
   ]);
-
-  useEffect(() => {
-    if (!discoveryPipelineMatch?.matchingV5BuildingSelectionIds?.length) return;
-    setSelectedBuildingIds(new Set(discoveryPipelineMatch.matchingV5BuildingSelectionIds));
-  }, [discoveryPipelineMatch?.matchingV5RowId, discoveryPipelineMatch?.matchingV5BuildingSelectionIds]);
-
-  useEffect(() => {
-    setDiscoveryEditMode(false);
-    setParcelleEditState(emptyDiscoveryComboParcelleEditState());
-    setAdjacentParcelleCandidates([]);
-    setExtraMatchingV5Rows([]);
-    adjacentExcludeAtEditStartRef.current = null;
-  }, [discoveryComboSelectionKey]);
 
   const parkingHighlightFc = useMemo((): GeoJSON.FeatureCollection => {
     const rows = [...parcelleHighlightRows];
@@ -1396,6 +1733,7 @@ function DiscoveryContent() {
         setSelectedOsmBuildingId(null);
         setSelectedComboId(null);
         setSelectedRowId(null);
+        discoveryEditSessionSnapshotRef.current = null;
         setDiscoveryEditMode(false);
         setParcelleEditState(emptyDiscoveryComboParcelleEditState());
         setAdjacentParcelleCandidates([]);
@@ -1418,37 +1756,56 @@ function DiscoveryContent() {
     setIsDrawerOpen(true);
     setDrawerContent(
       <ProspectDrawer
+        key={`${selectedRow.id}:${selectedRowHydrationSig}`}
         prospect={null}
         discoveryRow={selectedRow}
         discoveryLinkedParcelleRows={effectiveDiscoveryLinkedParcelleRows}
         discoveryComboZoneTags={discoveryComboZoneTagsForDrawer}
         discoveryExistingPipelineProspect={discoveryPipelineMatch}
+        discoveryComboId={selectedComboId}
         discoverySelectedBuildingIds={selectedBuildingIds}
         onDiscoveryToggleBuilding={onToggleDiscoveryBuilding}
         discoveryEditMode={discoveryEditMode}
-        onDiscoveryEditModeChange={setDiscoveryEditMode}
+        onDiscoveryEditStart={onDiscoveryEditStart}
+        onDiscoveryEditValidate={onDiscoveryEditValidate}
+        onDiscoveryEditCancel={onDiscoveryEditCancel}
         discoveryEffectiveParcelleCount={effectiveDiscoveryLinkedParcelleRows.length}
+        discoveryHeroSurfaces={discoveryHeroSurfaces}
+        discoveryComboSqlSurfaceHint={discoveryComboSqlSurfaceHint}
+        discoveryComboFootprintFromOverview={selectedComboMarker?.footprintSumM2 ?? 0}
         bdnbLoading={false}
         isOpen
         onOpenChange={handleDiscoveryDrawerOpenChange}
         voirHref={(_prospectId) => "/discovery"}
-        onDiscoveryPipelineAdded={onDiscoveryPipelineAdded}
+        onDiscoveryPipelineAdded={handleDiscoveryPipelineAdded}
         onDiscoveryMatchingV5Persisted={onDiscoveryMatchingV5Persisted}
+        onSaveSuccess={handleDiscoveryPipelineAdded}
       />
     );
   }, [
-    selectedRow,
-    effectiveDiscoveryLinkedParcelleRows,
+    selectedRow?.id,
+    selectedRowHydrationSig,
+    effectiveLinkedParcelleIdsKey,
     discoveryComboZoneTagsForDrawer,
-    discoveryPipelineMatch,
-    selectedBuildingIds,
+    discoveryPipelineMatch?.id,
+    discoveryPipelineMatch?.matchingV5RowId,
+    selectedComboId,
+    selectedBuildingIdsKey,
     onToggleDiscoveryBuilding,
     discoveryEditMode,
+    onDiscoveryEditStart,
+    onDiscoveryEditValidate,
+    onDiscoveryEditCancel,
     effectiveDiscoveryLinkedParcelleRows.length,
+    discoveryHeroSurfaces.footprintM2,
+    discoveryHeroSurfaces.parcelM2,
+    discoveryComboSqlSurfaceHint?.footprintSumM2,
+    discoveryComboSqlSurfaceHint?.expectedParcelleCount,
+    selectedComboMarker?.footprintSumM2,
     setIsDrawerOpen,
     setDrawerContent,
     handleDiscoveryDrawerOpenChange,
-    onDiscoveryPipelineAdded,
+    handleDiscoveryPipelineAdded,
     onDiscoveryMatchingV5Persisted,
   ]);
 
@@ -1509,7 +1866,6 @@ function DiscoveryContent() {
           discoveryEditMode={discoveryEditMode}
           addableParcellesFc={addableParcellesFc}
           onToggleAdjacentParcelle={onToggleDiscoveryParcelle}
-          adjacentParcellesLoading={adjacentParcellesLoading}
           effectiveParcelleIds={effectiveParcelleIdSet}
           parkingHighlightFc={parkingHighlightFc}
           selectedOsmBuildingId={selectedOsmBuildingId}
@@ -1538,8 +1894,8 @@ function DiscoveryContent() {
             </div>
           </div>
         ) : null}
-        <div className="pointer-events-none absolute left-3 top-3 z-[1100] max-h-[calc(100%-1.5rem)] w-[min(18rem,calc(100vw-1.5rem))]">
-          <div className="pointer-events-auto max-h-full overflow-y-auto overscroll-contain">
+        <div className="pointer-events-none absolute left-3 top-3 z-[1100] flex max-h-[calc(100%-1.5rem)] w-[min(18rem,calc(100vw-1.5rem))] flex-col gap-2">
+          <div className="pointer-events-auto min-h-0 max-h-full shrink overflow-y-auto overscroll-contain">
             <DiscoveryFiltersPanel
               surfaceMinM2={surfaceMinM2}
               surfaceMaxM2={surfaceMaxM2}
@@ -1564,8 +1920,10 @@ function DiscoveryContent() {
               onSelectedOsmActivityTagChange={setSelectedOsmActivityTag}
               sirenRole={sirenRole}
               onSirenRoleChange={onSirenRoleChange}
-              sirenQuery={sirenQuery}
-              onSirenQueryChange={setSirenQuery}
+              selectedSirens={selectedSirens}
+              sirenDraft={sirenDraft}
+              onSelectedSirensChange={setSelectedSirens}
+              onSirenDraftChange={setSirenDraft}
               nafDivisionQuery={nafDivisionQuery}
               onNafDivisionQueryChange={setNafDivisionQuery}
               nafDivisionOptions={nafDivisionOptions}
@@ -1586,6 +1944,9 @@ function DiscoveryContent() {
               enedisTruncated={enedisTruncated}
             />
           </div>
+          {discoveryEditMode ? (
+            <DiscoveryEditModeStatusBanner loading={adjacentParcellesLoading} />
+          ) : null}
         </div>
       </div>
     </div>

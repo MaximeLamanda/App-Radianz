@@ -28,7 +28,7 @@ describe("comboMeetsDiscoveryActivityTag", () => {
 describe("discoveryComboActivityHeroBadgeLabel", () => {
   it("ordonne et libelle les tags pro", () => {
     expect(discoveryComboActivityHeroBadgeLabel(["commercial", "industrial"])).toBe(
-      "Industriel · Commercial"
+      "Industriel · Tertiaire"
     );
   });
   it("retourne vide sans tag", () => {

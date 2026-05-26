@@ -8,7 +8,7 @@ import {
   buildCombosOverviewSirenWhere,
   buildCombosOverviewSurfaceWhere,
   isCombosOverviewNafDivision,
-  isCombosOverviewSirenExact,
+  parseCombosOverviewSirensParam,
   type CombosOverviewSirenRole,
 } from "@/lib/discovery-combos-overview-http";
 import { DISCOVERY_FOOTPRINT_RATIO_SLIDER_MAX_PCT } from "@/lib/discovery-footprint-ratio-defaults";
@@ -108,18 +108,28 @@ export async function GET(request: NextRequest) {
   );
 
   const sirenRoleRaw = searchParams.get("sirenRole")?.trim() ?? "";
-  const sirenRaw = searchParams.get("siren")?.trim() ?? "";
+  const sirenRaws = searchParams.getAll("siren");
   const nafDivisionRaw = searchParams.get("nafDivision")?.trim() ?? "";
   const sirenRole: CombosOverviewSirenRole | null =
     sirenRoleRaw === "owner" || sirenRoleRaw === "domiciliation" ? sirenRoleRaw : null;
-  const hasSirenFilter = Boolean(sirenRole && sirenRaw && isCombosOverviewSirenExact(sirenRaw));
+  const parsedSirens = parseCombosOverviewSirensParam(
+    sirenRaws.length > 0 ? sirenRaws : (searchParams.get("siren") ?? "")
+  );
+  const hasSirenFilter = Boolean(sirenRole && parsedSirens.length > 0);
   const hasNafFilter = Boolean(nafDivisionRaw && isCombosOverviewNafDivision(nafDivisionRaw));
 
-  if (sirenRaw && (!sirenRole || !isCombosOverviewSirenExact(sirenRaw))) {
-    return NextResponse.json(
-      { error: "Paramètre siren invalide (9 chiffres) ou sirenRole manquant (owner | domiciliation)." },
-      { status: 400 }
-    );
+  if (sirenRaws.length > 0 || searchParams.get("siren")) {
+    const rawPresent =
+      sirenRaws.length > 0 || Boolean(searchParams.get("siren")?.trim());
+    if (rawPresent && (!sirenRole || parsedSirens.length === 0)) {
+      return NextResponse.json(
+        {
+          error:
+            "Paramètre(s) siren invalide(s) (9 chiffres chacun) ou sirenRole manquant (owner | domiciliation).",
+        },
+        { status: 400 }
+      );
+    }
   }
   if (nafDivisionRaw && !isCombosOverviewNafDivision(nafDivisionRaw)) {
     return NextResponse.json(
@@ -178,7 +188,7 @@ export async function GET(request: NextRequest) {
 
     if (hasSirenFilter && sirenRole) {
       const sirenFilter = buildCombosOverviewSirenWhere(
-        { role: sirenRole, siren: sirenRaw },
+        { role: sirenRole, sirens: parsedSirens },
         p
       );
       whereParts.push(...sirenFilter.sqlFragments);
@@ -211,6 +221,7 @@ export async function GET(request: NextRequest) {
     let rows: {
       combo_id: string;
       footprint_sum_m2: number | null;
+      parcel_contour_sum_m2: number | null;
       parking_sum_m2: number | null;
       has_landuse_waiver: boolean | null;
       anchor_parcelle_id: string | null;
@@ -239,6 +250,7 @@ export async function GET(request: NextRequest) {
       SELECT
         combo_id,
         footprint_sum_m2,
+        parcel_contour_sum_m2,
         parking_sum_m2,
         has_landuse_waiver,
         anchor_parcelle_id,
@@ -269,6 +281,7 @@ export async function GET(request: NextRequest) {
         properties: {
           combo_id: r.combo_id,
           footprint_sum_m2: r.footprint_sum_m2 ?? 0,
+          parcel_contour_sum_m2: r.parcel_contour_sum_m2 ?? 0,
           parking_sum_m2: r.parking_sum_m2 ?? 0,
           has_landuse_waiver: Boolean(r.has_landuse_waiver),
           anchor_parcelle_id: r.anchor_parcelle_id ?? "",

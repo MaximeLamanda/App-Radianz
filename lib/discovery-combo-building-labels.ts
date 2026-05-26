@@ -7,7 +7,7 @@ import {
 import {
   discoveryBuildingSelectionIdFromEntry,
   discoveryBuildingSelectionIdFromFeature,
-  isDiscoveryBuildingSelected,
+  isDiscoveryBuildingEntrySelected,
 } from "@/lib/discovery-combo-building-selection";
 
 /** Tri aligné onglet « Bâtiments » du tiroir Discovery (empreinte ↓, puis BC id). */
@@ -96,6 +96,25 @@ export function collectSortedDiscoveryComboBuildingEntries(
   }
 
   return [...raw].sort(compareV5BuildingsJsonEntriesForDisplay);
+}
+
+/** Empreinte d’un bâtiment, repli sur une autre parcelle du cluster si absente. */
+function footprintM2ForBuildingEntry(
+  entry: V5BuildingsJsonEntry,
+  parcelleCluster: readonly ScoutMatchingV5Row[]
+): number {
+  const direct = entry.footprintM2;
+  if (direct != null && Number.isFinite(direct) && direct > 0) return direct;
+  const bc = entry.batimentConstructionId.trim();
+  if (!bc || bc === "—") return 0;
+  for (const pr of parcelleCluster) {
+    for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
+      if (b.batimentConstructionId.trim() !== bc) continue;
+      const fp = b.footprintM2;
+      if (fp != null && Number.isFinite(fp) && fp > 0) return fp;
+    }
+  }
+  return 0;
 }
 
 export type DiscoveryComboBuildingNumberLabel = {
@@ -228,22 +247,23 @@ export function defaultDiscoveryComboBuildingSelectionIds(
 }
 
 /**
- * Σ empreintes des bâtiments cochés. `null` si pas de filtre bâtiment (utiliser `footprintSumTotalFromV5`).
+ * Σ empreintes des bâtiments cochés.
+ * `null` si pas de filtre (`selectedBuildingIds` absent) → utiliser `footprintSumTotalFromV5`.
+ * `0` si filtre actif mais aucun bâtiment coché.
  */
 export function discoveryComboFootprintSumM2(
   parcelleCluster: readonly ScoutMatchingV5Row[],
   anchorRow: ScoutMatchingV5Row,
   selectedBuildingIds?: ReadonlySet<string> | null
 ): number | null {
-  if (!selectedBuildingIds) return null;
+  if (selectedBuildingIds == null) return null;
   const entries = collectSortedDiscoveryComboBuildingEntries(parcelleCluster, anchorRow);
   let sum = 0;
   let counted = false;
   for (const e of entries) {
-    const id = discoveryBuildingSelectionIdFromEntry(e);
-    if (!id || !isDiscoveryBuildingSelected(selectedBuildingIds, id)) continue;
+    if (!isDiscoveryBuildingEntrySelected(selectedBuildingIds, e)) continue;
     counted = true;
-    if (e.footprintM2 != null && Number.isFinite(e.footprintM2)) sum += e.footprintM2;
+    sum += footprintM2ForBuildingEntry(e, parcelleCluster);
   }
   return counted ? sum : 0;
 }

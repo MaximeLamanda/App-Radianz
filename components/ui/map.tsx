@@ -93,8 +93,8 @@ export function MapTileLayer(props: Partial<TileLayerProps>) {
 const ZOOM_CONTROL_POSITION: Record<MapZoomControlPosition, string> = {
   topleft: "left-2 top-2",
   topright: "right-2 top-2",
-  bottomleft: "bottom-4 left-2",
-  bottomright: "bottom-4 right-2",
+  bottomleft: "bottom-2 left-2",
+  bottomright: "bottom-2 right-2",
 };
 
 const ZOOM_CONTROL_WRAPPER: Record<MapZoomControlVariant, string> = {

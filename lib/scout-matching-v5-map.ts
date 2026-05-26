@@ -267,9 +267,9 @@ function stringRecordProp(v: unknown): Record<string, string> {
  */
 const V5_ZONE_TAG_FR_LABELS: Record<string, string> = {
   industrial: "Industriel",
-  commercial: "Commercial",
-  retail: "Commerce",
-  residential: "Zone résidentielle",
+  commercial: "Tertiaire",
+  retail: "Retail",
+  residential: "Résidentiel",
   education: "École · université · campus",
   religious: "Religieux",
   military: "Militaire",
@@ -1510,4 +1510,53 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     };
   }
   return { rows, error: null };
+}
+
+/** Signature stable pour savoir si une ligne overview doit être hydratée (détail carte). */
+export function matchingV5RowDetailHydrationSig(row: ScoutMatchingV5Row): string {
+  return `${row.geometry.type}:${String(row.buildingGeometriesJson ?? "").trim().length}`;
+}
+
+export function matchingV5RowNeedsDetailHydration(row: ScoutMatchingV5Row): boolean {
+  return row.geometry.type === "Point" || !String(row.buildingGeometriesJson ?? "").trim();
+}
+
+/** True si `incoming` apporte polygone ou building_geometries_json manquants sur `current`. */
+export function matchingV5RowDetailHydrationWouldChange(
+  current: ScoutMatchingV5Row,
+  incoming: ScoutMatchingV5Row
+): boolean {
+  if (current.geometry.type === "Point" && incoming.geometry.type !== "Point") return true;
+  const curBg = String(current.buildingGeometriesJson ?? "").trim();
+  const incBg = String(incoming.buildingGeometriesJson ?? "").trim();
+  if (!curBg && incBg) return true;
+  return false;
+}
+
+/** Score de richesse détail (polygone + building_geometries_json) pour fusionner les fetchs viewport. */
+export function matchingV5RowDetailRichness(row: ScoutMatchingV5Row): number {
+  let score = 0;
+  if (row.geometry.type !== "Point") score += 2;
+  if (String(row.buildingGeometriesJson ?? "").trim()) score += 1;
+  return score;
+}
+
+/** Conserve la variante la plus détaillée (évite qu’un fetch overview écrase une ligne hydratée). */
+export function pickRicherMatchingV5Row(
+  a: ScoutMatchingV5Row,
+  b: ScoutMatchingV5Row
+): ScoutMatchingV5Row {
+  return matchingV5RowDetailRichness(a) >= matchingV5RowDetailRichness(b) ? a : b;
+}
+
+/** Fusionne un fetch viewport avec l’état courant sans perdre l’hydratation déjà obtenue. */
+export function mergeMatchingV5RowsPreservingDetail(
+  previous: readonly ScoutMatchingV5Row[],
+  incoming: readonly ScoutMatchingV5Row[]
+): ScoutMatchingV5Row[] {
+  const prevById = new Map(previous.map((r) => [r.id, r]));
+  return incoming.map((row) => {
+    const prev = prevById.get(row.id);
+    return prev ? pickRicherMatchingV5Row(prev, row) : row;
+  });
 }

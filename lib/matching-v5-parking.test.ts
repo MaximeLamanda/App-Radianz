@@ -4,6 +4,7 @@ import {
   collectMatchingV5ParkingFeatures,
   collectParkingsFromMatchingRows,
   isChargingStationPoi,
+  parkingDedupKey,
   parseParkingsJson,
   parseV5ParkingEntry,
 } from "@/lib/matching-v5-parking";
@@ -30,6 +31,25 @@ describe("matching-v5-parking", () => {
     expect(p[0]!.parkingSource).toBe("osm");
     expect(p[0]!.chargingStations).toHaveLength(1);
     expect(p[0]!.chargingStations[0]!.capacity).toBe("2");
+  });
+
+  it("parkingDedupKey fusionne way et area osmium (r négatif)", () => {
+    expect(parkingDedupKey("w", 12345)).toBe("w:12345");
+    expect(parkingDedupKey("r", -12345)).toBe("w:12345");
+  });
+
+  it("collectParkingsFromMatchingRows dedupes way et r négatif", () => {
+    const buildings = JSON.stringify([
+      {
+        batiment_construction_id: "bc-1",
+        parkings_json: [
+          { osm_parking_type: "w", osm_parking_id: 99, parking_parcels_json: [], common_parcels_json: [], charging_stations_json: [] },
+          { osm_parking_type: "r", osm_parking_id: -99, parking_parcels_json: [], common_parcels_json: [], charging_stations_json: [] },
+        ],
+      },
+    ]);
+    const row = { id: "p1", grain: "parcelle", buildingsJson: buildings } as ScoutMatchingV5Row;
+    expect(collectParkingsFromMatchingRows([row])).toHaveLength(1);
   });
 
   it("collectParkingsFromMatchingRows dedupes", () => {

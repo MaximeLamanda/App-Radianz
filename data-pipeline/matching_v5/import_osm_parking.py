@@ -184,21 +184,8 @@ class PbfParkingCollector(osmium.SimpleHandler):
             self.relations_kept += 1
 
     def way(self, w: osmium.osm.Way) -> None:
-        tags = tags_dict(dict(w.tags))
-        hit = self._tag_match(tags)
-        if hit is None:
-            self.skipped_tag += 1
-            return
-        parking_tag, parking_value = hit
-        if not w.is_closed():
-            return
-        try:
-            wkb = self._wkb.create_linestring(w)
-            geom = _geom_from_osmium_wkb(wkb)
-        except Exception:
-            self.skipped_geom += 1
-            return
-        self._emit("w", int(w.id), geom, tags, parking_tag, parking_value)
+        # Ways fermées taggées parking sont aussi traitées par area() (évite doublon w:123 + r:-123).
+        return
 
     def area(self, a: osmium.osm.Area) -> None:
         tags = tags_dict(dict(a.tags))
@@ -213,7 +200,10 @@ class PbfParkingCollector(osmium.SimpleHandler):
         except Exception:
             self.skipped_geom += 1
             return
-        self._emit("r", int(a.id), geom, tags, parking_tag, parking_value)
+        if a.from_way():
+            self._emit("w", abs(int(a.id)), geom, tags, parking_tag, parking_value)
+        else:
+            self._emit("r", int(a.id), geom, tags, parking_tag, parking_value)
 
 
 def apply_osm_parking_schema_sql(cur: Any) -> None:

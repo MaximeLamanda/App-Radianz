@@ -271,10 +271,10 @@ export async function updateProspect(
 ): Promise<void> {
   try {
     const prospectRef = doc(db, "prospects", prospectId);
-    const sanitized: Record<string, unknown> = { ...stripUndefined(updates as Record<string, unknown>), updatedAt: Timestamp.now() };
-    if (updates.commercialReferent && typeof updates.commercialReferent === "object") {
-      sanitized.commercialReferent = stripUndefined(updates.commercialReferent as unknown as Record<string, unknown>);
-    }
+    const sanitized: Record<string, unknown> = {
+      ...(stripUndefinedDeep(updates) as Record<string, unknown>),
+      updatedAt: Timestamp.now(),
+    };
     await updateDoc(prospectRef, sanitized);
   } catch (error) {
     console.error("Erreur lors de la mise à jour du prospect:", error);

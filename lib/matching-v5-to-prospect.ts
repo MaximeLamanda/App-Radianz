@@ -14,6 +14,7 @@ import {
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
 import { pvgisAzimuthFromFootprintGeometry } from "@/lib/footprint-orientation-pvgis";
+import { computeDiscoveryKwpEstForPipeline } from "@/lib/discovery-pipeline-add-financials";
 import { getProductionFromPerKwp, type PVGISData } from "@/lib/pvgis";
 import type { AddressCoordinates, PanelReference, Prospect, RoofSurface, SolarPotential } from "@/types";
 
@@ -219,16 +220,17 @@ function buildSolarPotential(
     productionPerKwpMonthly &&
     productionPerKwpMonthly.length > 0
   ) {
-    const { annualKwh, monthlyProduction } = getProductionFromPerKwp(
+    const { monthlyProduction } = getProductionFromPerKwp(
       productionPerKwpAnnual,
       productionPerKwpMonthly,
       kwp
     );
+    const maxKwhPerYear = monthlyProduction.reduce((sum, m) => sum + m.production, 0);
     return {
       maxArrayPanelsCount: 0,
       maxSunshineHoursPerYear: Math.round(pvgis.sunshineHoursEquivalent),
       maxArrayAreaMeters2: footprintM2,
-      maxKwhPerYear: annualKwh,
+      maxKwhPerYear,
       estimatedKwp: kwp,
       productionPerKwpAnnual,
       productionPerKwpMonthly,
@@ -255,12 +257,16 @@ export interface MatchingV5ToProspectDraftOptions {
   panelRef?: PanelReference | null;
   /** Données PVGIS déjà chargées dans le drawer (évite un second appel si fourni). */
   pvgisData?: PVGISData | null;
+  /** Clé combo Discovery (`combo:…`) pour rattachement pipeline strict. */
+  matchingV5ComboId?: string;
   /** Périmètre parcelles personnalisé (session édition combo). */
   matchingV5ParcelleIds?: string[];
   /** Bâtiments cochés (`bc:` / `osm:`). */
   matchingV5BuildingSelectionIds?: string[];
   /** Empreinte Σ si filtre bâtiments actif (sinon calcul classique). */
   footprintSumM2Override?: number;
+  /** Surface parcelle(s) (m²) alignée tiroir / combo effectif. */
+  parcelContourM2Override?: number;
 }
 
 /**
@@ -272,21 +278,34 @@ export function matchingV5RowsToProspectDraft(
   options?: MatchingV5ToProspectDraftOptions
 ): Prospect {
   const parcelleCluster = getParcelleClusterForV5(row, linkedParcelleRows);
-  const parcelContourM2 = parcelContourAreaM2FromV5Row(row, parcelleCluster);
+  const parcelContourM2 =
+    options?.parcelContourM2Override != null &&
+    Number.isFinite(options.parcelContourM2Override)
+      ? options.parcelContourM2Override
+      : parcelContourAreaM2FromV5Row(row, parcelleCluster);
   const footprintSum =
     options?.footprintSumM2Override != null && Number.isFinite(options.footprintSumM2Override)
       ? options.footprintSumM2Override
       : footprintSumTotalFromV5(row, parcelleCluster);
   const centroid = discoveryCentroidFromV5(row, parcelleCluster);
   const coordinates = centroid ?? DISCOVERY_FALLBACK_CENTER;
-  const kwp = estimateKwpFromFootprintM2(footprintSum, options?.panelRef ?? null);
+  const pvgis = options?.pvgisData ?? null;
+  const kwp =
+    pvgis && pvgis.annualProduction > 0
+      ? computeDiscoveryKwpEstForPipeline({
+          footprintM2: footprintSum,
+          pvgisAnnualPerKwp: pvgis.annualProduction,
+          panelRef: options?.panelRef ?? null,
+          placeType: "other",
+        })
+      : estimateKwpFromFootprintM2(footprintSum, options?.panelRef ?? null);
   const roofSurface = syntheticRoofSurfaceFromMatchingRow(footprintSum, row);
   const address = primaryAddress(row, parcelleCluster);
   const name = displayName(row, parcelleCluster);
   const qualityScore = discoveryScoreDisplayFromV5(row, parcelleCluster);
   const company = companyFieldsFromSirets(row, parcelleCluster);
 
-  const solarPotential = buildSolarPotential(options?.pvgisData ?? null, footprintSum, kwp);
+  const solarPotential = buildSolarPotential(pvgis, footprintSum, kwp);
 
   const base: Prospect = {
     address,
@@ -300,6 +319,9 @@ export function matchingV5RowsToProspectDraft(
     configurationMode: "perfect_fit",
     pipelineEntrySource: "discovery_v5",
     matchingV5RowId: row.id,
+    ...(options?.matchingV5ComboId?.trim()
+      ? { matchingV5ComboId: options.matchingV5ComboId.trim() }
+      : {}),
     ...(options?.matchingV5ParcelleIds?.length
       ? { matchingV5ParcelleIds: [...options.matchingV5ParcelleIds] }
       : {}),

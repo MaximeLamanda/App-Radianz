@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import { GoogleMapsLoader } from "@/components/solar-scout/GoogleMapsLoader";
 import {
-  buildParcelUnionGeometry,
+  filterGoogleNearbyEntriesInParcel,
+  parcelSearchContextForGoogleNearby,
   fetchNearbyRankedInParcel,
   waitForGoogleMapsReady,
 } from "@/lib/discovery-google-nearby-live";
@@ -47,6 +48,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
+  Pencil,
+  Check,
 } from "lucide-react";
 import { PieChart, Pie, Cell } from "recharts";
 import { addProspectToPipeline, createLeadFromProspect, updateProspectInPipeline, updateProspect } from "@/lib/firestore";
@@ -103,6 +106,8 @@ import {
   getCountryFlagUrl,
   getRecommendedPanelReferenceSync,
   getRecommendedInverterReferenceSync,
+  getRecommendedPanelReference,
+  getRecommendedInverterReference,
   getSolarEquipmentSettings,
   calculatePanelCount,
   calculateInverterCount,
@@ -145,13 +150,24 @@ import {
   type V5OsmPoiEntry,
   type V5PasserellePpmEntry,
 } from "@/lib/scout-matching-v5-map";
+import { collectSortedDiscoveryComboBuildingEntries } from "@/lib/discovery-combo-building-labels";
+import { buildDiscoveryMonthlyChartData } from "@/lib/discovery-combo-energy-charts";
+import { resolveDiscoveryComboEnergyFootprintM2 } from "@/lib/discovery-combo-energy-footprint";
+import type { DiscoveryComboSqlSurfaceHint } from "@/lib/discovery-combo-hero-surfaces";
 import {
-  collectSortedDiscoveryComboBuildingEntries,
-  discoveryComboFootprintSumM2,
-} from "@/lib/discovery-combo-building-labels";
+  computeDiscoveryPipelineFinancialSummaryAtAdd,
+  computeDiscoveryPipelineFinancialSummaryFromInputs,
+  computeDiscoveryChoiceCardsConfig,
+  computeDiscoveryKwpEstForPipeline,
+  discoveryAnnualConsumptionKwhFromProfile,
+  discoveryAnnualProductionKwhFromPvgisKwp,
+  pickDefaultInverterReference,
+  pickDefaultPanelReference,
+} from "@/lib/discovery-pipeline-add-financials";
 import {
   discoveryBuildingSelectionIdFromEntry,
   isDiscoveryBuildingSelected,
+  isDiscoveryBuildingEntrySelected,
 } from "@/lib/discovery-combo-building-selection";
 import {
   discoveryComboActivityHeroBadgeLabel,
@@ -160,12 +176,30 @@ import {
 import { DiscoverySolaireProjectCards } from "@/components/discovery/DiscoverySolaireProjectCards";
 import { DiscoveryDrawerEquipmentPanel } from "@/components/discovery/DiscoveryDrawerEquipmentPanel";
 import { DiscoveryDrawerParkingSection } from "@/components/discovery/DiscoveryDrawerParkingSection";
-import { collectParkingsFromMatchingRows, isChargingStationPoi } from "@/lib/matching-v5-parking";
+import {
+  collectParkingsFromMatchingRows,
+  isChargingStationPoi,
+  parkingDedupKey,
+} from "@/lib/matching-v5-parking";
 import { labelTrancheEffectifs } from "@/lib/sirene-tranche-effectifs";
 import { latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
 import { polygonAreaM2ApproxWgs84, polygonAreaM2ApproxWithPointFallback } from "@/lib/geojson-polygon-area-m2";
-import type { Prospect, ProspectContact, SolarPotential, PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
+import type {
+  Prospect,
+  ProspectContact,
+  ProspectConfigurationMode,
+  SolarPotential,
+  PanelReference,
+  InverterReference,
+  BatteryReference,
+  CommercialReferent,
+} from "@/types";
 import { DiscoveryDrawerPoiContactsDialogCell } from "@/components/discovery/DiscoveryDrawerPoiContactsSheet";
+import { DiscoveryDrawerManualContactDialog } from "@/components/discovery/DiscoveryDrawerManualContactDialog";
+import {
+  DiscoveryProjectContactsList,
+  type DiscoveryContactOriginOptions,
+} from "@/components/discovery/DiscoveryDrawerContactsOverview";
 
 /** Config des lignes données prospect : liste fixe, une entrée par ligne (skeleton / valeur / "No data"). */
 function websiteHref(raw: string): string {
@@ -221,25 +255,58 @@ function googlePoiTypeLabel(types: V5GoogleNearbyRankedEntry["types"]): string {
   return "—";
 }
 
-/** Clé de dédup par nom : minuscules, sans accents, espaces collapsés. Vide si pas de nom. */
-function mergedPoiNameDedupeKey(name: string): string {
-  return name
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
+function GooglePlacesMarkIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden focusable="false">
+      <path
+        fill="#4285F4"
+        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+      />
+    </svg>
+  );
 }
 
-/** Score « richesse d'informations » : nb de champs renseignés (téléphone, site, lien externe, type). */
-function mergedPoiInfoScore(entry: DiscoveryDrawerMergedPoiEntry): number {
-  let score = 0;
-  if (entry.phone.trim() !== "") score += 1;
-  if (entry.website.trim() !== "") score += 1;
-  if (entry.externalUrl.trim() !== "") score += 1;
-  const typeLabel = entry.typeLabel.trim();
-  if (typeLabel !== "" && typeLabel !== "—" && !isPointOfInterestTypeLabel(typeLabel)) score += 1;
-  return score;
+function discoveryPoiSourceTitle(source: DiscoveryDrawerMergedPoiEntry["source"]): string {
+  if (source === "google") return "Google Places";
+  if (source === "osm_building") return "OpenStreetMap — bâtiment (Radianz)";
+  return "OpenStreetMap (Radianz)";
+}
+
+function DiscoveryDrawerPoiSourceMark({ source }: { source: DiscoveryDrawerMergedPoiEntry["source"] }) {
+  const title = discoveryPoiSourceTitle(source);
+  if (source === "google") {
+    return (
+      <span className="inline-flex size-5 shrink-0 items-center justify-center" title={title}>
+        <GooglePlacesMarkIcon className="size-4" />
+        <span className="sr-only">{title}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex size-5 shrink-0 items-center justify-center" title={title}>
+      <Image
+        src="/logo-radianz.svg"
+        alt=""
+        width={16}
+        height={16}
+        className="size-4 object-contain"
+        aria-hidden
+      />
+      <span className="sr-only">{title}</span>
+    </span>
+  );
 }
 
 function DiscoveryDrawerMergedPoiBlock({
@@ -251,11 +318,8 @@ function DiscoveryDrawerMergedPoiBlock({
 }: {
   pois: DiscoveryDrawerMergedPoiEntry[];
   showTitle?: boolean;
-  /** ID du prospect Firestore associé (active la persistance des contacts). */
   prospectId?: string;
-  /** Contacts déjà persistés sur le prospect (pour fusion à la sauvegarde). */
   existingContacts?: ProspectContact[];
-  /** Callback après persistance réussie. */
   onContactsPersisted?: (contacts: ProspectContact[]) => void;
 }) {
   return (
@@ -273,6 +337,7 @@ function DiscoveryDrawerMergedPoiBlock({
           <Table className="text-[11px]">
             <TableHeader>
               <TableRow className="border-0 hover:bg-transparent">
+                <TableHead className="w-10 px-1 text-center">Origine</TableHead>
                 <TableHead className="min-w-[11rem]">Nom</TableHead>
                 <TableHead className="min-w-[6rem]">Type</TableHead>
                 <TableHead className="whitespace-nowrap">Tel</TableHead>
@@ -290,9 +355,12 @@ function DiscoveryDrawerMergedPoiBlock({
                 const canEnrich = hasWebsite || (poi.source === "google" && Boolean(poi.placeId));
                 const enrichTitle = hasWebsite
                   ? "Rechercher décisionnaires (Apollo)"
-                  : "Rechercher décisionnaires (résolution domaine via Google Place Details puis Apollo)";
+                  : "Rechercher décisionnaires (domaine via Google Place Details puis Apollo)";
                 return (
                   <TableRow key={poi.key} className="border-0">
+                    <TableCell className="w-10 px-1 align-top text-center">
+                      <DiscoveryDrawerPoiSourceMark source={poi.source} />
+                    </TableCell>
                     <TableCell className="min-w-0 align-top">
                       {externalRaw ? (
                         <a
@@ -428,6 +496,69 @@ function getConfidenceBadgeProps(level: "high" | "medium" | "low") {
 
 type DiscoveryApiNomEntry = { status: "loading" | "ok" | "err"; name?: string };
 
+const discoveryFooterIconBtnClass = "h-12 w-12 shrink-0";
+const discoveryFooterIconBtnIdle =
+  "border-0 bg-gray-100 hover:bg-gray-200 text-gray-700";
+const discoveryFooterIconBtnPrimary =
+  "border-primary bg-primary text-primary-foreground hover:bg-primary/90";
+const discoveryFooterIconBtnCancel =
+  "border border-red-200/60 bg-red-50/70 text-red-500/75 hover:border-red-300/70 hover:bg-red-100/80 hover:text-red-600/90";
+
+function DiscoveryComboEditFooterButtons({
+  discoveryEditMode,
+  onStart,
+  onValidate,
+  onCancel,
+}: {
+  discoveryEditMode: boolean;
+  onStart?: () => void;
+  onValidate?: () => void;
+  onCancel?: () => void;
+}) {
+  if (!onStart) return null;
+  if (!discoveryEditMode) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className={cn(discoveryFooterIconBtnClass, discoveryFooterIconBtnIdle)}
+        onClick={onStart}
+        title="Modifier parcelles et bâtiments"
+        aria-label="Modifier parcelles et bâtiments"
+      >
+        <Pencil className="h-4 w-4" />
+      </Button>
+    );
+  }
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className={cn(discoveryFooterIconBtnClass, discoveryFooterIconBtnCancel)}
+        onClick={onCancel}
+        title="Annuler les modifications"
+        aria-label="Annuler les modifications"
+      >
+        <X className="h-4 w-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="default"
+        size="icon"
+        className={cn(discoveryFooterIconBtnClass, discoveryFooterIconBtnPrimary)}
+        onClick={onValidate}
+        title="Valider le périmètre et les bâtiments"
+        aria-label="Valider les modifications"
+      >
+        <Check className="h-4 w-4" />
+      </Button>
+    </>
+  );
+}
+
 /** Même clé que `passerelleFlat[].parcelleLabel` pour rattacher les PPM à une ligne parcelle. */
 function discoveryParcellePasserelleLabel(pr: ScoutMatchingV5Row): string {
   return pr.section && pr.numeroNorm
@@ -453,8 +584,17 @@ function ProspectDrawerDiscoverySection({
   discoverySelectedBuildingIds,
   onDiscoveryToggleBuilding,
   discoveryEditMode = false,
-  onDiscoveryEditModeChange,
+  onDiscoveryEditStart,
+  onDiscoveryEditValidate,
+  onDiscoveryEditCancel,
   discoveryEffectiveParcelleCount,
+  discoveryHeroSurfaces = null,
+  discoveryComboSqlSurfaceHint = null,
+  discoveryComboFootprintFromOverview = 0,
+  discoveryConfigurationMode = "perfect_fit",
+  onDiscoveryConfigurationModeChange,
+  discoveryUsedPanelRef = null,
+  discoveryUsedInverterRef = null,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
@@ -481,8 +621,19 @@ function ProspectDrawerDiscoverySection({
   discoverySelectedBuildingIds?: ReadonlySet<string>;
   onDiscoveryToggleBuilding?: (selectionId: string) => void;
   discoveryEditMode?: boolean;
-  onDiscoveryEditModeChange?: (enabled: boolean) => void;
+  onDiscoveryEditStart?: () => void;
+  onDiscoveryEditValidate?: () => void;
+  onDiscoveryEditCancel?: () => void;
   discoveryEffectiveParcelleCount?: number;
+  discoveryHeroSurfaces?: { footprintM2: number; parcelM2: number } | null;
+  /** Hint SQL overview (combo incomplet côté client). */
+  discoveryComboSqlSurfaceHint?: DiscoveryComboSqlSurfaceHint | null;
+  /** `footprint_sum_m2` marqueur / overview — repli combo complet. */
+  discoveryComboFootprintFromOverview?: number;
+  discoveryConfigurationMode?: ProspectConfigurationMode;
+  onDiscoveryConfigurationModeChange?: (mode: ProspectConfigurationMode) => void;
+  discoveryUsedPanelRef?: PanelReference | null;
+  discoveryUsedInverterRef?: InverterReference | null;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -512,11 +663,20 @@ function ProspectDrawerDiscoverySection({
         ),
     [discoveryOsmSourceRows]
   );
+  const googleNearbyFilterGeometry = useMemo(
+    () => parcelSearchContextForGoogleNearby(parcelleCluster)?.filterParcelGeometry ?? null,
+    [parcelleCluster]
+  );
   const discoveryGooglePoisNamed = useMemo(() => {
+    const applyParcelFilter = (entries: V5GoogleNearbyRankedEntry[]) =>
+      googleNearbyFilterGeometry
+        ? filterGoogleNearbyEntriesInParcel(entries, googleNearbyFilterGeometry)
+        : entries;
+
     if (liveGoogleNearbyOverride !== null) {
       const outLive: V5GoogleNearbyRankedEntry[] = [];
       const seenLive = new Set<string>();
-      for (const entry of liveGoogleNearbyOverride) {
+      for (const entry of applyParcelFilter(liveGoogleNearbyOverride)) {
         const name = String(entry.name || "").trim();
         if (!name) continue;
         const placeId = String(entry.place_id || "").trim();
@@ -533,7 +693,7 @@ function ProspectDrawerDiscoverySection({
       const rawFromProps = r.properties?.google_nearby_ranked_json;
       if (rawFromProps == null || rawFromProps === "") return;
       if (typeof rawFromProps === "string" && !String(rawFromProps).trim()) return;
-      for (const entry of parseGoogleNearbyRankedJson(rawFromProps)) {
+      for (const entry of applyParcelFilter(parseGoogleNearbyRankedJson(rawFromProps))) {
         const name = String(entry.name || "").trim();
         if (!name) continue;
         const placeId = String(entry.place_id || "").trim();
@@ -547,7 +707,7 @@ function ProspectDrawerDiscoverySection({
     if (row.grain === "building") addFromRow(row);
     if (out.length === 0 && row.grain === "parcelle" && parcelleCluster.length === 0) addFromRow(row);
     return out;
-  }, [parcelleCluster, row, liveGoogleNearbyOverride]);
+  }, [parcelleCluster, row, liveGoogleNearbyOverride, googleNearbyFilterGeometry]);
   const discoveryOsmBuildingNamed = useMemo(() => {
     const buildingSourceRows =
       parcelleCluster.length > 0
@@ -589,24 +749,16 @@ function ProspectDrawerDiscoverySection({
         website: entry.website || "",
         externalUrl: entry.externalUrl || "",
       }));
-    const osmRows = osmRowsRaw;
-    const allRows = [...osmRows, ...googleRows, ...osmBuildingRows];
-
-    const bestByName = new Map<string, DiscoveryDrawerMergedPoiEntry>();
-    const noNameEntries: DiscoveryDrawerMergedPoiEntry[] = [];
+    const allRows = [...osmRowsRaw, ...osmBuildingRows, ...googleRows];
+    const seenKeys = new Set<string>();
+    const merged: DiscoveryDrawerMergedPoiEntry[] = [];
     for (const entry of allRows) {
-      const dedupeKey = mergedPoiNameDedupeKey(entry.name);
-      if (!dedupeKey) {
-        noNameEntries.push(entry);
-        continue;
-      }
-      const existing = bestByName.get(dedupeKey);
-      if (!existing || mergedPoiInfoScore(entry) > mergedPoiInfoScore(existing)) {
-        bestByName.set(dedupeKey, entry);
-      }
+      if (seenKeys.has(entry.key)) continue;
+      seenKeys.add(entry.key);
+      merged.push(entry);
     }
 
-    return [...Array.from(bestByName.values()), ...noNameEntries].sort((a, b) => {
+    return merged.sort((a, b) => {
       const byName = a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
       if (byName !== 0) return byName;
       if (a.source !== b.source) return a.source.localeCompare(b.source, "fr");
@@ -614,12 +766,62 @@ function ProspectDrawerDiscoverySection({
     });
   }, [discoveryOsmPoisNamed, discoveryGooglePoisNamed, discoveryOsmBuildingNamed]);
 
+  const [discoveryContacts, setDiscoveryContacts] = useState<ProspectContact[]>(
+    () => pipelineProspectForShareKpis?.contacts ?? []
+  );
+  useEffect(() => {
+    setDiscoveryContacts(pipelineProspectForShareKpis?.contacts ?? []);
+  }, [pipelineProspectForShareKpis?.id]);
+  useEffect(() => {
+    const fromPipeline = pipelineProspectForShareKpis?.contacts;
+    if (fromPipeline !== undefined) {
+      setDiscoveryContacts(fromPipeline);
+    }
+  }, [pipelineProspectForShareKpis?.contacts]);
+
+  const handleDiscoveryContactsPersisted = useCallback((contacts: ProspectContact[]) => {
+    setDiscoveryContacts(contacts);
+  }, []);
+
+  const [manualContactDialogOpen, setManualContactDialogOpen] = useState(false);
+  const [editingManualContact, setEditingManualContact] = useState<ProspectContact | null>(null);
+
+  const handleManualContactDialogOpenChange = useCallback((open: boolean) => {
+    setManualContactDialogOpen(open);
+    if (!open) setEditingManualContact(null);
+  }, []);
+
+  const handleEditManualContact = useCallback((contact: ProspectContact) => {
+    if (contact.source !== "manual") return;
+    setEditingManualContact(contact);
+    setManualContactDialogOpen(true);
+  }, []);
+
+  const handleDeleteManualContact = useCallback(
+    async (contact: ProspectContact) => {
+      const prospectId = pipelineProspectForShareKpis?.id;
+      if (!prospectId || contact.source !== "manual" || !contact.id) return;
+      try {
+        const next = (discoveryContacts ?? []).filter((c) => c.id !== contact.id);
+        await updateProspect(prospectId, { contacts: next });
+        setDiscoveryContacts(next);
+        toast.success("Contact supprimé.");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Erreur inconnue";
+        toast.error("Suppression impossible.", { description: message });
+      }
+    },
+    [discoveryContacts, pipelineProspectForShareKpis?.id]
+  );
+
   const discoveryClusterKey = useMemo(
     () => `${row.id}|${parcelleCluster.map((p) => p.id).sort().join(",")}`,
     [row.id, parcelleCluster]
   );
 
   const matchingV5ApiNomFetchedRef = useRef<Set<string>>(new Set());
+  const discoveryGouvEtabFetchedRef = useRef<Set<string>>(new Set());
+  const discoveryGouvUlFetchedRef = useRef<Set<string>>(new Set());
   const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
     Record<string, DiscoveryApiNomEntry>
   >({});
@@ -629,14 +831,16 @@ function ProspectDrawerDiscoverySection({
 
   useEffect(() => {
     matchingV5ApiNomFetchedRef.current.clear();
+    discoveryGouvEtabFetchedRef.current.clear();
+    discoveryGouvUlFetchedRef.current.clear();
     setMatchingV5ApiNomBySiren({});
     setShowAllEstablishments(false);
     setLiveGoogleNearbyOverride(null);
   }, [discoveryClusterKey]);
 
   const handleDiscoveryLiveNearbySearch = useCallback(async () => {
-    const geom = buildParcelUnionGeometry(parcelleCluster);
-    if (!geom) {
+    const searchCtx = parcelSearchContextForGoogleNearby(parcelleCluster);
+    if (!searchCtx) {
       toast.error("Aucune emprise parcelle pour lancer la recherche.");
       return;
     }
@@ -647,13 +851,19 @@ function ProspectDrawerDiscoverySection({
         toast.error("Google Maps n’est pas prêt. Vérifiez la clé API et réessayez.");
         return;
       }
-      const result = await fetchNearbyRankedInParcel({ parcelGeometry: geom });
+      const result = await fetchNearbyRankedInParcel({
+        filterParcelGeometry: searchCtx.filterParcelGeometry,
+        searchExtentGeometry: searchCtx.searchExtentGeometry,
+      });
       if (!result.ok) {
         toast.error(result.message);
         return;
       }
 
-      const previousEntries = discoveryGooglePoisNamed;
+      const previousEntries = filterGoogleNearbyEntriesInParcel(
+        discoveryGooglePoisNamed,
+        searchCtx.filterParcelGeometry
+      );
       const previousKeys = new Set<string>();
       for (const entry of previousEntries) {
         const placeId = String(entry.place_id || "").trim();
@@ -726,7 +936,7 @@ function ProspectDrawerDiscoverySection({
   useEffect(() => {
     if (!isOpen) return;
     if (discoveryMainTab !== "batiments") return;
-    const sirens = sirensForApiNom.slice(0, 10);
+    const sirens = sirensForApiNom.slice(0, initialDiscoveryEstablishmentsVisible);
     for (const siren of sirens) {
       if (matchingV5ApiNomFetchedRef.current.has(siren)) continue;
       matchingV5ApiNomFetchedRef.current.add(siren);
@@ -815,12 +1025,17 @@ function ProspectDrawerDiscoverySection({
     return out;
   }, [passerelleFlat]);
 
+  const passerelleSirensEnrichKey = useMemo(
+    () => passerelleSirensUnique.slice(0, initialDiscoveryEstablishmentsVisible).join("\u0001"),
+    [passerelleSirensUnique]
+  );
+
   useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "batiments") return;
+    if (!isOpen || discoveryMainTab !== "batiments" || !passerelleSirensEnrichKey) return;
     let cancelled = false;
-    const sirensToResetOnCleanup: string[] = [];
-    for (const siren of passerelleSirensUnique) {
-      sirensToResetOnCleanup.push(siren);
+    for (const siren of passerelleSirensEnrichKey.split("\u0001")) {
+      if (!siren || discoveryGouvUlFetchedRef.current.has(siren)) continue;
+      discoveryGouvUlFetchedRef.current.add(siren);
       setDiscoveryGouvUlBySiren((prev) => {
         const cur = prev[siren];
         if (cur?.status === "loading" || cur?.status === "ok") return prev;
@@ -865,17 +1080,8 @@ function ProspectDrawerDiscoverySection({
     }
     return () => {
       cancelled = true;
-      if (sirensToResetOnCleanup.length > 0) {
-        setDiscoveryGouvUlBySiren((prev) => {
-          const next = { ...prev };
-          for (const s of sirensToResetOnCleanup) {
-            if (next[s]?.status === "loading") delete next[s];
-          }
-          return next;
-        });
-      }
     };
-  }, [isOpen, discoveryMainTab, passerelleSirensUnique]);
+  }, [isOpen, discoveryMainTab, passerelleSirensEnrichKey]);
 
   const multiEntreprises = useMemo(() => {
     const anyShared =
@@ -900,7 +1106,7 @@ function ProspectDrawerDiscoverySection({
     const fromBuildings = buildingDetailRows.flatMap((b) => b.parkings ?? []);
     const seen = new Set<string>();
     return fromBuildings.filter((p) => {
-      const key = `${p.osmParkingType}:${p.osmParkingId}`;
+      const key = parkingDedupKey(p.osmParkingType, p.osmParkingId);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -913,20 +1119,33 @@ function ProspectDrawerDiscoverySection({
     [sirets]
   );
 
-  const footprintSumTotal = useMemo(() => {
-    const filtered = discoveryComboFootprintSumM2(
-      parcelleCluster,
+  const footprintSumTotal = useMemo(
+    () =>
+      resolveDiscoveryComboEnergyFootprintM2({
+        anchorRow: row,
+        parcelleRows: parcelleCluster,
+        selectedBuildingIds: discoverySelectedBuildingIds,
+        sqlHint: discoveryComboSqlSurfaceHint,
+        comboFootprintFromOverview: discoveryComboFootprintFromOverview,
+      }),
+    [
       row,
-      discoverySelectedBuildingIds
-    );
-    if (filtered != null) return filtered;
-    return footprintSumTotalFromV5(row, parcelleCluster);
-  }, [row, parcelleCluster, discoverySelectedBuildingIds]);
+      parcelleCluster,
+      discoverySelectedBuildingIds,
+      discoveryComboSqlSurfaceHint,
+      discoveryComboFootprintFromOverview,
+    ]
+  );
 
-  const panelRef = typeof window !== "undefined" ? getRecommendedPanelReferenceSync() : null;
+  const panelRef =
+    discoveryUsedPanelRef ??
+    (typeof window !== "undefined" ? getRecommendedPanelReferenceSync() : null);
+  const inverterRef =
+    discoveryUsedInverterRef ??
+    (typeof window !== "undefined" ? getRecommendedInverterReferenceSync() : null);
   /** Plafond kWp (toute la surface utilisable) — « Highest production ». */
   const kwpMaxDiscovery = surfaceToKwp(footprintSumTotal, undefined, undefined, panelRef);
-  const cartePolygonAreaM2 = useMemo(() => {
+  const cartePolygonAreaM2FromRows = useMemo(() => {
     if (parcelleCluster.length === 0)
       return polygonAreaM2ApproxWithPointFallback(row.geometry, row.footprintSumM2);
     return parcelleCluster.reduce(
@@ -934,6 +1153,7 @@ function ProspectDrawerDiscoverySection({
       0
     );
   }, [parcelleCluster, row.geometry]);
+  const cartePolygonAreaM2 = discoveryHeroSurfaces?.parcelM2 ?? cartePolygonAreaM2FromRows;
 
   const scoreDisplay = useMemo(() => {
     if (parcelleCluster.length === 0) {
@@ -949,6 +1169,11 @@ function ProspectDrawerDiscoverySection({
     return latLngFromMatchingGeometry(row.geometry);
   }, [parcelleCluster, row.geometry]);
 
+  const discoveryCentroidKey = useMemo(() => {
+    if (!centroid) return "";
+    return `${centroid.lat.toFixed(6)},${centroid.lng.toFixed(6)}`;
+  }, [centroid?.lat, centroid?.lng]);
+
   const discoveryFootprintAzimuth = useMemo(
     () =>
       row.geometry.type === "Point" ? null : pvgisAzimuthFromFootprintGeometry(row.geometry),
@@ -962,21 +1187,38 @@ function ProspectDrawerDiscoverySection({
   const [discoveryPvgis, setDiscoveryPvgis] = useState<PVGISData | null>(null);
   const [discoveryPvgisLoading, setDiscoveryPvgisLoading] = useState(false);
   const [discoveryPvgisError, setDiscoveryPvgisError] = useState<string | null>(null);
+  const discoveryPvgisFetchInProgressRef = useRef(false);
 
-  /**
-   * kWp affiché par défaut dans l’onglet Solaire (graphe + pipeline) : Perfect fit
-   * (même cible 70 % que les cartes prospect), plafonné au kWp toit. Avant retour PVGIS : plafond toit.
-   */
-  const kwpEst = useMemo(() => {
-    if (kwpMaxDiscovery <= 0) return 0;
-    if (!discoveryPvgis || discoveryPvgis.annualProduction <= 0) return kwpMaxDiscovery;
-    const PERFECT_FIT_SELF_CONSUMPTION_TARGET = 0.7;
-    const consoAnnuelleKwh = getEnergyConsumption(discoveryPlaceType) * footprintSumTotal;
-    const targetKwp =
-      (consoAnnuelleKwh * PERFECT_FIT_SELF_CONSUMPTION_TARGET) / discoveryPvgis.annualProduction;
-    if (!Number.isFinite(targetKwp) || targetKwp <= 0) return kwpMaxDiscovery;
-    return Math.round(Math.min(targetKwp, kwpMaxDiscovery) * 100) / 100;
-  }, [discoveryPvgis, kwpMaxDiscovery, footprintSumTotal, discoveryPlaceType]);
+  const discoveryChoiceCardsConfig = useMemo(() => {
+    if (!discoveryPvgis || discoveryPvgis.annualProduction <= 0 || footprintSumTotal <= 0) {
+      return {
+        perfectFit: { panelCount: 0, inverterCount: 0, kwp: kwpMaxDiscovery },
+        highestProduction: { panelCount: 0, inverterCount: 0, kwp: kwpMaxDiscovery },
+      };
+    }
+    return computeDiscoveryChoiceCardsConfig({
+      footprintM2: footprintSumTotal,
+      pvgisAnnualPerKwp: discoveryPvgis.annualProduction,
+      panelRef,
+      inverterRef,
+      placeType: discoveryPlaceType,
+    });
+  }, [
+    discoveryPvgis,
+    footprintSumTotal,
+    panelRef,
+    inverterRef,
+    discoveryPlaceType,
+    kwpMaxDiscovery,
+  ]);
+
+  const kwpForCharts = useMemo(() => {
+    const cfg =
+      discoveryConfigurationMode === "highest_production"
+        ? discoveryChoiceCardsConfig.highestProduction
+        : discoveryChoiceCardsConfig.perfectFit;
+    return cfg.kwp > 0 ? cfg.kwp : kwpMaxDiscovery;
+  }, [discoveryConfigurationMode, discoveryChoiceCardsConfig, kwpMaxDiscovery]);
 
   /** Complète NAF / effectifs via `/api/recherche-entreprises` (api.gouv) quand absents de sirets_json. */
   const [discoveryGouvEtabBySiret, setDiscoveryGouvEtabBySiret] = useState<
@@ -1008,6 +1250,8 @@ function ProspectDrawerDiscoverySection({
   >({});
 
   useEffect(() => {
+    discoveryGouvEtabFetchedRef.current.clear();
+    discoveryGouvUlFetchedRef.current.clear();
     setDiscoveryGouvEtabBySiret({});
     setDiscoveryGouvUlBySiren({});
   }, [discoveryClusterKey]);
@@ -1020,18 +1264,25 @@ function ProspectDrawerDiscoverySection({
     [showAllEstablishments, discoverySiretRows, initialDiscoveryEstablishmentsVisible]
   );
 
-  useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "batiments") return;
-    let cancelled = false;
-    const siretsToResetOnCleanup: string[] = [];
+  const discoverySiretEnrichKey = useMemo(() => {
+    const parts: string[] = [];
     for (const { e } of discoverySiretRowsToEnrich) {
       const siret = e.siret?.trim();
       if (!siret || !/^\d{14}$/.test(siret)) continue;
       const needNaf = !(e.activite_principale || "").trim();
       const needTranche = !(e.tranche_effectifs || "").trim();
       if (!needNaf && !needTranche) continue;
+      parts.push(siret);
+    }
+    return parts.join("\u0001");
+  }, [discoverySiretRowsToEnrich]);
 
-      siretsToResetOnCleanup.push(siret);
+  useEffect(() => {
+    if (!isOpen || discoveryMainTab !== "batiments" || !discoverySiretEnrichKey) return;
+    let cancelled = false;
+    for (const siret of discoverySiretEnrichKey.split("\u0001")) {
+      if (!siret || discoveryGouvEtabFetchedRef.current.has(siret)) continue;
+      discoveryGouvEtabFetchedRef.current.add(siret);
 
       setDiscoveryGouvEtabBySiret((prev) => {
         const cur = prev[siret];
@@ -1076,27 +1327,30 @@ function ProspectDrawerDiscoverySection({
     }
     return () => {
       cancelled = true;
-      if (siretsToResetOnCleanup.length > 0) {
-        setDiscoveryGouvEtabBySiret((prev) => {
-          const next = { ...prev };
-          for (const st of siretsToResetOnCleanup) {
-            if (next[st]?.status === "loading") delete next[st];
-          }
-          return next;
-        });
-      }
     };
-  }, [isOpen, discoveryMainTab, discoverySiretRowsToEnrich]);
+  }, [isOpen, discoveryMainTab, discoverySiretEnrichKey]);
+
+  const discoveryPvgisFetchKey = useMemo(() => {
+    if (!isOpen || !discoveryCentroidKey) return "";
+    const az =
+      discoveryFootprintAzimuth != null
+        ? discoveryFootprintAzimuth.toFixed(1)
+        : "na";
+    return `${discoveryClusterKey}|${discoveryCentroidKey}|${az}`;
+  }, [isOpen, discoveryClusterKey, discoveryCentroidKey, discoveryFootprintAzimuth]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    if (!centroid || !validateCoordinates({ lat: centroid.lat, lng: centroid.lng })) {
+    if (!discoveryPvgisFetchKey) {
       setDiscoveryPvgis(null);
       setDiscoveryPvgisError(null);
       setDiscoveryPvgisLoading(false);
       return;
     }
+    if (!centroid || !validateCoordinates({ lat: centroid.lat, lng: centroid.lng })) return;
+    if (discoveryPvgisFetchInProgressRef.current) return;
+
     let cancelled = false;
+    discoveryPvgisFetchInProgressRef.current = true;
     setDiscoveryPvgisLoading(true);
     setDiscoveryPvgisError(null);
     const pvgisOpts =
@@ -1114,67 +1368,66 @@ function ProspectDrawerDiscoverySection({
         }
       })
       .finally(() => {
+        discoveryPvgisFetchInProgressRef.current = false;
         if (!cancelled) setDiscoveryPvgisLoading(false);
       });
     return () => {
       cancelled = true;
+      discoveryPvgisFetchInProgressRef.current = false;
     };
-  }, [isOpen, discoveryClusterKey, centroid, discoveryFootprintAzimuth]);
+  }, [discoveryPvgisFetchKey, centroid, discoveryFootprintAzimuth]);
 
   useEffect(() => {
     if (!isOpen) {
       onPipelineFinanceInputsChange?.(null);
       return;
     }
-    if (!discoveryPvgis || kwpEst <= 0 || footprintSumTotal <= 0) {
+    if (!discoveryPvgis || kwpForCharts <= 0 || footprintSumTotal <= 0) {
       onPipelineFinanceInputsChange?.(null);
       return;
     }
     onPipelineFinanceInputsChange?.({
       footprintM2: footprintSumTotal,
-      kwp: kwpEst,
+      kwp: kwpForCharts,
       annualPerKwp: discoveryPvgis.annualProduction,
       monthlyPerKwp: discoveryPvgis.monthlyProduction.map((m) => ({
         month: m.month,
         production: m.production,
       })),
     });
-  }, [isOpen, discoveryPvgis, kwpEst, footprintSumTotal, onPipelineFinanceInputsChange]);
+  }, [isOpen, discoveryPvgis, kwpForCharts, footprintSumTotal, onPipelineFinanceInputsChange]);
 
   const discoveryChartMonthlyData = useMemo(() => {
-    if (!discoveryPvgis || kwpEst <= 0 || footprintSumTotal <= 0) return [];
-    const perKwpMonthly = discoveryPvgis.monthlyProduction;
-    const { monthlyProduction } = getProductionFromPerKwp(
-      discoveryPvgis.annualProduction,
-      perKwpMonthly,
-      kwpEst
-    );
-    const surfaceM2 = footprintSumTotal;
-    const byMonth = discoverySimulationSummary?.batteryByMonth;
-    return monthlyProduction.map((m) => {
-      const consumption = Math.round(
-        getEnergyConsumptionForMonth(discoveryPlaceType, (m.month - 1) as MonthIndex) * surfaceM2
-      );
-      const base = { month: m.month, production: m.production, consumption };
-      if (byMonth?.[m.month - 1]) {
-        const b = byMonth[m.month - 1]!;
-        return {
-          ...base,
-          selfConsumptionDirect: b.selfConsumptionDirectKwh,
-          selfConsumptionViaBattery: b.selfConsumptionViaBatteryKwh,
-          injectionBattery: b.injectionBatteryKwh,
-          excess: b.injectionReseauKwh,
-          gridDraw: b.gridDrawKwh,
-        };
-      }
-      return base;
+    if (!discoveryPvgis || kwpForCharts <= 0 || footprintSumTotal <= 0) return [];
+    return buildDiscoveryMonthlyChartData({
+      pvgis: discoveryPvgis,
+      footprintM2: footprintSumTotal,
+      kwp: kwpForCharts,
+      placeType: discoveryPlaceType,
+      batteryByMonth: discoverySimulationSummary?.batteryByMonth,
     });
-  }, [discoveryPvgis, kwpEst, footprintSumTotal, discoverySimulationSummary?.batteryByMonth]);
+  }, [
+    discoveryPvgis,
+    kwpForCharts,
+    footprintSumTotal,
+    discoveryPlaceType,
+    discoverySimulationSummary?.batteryByMonth,
+  ]);
+
+  /** Même total que Σ barres mensuelles — aligné table pipeline. */
+  const discoveryAnnualProductionKwh = useMemo(() => {
+    if (!discoveryPvgis || kwpForCharts <= 0) return 0;
+    return discoveryAnnualProductionKwhFromPvgisKwp(
+      discoveryPvgis.annualProduction,
+      discoveryPvgis.monthlyProduction,
+      kwpForCharts
+    );
+  }, [discoveryPvgis, kwpForCharts]);
 
   const discoveryChartDailyData = useMemo(() => {
-    if (!discoveryPvgis || footprintSumTotal <= 0 || kwpEst <= 0) return undefined;
+    if (!discoveryPvgis || footprintSumTotal <= 0 || kwpForCharts <= 0) return undefined;
     const perKwpMonthly = discoveryPvgis.monthlyProduction;
-    const prodDay = buildTypicalDayForMonth(perKwpMonthly, discoveryChartMonthIndex, kwpEst);
+    const prodDay = buildTypicalDayForMonth(perKwpMonthly, discoveryChartMonthIndex, kwpForCharts);
     const consDay = buildTypicalConsumptionDayForMonth(
       discoveryPlaceType,
       discoveryChartMonthIndex,
@@ -1200,7 +1453,7 @@ function ProspectDrawerDiscoverySection({
   }, [
     discoveryPvgis,
     footprintSumTotal,
-    kwpEst,
+    kwpForCharts,
     discoveryChartMonthIndex,
     discoveryIncludeBattery,
     discoveryDailySimulationBattery,
@@ -1208,8 +1461,8 @@ function ProspectDrawerDiscoverySection({
   ]);
 
   const discoveryAnnualConsumptionKwh = useMemo(
-    () => getEnergyConsumption(discoveryPlaceType) * footprintSumTotal,
-    [footprintSumTotal]
+    () => discoveryAnnualConsumptionKwhFromProfile(discoveryPlaceType, footprintSumTotal),
+    [footprintSumTotal, discoveryPlaceType]
   );
 
   const discoveryBillReductionCard = useMemo(() => {
@@ -1251,10 +1504,17 @@ function ProspectDrawerDiscoverySection({
         ],
       };
     }
-    const annualProductionKwh = discoveryChartMonthlyData.reduce((s, m) => s + m.production, 0);
-    const annualSavings = estimateAnnualSavingsEur(annualProductionKwh, undefined, discoveryAnnualConsumptionKwh);
-    const directEurY = Math.min(annualProductionKwh, discoveryAnnualConsumptionKwh) * DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
-    const injectionEurY = Math.max(0, annualProductionKwh - discoveryAnnualConsumptionKwh) * DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
+    const annualSavings = estimateAnnualSavingsEur(
+      discoveryAnnualProductionKwh,
+      undefined,
+      discoveryAnnualConsumptionKwh
+    );
+    const directEurY =
+      Math.min(discoveryAnnualProductionKwh, discoveryAnnualConsumptionKwh) *
+      DEFAULT_ELECTRICITY_PRICE_EUR_PER_KWH;
+    const injectionEurY =
+      Math.max(0, discoveryAnnualProductionKwh - discoveryAnnualConsumptionKwh) *
+      DEFAULT_FEED_IN_TARIFF_EUR_PER_KWH;
     return {
       periodLabel: "Moyenne mensuelle",
       headlineReductionEur: Math.round(annualSavings / 12),
@@ -1264,7 +1524,11 @@ function ProspectDrawerDiscoverySection({
         { id: "injection", label: "Injection réseau", monthlyReductionEur: Math.round(injectionEurY / 12), pctOfBill: pctOfRefBill(injectionEurY, billAnnual), variant: "injection" as const },
       ],
     };
-  }, [discoveryChartMonthlyData, discoveryAnnualConsumptionKwh, discoverySimulationSummary]);
+  }, [
+    discoveryAnnualProductionKwh,
+    discoveryAnnualConsumptionKwh,
+    discoverySimulationSummary,
+  ]);
 
   const discoveryDisplayedSiretRows = useMemo(
     () =>
@@ -1481,6 +1745,42 @@ function ProspectDrawerDiscoverySection({
     [terrainDetailParcelles]
   );
 
+  const discoveryContactOriginOptions = useMemo<DiscoveryContactOriginOptions>(
+    () => ({
+      pois: discoveryMergedPois.map((p) => ({
+        ref: p.key,
+        label: p.name.trim() || p.key,
+      })),
+      parcelles: informationParcellesRows.map((p) => ({
+        ref: p.id,
+        label: discoveryParcellePasserelleLabel(p) || (p.label || "").trim() || p.id,
+      })),
+      etablissements: discoverySiretRows.map(({ key, e }) => {
+        const denom = (e.denomination || "").trim();
+        return {
+          ref: key,
+          label: denom || key,
+        };
+      }),
+    }),
+    [discoveryMergedPois, informationParcellesRows, discoverySiretRows]
+  );
+
+  const discoveryContactOriginLabelContext = useMemo(
+    () => ({
+      poiNameByKey: new Map(
+        discoveryContactOriginOptions.pois.map((p) => [p.ref, p.label] as const)
+      ),
+      parcelleLabelById: new Map(
+        discoveryContactOriginOptions.parcelles.map((p) => [p.ref, p.label] as const)
+      ),
+      etablissementLabelBySiret: new Map(
+        discoveryContactOriginOptions.etablissements.map((e) => [e.ref, e.label] as const)
+      ),
+    }),
+    [discoveryContactOriginOptions]
+  );
+
   const parcellePasserelleLabels = useMemo(
     () => new Set(informationParcellesRows.map(discoveryParcellePasserelleLabel)),
     [informationParcellesRows]
@@ -1550,7 +1850,7 @@ function ProspectDrawerDiscoverySection({
     if (ci.length >= 2) return `DEPT. ${ci.slice(0, 2)}`;
     return "ZONE";
   })();
-  const kwcRounded = `${Math.round(kwpEst)} kWc`;
+  const kwcRounded = `${Math.round(kwpForCharts)} kWc`;
 
   return (
     <GoogleMapsLoader blockingLoad={false}>
@@ -1576,7 +1876,7 @@ function ProspectDrawerDiscoverySection({
           ) : null}
         </p>
         {discoveryRecapShowBdnb || discoveryRecapShowParcel || discoveryRecapShowAzimuth ? (
-          <div className="flex w-full flex-nowrap gap-3 border-b border-border/80 pb-2.5 pt-0.5 sm:gap-4">
+          <div className="flex w-full flex-nowrap gap-3 border-b border-border/80 py-4 sm:gap-4">
             {discoveryRecapShowBdnb ? (
               <div
                 className="flex min-w-0 flex-1 basis-0 flex-col items-center gap-1 text-center"
@@ -1585,9 +1885,9 @@ function ProspectDrawerDiscoverySection({
                 <Image
                   src="/Buildingicon.svg"
                   alt=""
-                  width={28}
-                  height={28}
-                  className="size-7 shrink-0 object-contain"
+                  width={40}
+                  height={40}
+                  className="size-10 shrink-0 object-contain"
                   aria-hidden
                 />
                 <span className="font-sans text-xs font-medium tabular-nums tracking-tight text-foreground">
@@ -1603,13 +1903,13 @@ function ProspectDrawerDiscoverySection({
                 className="flex min-w-0 flex-1 basis-0 flex-col items-center gap-1 text-center"
                 title={discoveryParcelSurfaceTitle}
               >
-                <span className="flex size-7 shrink-0 items-center justify-center" aria-hidden>
+                <span className="flex size-10 shrink-0 items-center justify-center" aria-hidden>
                   <Image
                     src="/Topoicon.svg"
                     alt=""
-                    width={28}
-                    height={28}
-                    className="size-7 object-contain opacity-90"
+                    width={40}
+                    height={40}
+                    className="size-10 object-contain opacity-90"
                   />
                 </span>
                 <span className="font-sans text-xs font-medium tabular-nums tracking-tight text-foreground">
@@ -1625,13 +1925,13 @@ function ProspectDrawerDiscoverySection({
                 className="flex min-w-0 flex-1 basis-0 flex-col items-center gap-1 text-center"
                 title="Azimut PVGIS déduit de l’empreinte (0° = plein sud, 90° = ouest, −90° = est) — heuristique du plus long côté du polygone, identique à l’appel PVGIS de ce panneau."
               >
-                <span className="flex size-7 shrink-0 items-center justify-center" aria-hidden>
+                <span className="flex size-10 shrink-0 items-center justify-center" aria-hidden>
                   <Image
                     src="/surfaceicon.svg"
                     alt=""
-                    width={28}
-                    height={28}
-                    className="size-7 object-contain opacity-90"
+                    width={40}
+                    height={40}
+                    className="size-10 object-contain opacity-90"
                   />
                 </span>
                 <span className="font-sans text-xs font-medium tabular-nums tracking-tight text-foreground">
@@ -1701,8 +2001,37 @@ function ProspectDrawerDiscoverySection({
         <TabsTrigger value="lectures">Lectures</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="terrain" className="drawer-discovery-panel space-y-4">
-        <section aria-labelledby="discovery-terrain-poi">
+      <TabsContent value="terrain" className="drawer-discovery-panel space-y-5">
+        <section aria-labelledby="discovery-terrain-contacts" className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h4
+              id="discovery-terrain-contacts"
+              className="drawer-discovery-section-title m-0 text-base uppercase tracking-tight text-black"
+            >
+              Contacts
+            </h4>
+            <DiscoveryDrawerManualContactDialog
+              prospectId={pipelineProspectForShareKpis?.id}
+              existingContacts={discoveryContacts}
+              originOptions={discoveryContactOriginOptions}
+              open={manualContactDialogOpen}
+              onOpenChange={handleManualContactDialogOpenChange}
+              editingContact={editingManualContact}
+              onBeforeAddOpen={() => setEditingManualContact(null)}
+              onContactsPersisted={handleDiscoveryContactsPersisted}
+            />
+          </div>
+          <DiscoveryProjectContactsList
+            contacts={discoveryContacts}
+            originLabelContext={discoveryContactOriginLabelContext}
+            allowManualActions={Boolean(pipelineProspectForShareKpis?.id)}
+            onEditManual={handleEditManualContact}
+            onDeleteManual={(c) => void handleDeleteManualContact(c)}
+            emptyMessage="Aucun contact. Ajoutez-en un manuellement ou via Apollo depuis un POI."
+          />
+        </section>
+
+        <section aria-labelledby="discovery-terrain-poi" className="space-y-3">
           <h4
             id="discovery-terrain-poi"
             className="drawer-discovery-section-title flex items-center justify-between gap-3"
@@ -1710,31 +2039,34 @@ function ProspectDrawerDiscoverySection({
             <span className="min-w-0 flex-1 truncate text-base uppercase tracking-tight text-black">
               POI à proximité
             </span>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="ml-auto h-7 shrink-0 gap-2 px-3 text-xs"
-              disabled={nearbyLivePending}
-              onClick={() => void handleDiscoveryLiveNearbySearch()}
-              title="Lancer une recherche Google Places et fusionner avec les POI existants"
-            >
-              {nearbyLivePending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-              ) : (
-                <Sparkles className="h-3.5 w-3.5" aria-hidden />
-              )}
-              <span>Enrichir</span>
-              <span className="font-mono text-[0.65rem] tabular-nums text-muted-foreground">
-                {discoveryMergedPois.length}
-              </span>
-            </Button>
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="h-7 shrink-0 gap-2 px-3 text-xs"
+                disabled={nearbyLivePending}
+                onClick={() => void handleDiscoveryLiveNearbySearch()}
+                title="Lancer une recherche Google Places et fusionner avec les POI existants"
+              >
+                {nearbyLivePending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                )}
+                <span>Enrichir</span>
+                <span className="font-mono text-[0.65rem] tabular-nums text-muted-foreground">
+                  {discoveryMergedPois.length}
+                </span>
+              </Button>
+            </div>
           </h4>
           <DiscoveryDrawerMergedPoiBlock
             pois={discoveryMergedPois}
             showTitle={false}
             prospectId={pipelineProspectForShareKpis?.id}
-            existingContacts={pipelineProspectForShareKpis?.contacts}
+            existingContacts={discoveryContacts}
+            onContactsPersisted={handleDiscoveryContactsPersisted}
           />
         </section>
       </TabsContent>
@@ -1751,9 +2083,27 @@ function ProspectDrawerDiscoverySection({
           </div>
         ) : discoveryChartMonthlyData.length > 0 ? (
           <div className="space-y-4">
+            <Tabs
+              value={discoveryConfigurationMode}
+              onValueChange={(v) =>
+                onDiscoveryConfigurationModeChange?.(v as ProspectConfigurationMode)
+              }
+              variant="line"
+              className="w-full min-w-0"
+            >
+              <TabsList aria-label="Mode de configuration" className="w-full min-w-0">
+                <TabsTrigger value="perfect_fit">
+                  Perfect fit ({discoveryChoiceCardsConfig.perfectFit.kwp.toFixed(2)} kWp)
+                </TabsTrigger>
+                <TabsTrigger value="highest_production">
+                  Highest production ({discoveryChoiceCardsConfig.highestProduction.kwp.toFixed(2)}{" "}
+                  kWp)
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
             <ProspectEnergyChartsPanel
-              configurationModeKey=""
-              annualProductionKwh={discoveryChartMonthlyData.reduce((s, m) => s + m.production, 0)}
+              configurationModeKey={discoveryConfigurationMode}
+              annualProductionKwh={discoveryAnnualProductionKwh}
               chartViewMode={discoveryChartViewMode}
               onChartViewModeChange={setDiscoveryChartViewMode}
               chartSelectedMonthIndex={discoveryChartMonthIndex}
@@ -1771,7 +2121,7 @@ function ProspectDrawerDiscoverySection({
                 segments={discoveryBillReductionCard.segments}
               />
               <RadianzCo2AvoidanceRadial
-                annualProductionKwh={discoveryChartMonthlyData.reduce((s, m) => s + m.production, 0)}
+                annualProductionKwh={discoveryAnnualProductionKwh}
                 annualConsumptionKwh={discoveryAnnualConsumptionKwh}
               />
             </div>
@@ -1795,17 +2145,7 @@ function ProspectDrawerDiscoverySection({
             id="discovery-info-building"
             className="drawer-discovery-section-title flex items-center justify-between gap-3"
           >
-            <span className="flex min-w-0 items-center gap-3">
-              <Image
-                src="/Buildingicon.svg"
-                alt=""
-                width={44}
-                height={44}
-                className="size-11 shrink-0"
-                aria-hidden
-              />
-              <span className="truncate text-base uppercase tracking-tight text-black">Building</span>
-            </span>
+            <span className="truncate text-base uppercase tracking-tight text-black">Building</span>
             <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
               {buildingDetailRows.length}
             </span>
@@ -1835,9 +2175,10 @@ function ProspectDrawerDiscoverySection({
                     const selectionId = discoveryBuildingSelectionIdFromEntry(b);
                     const buildingSelected =
                       !discoverySelectedBuildingIds ||
-                      !selectionId ||
-                      isDiscoveryBuildingSelected(discoverySelectedBuildingIds, selectionId);
-                    const canToggle = Boolean(selectionId && onDiscoveryToggleBuilding);
+                      isDiscoveryBuildingEntrySelected(discoverySelectedBuildingIds, b);
+                    const canToggle = Boolean(
+                      discoveryEditMode && selectionId && onDiscoveryToggleBuilding
+                    );
                     return (
                       <TableRow
                         key={`${b.batimentConstructionId}-${i}`}
@@ -1901,40 +2242,11 @@ function ProspectDrawerDiscoverySection({
             id="discovery-info-parcelles"
             className="drawer-discovery-section-title flex items-center justify-between gap-3"
           >
-            <span className="flex min-w-0 items-center gap-3">
-              <Image
-                src="/Topoicon.svg"
-                alt=""
-                width={44}
-                height={44}
-                className="size-11 shrink-0"
-                aria-hidden
-              />
-              <span className="truncate text-base uppercase tracking-tight text-black">Parcelle</span>
-            </span>
-            <span className="ml-auto flex shrink-0 items-center gap-2">
-              {onDiscoveryEditModeChange ? (
-                <Button
-                  type="button"
-                  variant={discoveryEditMode ? "default" : "outline"}
-                  size="sm"
-                  className="h-7 rounded-lg px-2.5 text-[10px] font-medium uppercase tracking-wide"
-                  onClick={() => onDiscoveryEditModeChange(!discoveryEditMode)}
-                >
-                  {discoveryEditMode ? "Terminer" : "Modifier le périmètre"}
-                </Button>
-              ) : null}
-              <span className="inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
-                {discoveryEffectiveParcelleCount ?? informationParcellesRows.length}
-              </span>
+            <span className="truncate text-base uppercase tracking-tight text-black">Parcelle</span>
+            <span className="ml-auto inline-flex min-w-8 shrink-0 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
+              {discoveryEffectiveParcelleCount ?? informationParcellesRows.length}
             </span>
           </h4>
-          {discoveryEditMode ? (
-            <p className="text-[11px] text-muted-foreground">
-              Parcelles voisines : clic pour ajouter (pointillés) ou retirer (plein bleu), y compris sans
-              matching V5. Fusion automatique si la parcelle appartient déjà à un combo en base.
-            </p>
-          ) : null}
           {informationParcellesRows.length === 0 && passerelleOrphanGroups.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border/80 bg-muted/30 px-3 py-3 text-xs text-muted-foreground">
               Aucune parcelle liée.
@@ -2013,17 +2325,7 @@ function ProspectDrawerDiscoverySection({
             id="discovery-info-etablissements"
             className="drawer-discovery-section-title flex items-center justify-between gap-3"
           >
-            <span className="flex min-w-0 items-center gap-3">
-              <Image
-                src="/houseicon.svg"
-                alt=""
-                width={44}
-                height={44}
-                className="size-11 shrink-0"
-                aria-hidden
-              />
-              <span className="truncate text-base uppercase tracking-tight text-black">Établissements</span>
-            </span>
+            <span className="truncate text-base uppercase tracking-tight text-black">Établissements</span>
             <span className="ml-auto inline-flex min-w-8 items-center justify-center font-mono text-[0.7rem] font-normal text-foreground">
               {discoverySiretRows.length}
             </span>
@@ -2208,12 +2510,19 @@ interface ProspectDrawerProps {
   onDiscoveryMatchingV5Persisted?: () => void;
   /** Tags activité OSM agrégés du combo (`scout_matching_v5_combos.zone_tags`). */
   discoveryComboZoneTags?: string[] | null;
+  /** Clé combo (`combo:…`) pour persister `matchingV5ComboId` à l’ajout pipeline. */
+  discoveryComboId?: string | null;
   /** Bâtiments inclus dans le combo personnalisé (tous sélectionnés par défaut). */
   discoverySelectedBuildingIds?: ReadonlySet<string>;
   onDiscoveryToggleBuilding?: (selectionId: string) => void;
   discoveryEditMode?: boolean;
-  onDiscoveryEditModeChange?: (enabled: boolean) => void;
+  onDiscoveryEditStart?: () => void;
+  onDiscoveryEditValidate?: () => void;
+  onDiscoveryEditCancel?: () => void;
   discoveryEffectiveParcelleCount?: number;
+  discoveryHeroSurfaces?: { footprintM2: number; parcelM2: number } | null;
+  discoveryComboSqlSurfaceHint?: DiscoveryComboSqlSurfaceHint | null;
+  discoveryComboFootprintFromOverview?: number;
 }
 
 export function ProspectDrawer({
@@ -2231,12 +2540,21 @@ export function ProspectDrawer({
   onDiscoveryPipelineAdded,
   onDiscoveryMatchingV5Persisted,
   discoveryComboZoneTags = null,
+  discoveryComboId = null,
   discoverySelectedBuildingIds,
   onDiscoveryToggleBuilding,
   discoveryEditMode = false,
-  onDiscoveryEditModeChange,
+  onDiscoveryEditStart,
+  onDiscoveryEditValidate,
+  onDiscoveryEditCancel,
   discoveryEffectiveParcelleCount,
+  discoveryHeroSurfaces = null,
+  discoveryComboSqlSurfaceHint = null,
+  discoveryComboFootprintFromOverview = 0,
 }: ProspectDrawerProps) {
+  const [discoveryConfigurationMode, setDiscoveryConfigurationMode] =
+    useState<ProspectConfigurationMode>("perfect_fit");
+
   const router = useRouter();
   const pathname = usePathname();
   const isOnMap = pathname?.includes("/solar-scout") ?? false;
@@ -2263,6 +2581,29 @@ export function ProspectDrawer({
   /** PVGIS + kWp + surface (mode Découverte) pour fourchette prix / B-E pipeline. */
   const [discoveryPipelineFinanceInputs, setDiscoveryPipelineFinanceInputs] =
     useState<DiscoveryDrawerFinancialInputs | null>(null);
+  const handleDiscoveryPipelineFinanceInputsChange = useCallback(
+    (payload: DiscoveryDrawerFinancialInputs | null) => {
+      setDiscoveryPipelineFinanceInputs((prev) => {
+        if (prev === payload) return prev;
+        if (!prev || !payload) return payload;
+        if (
+          prev.footprintM2 === payload.footprintM2 &&
+          prev.kwp === payload.kwp &&
+          prev.annualPerKwp === payload.annualPerKwp &&
+          prev.monthlyPerKwp.length === payload.monthlyPerKwp.length &&
+          prev.monthlyPerKwp.every(
+            (m, i) =>
+              m.month === payload.monthlyPerKwp[i]?.month &&
+              m.production === payload.monthlyPerKwp[i]?.production
+          )
+        ) {
+          return prev;
+        }
+        return payload;
+      });
+    },
+    []
+  );
   const [discoveryIncludeBattery, setDiscoveryIncludeBattery] = useState(
     () => getSolarEquipmentSettings().includeBattery ?? true
   );
@@ -2270,6 +2611,11 @@ export function ProspectDrawer({
 
   /** Mis à true uniquement au clic sur Perfect fit / Highest production — resync batterie quand la cible kWh change. */
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
+  /** Batterie choisie manuellement (prospect pipeline) — ne pas réaligner au changement de mode. */
+  const batteryManualRef = useRef(false);
+  /** Choix manuel batterie (discovery) avant enregistrement — ne pas écraser par la reco PVGIS. */
+  const discoveryBatteryManualRef = useRef(false);
+  const discoveryBatteryScopeRef = useRef("");
 
   const handlePoiNavigate = useCallback(
     async (delta: -1 | 1) => {
@@ -2451,11 +2797,38 @@ export function ProspectDrawer({
   const { data: invertersData } = useInverterReferences(user?.uid ?? null);
   const { data: batteriesData } = useBatteryReferences(user?.uid ?? null);
 
+  /** Prospect Firestore associé (mode classique ou déjà en pipeline depuis Découverte). */
+  const pipelineProspect = prospect ?? discoveryExistingPipelineProspect ?? null;
+
   useEffect(() => {
-    if (discoveryRow) {
-      setDiscoveryIncludeBattery(getSolarEquipmentSettings().includeBattery ?? true);
-    }
-  }, [discoveryRow]);
+    if (!discoveryRow) return;
+    setDiscoveryIncludeBattery(
+      discoveryExistingPipelineProspect?.includeBatteryOverride ??
+        getSolarEquipmentSettings().includeBattery ??
+        true
+    );
+  }, [discoveryRow, discoveryExistingPipelineProspect?.includeBatteryOverride]);
+
+  useEffect(() => {
+    if (!discoveryRow) return;
+    const persisted = discoveryExistingPipelineProspect?.configurationMode;
+    setDiscoveryConfigurationMode(
+      persisted === "highest_production" ? "highest_production" : "perfect_fit"
+    );
+  }, [discoveryRow?.id, discoveryExistingPipelineProspect?.configurationMode]);
+
+  const handleDiscoveryConfigurationModeChange = useCallback(
+    (mode: ProspectConfigurationMode) => {
+      const userFixedBattery =
+        discoveryBatteryManualRef.current ||
+        Boolean(discoveryExistingPipelineProspect?.batteryReferenceId);
+      if (!userFixedBattery) {
+        pendingBatteryResyncAfterModeChangeRef.current = true;
+      }
+      setDiscoveryConfigurationMode(mode);
+    },
+    [discoveryExistingPipelineProspect?.batteryReferenceId]
+  );
 
   const discoveryRecommendedBatteryKwh = useMemo(() => {
     const inputs = discoveryPipelineFinanceInputs;
@@ -2463,8 +2836,15 @@ export function ProspectDrawer({
       return null;
     }
     const placeType = "other";
-    const annualConsumptionKwh = getEnergyConsumption(placeType) * inputs.footprintM2;
-    const annualProductionKwh = Math.round(inputs.annualPerKwp * inputs.kwp);
+    const annualConsumptionKwh = discoveryAnnualConsumptionKwhFromProfile(
+      placeType,
+      inputs.footprintM2
+    );
+    const annualProductionKwh = discoveryAnnualProductionKwhFromPvgisKwp(
+      inputs.annualPerKwp,
+      inputs.monthlyPerKwp,
+      inputs.kwp
+    );
     return computeRecommendedBatteryTargetKwh({
       productionPerKwpMonthly: inputs.monthlyPerKwp,
       effectiveKwp: inputs.kwp,
@@ -2473,7 +2853,7 @@ export function ProspectDrawer({
       placeType,
       surfaceM2: inputs.footprintM2,
     });
-  }, [discoveryPipelineFinanceInputs]);
+  }, [discoveryPipelineFinanceInputs, discoveryConfigurationMode]);
 
   const discoveryRecommendedBatteryComposition = useMemo(() => {
     const visible = (batteriesData ?? []).filter((b) => b.visible !== false);
@@ -2485,24 +2865,22 @@ export function ProspectDrawer({
     if (!discoveryRow || !discoveryPipelineFinanceInputs) return null;
     const visibleBatteries = (batteriesData ?? []).filter((b) => b.visible !== false);
     if (!visibleBatteries.length) return { ref: null as BatteryReference | null, count: 1 };
-    const composed = discoveryRecommendedBatteryComposition;
     const ref =
-      composed?.model ??
       (usedBatteryRef && visibleBatteries.some((b) => b.id === usedBatteryRef.id)
         ? usedBatteryRef
-        : visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null);
-    const count =
-      composed != null && ref?.id === composed.model.id
-        ? composed.count
-        : Math.max(1, batteryCount);
-    return { ref, count };
+        : null) ??
+      discoveryRecommendedBatteryComposition?.model ??
+      visibleBatteries.find((r) => r.recommended === true) ??
+      visibleBatteries[0] ??
+      null;
+    return { ref, count: Math.max(1, batteryCount) };
   }, [
     discoveryRow,
     discoveryPipelineFinanceInputs,
     batteriesData,
-    discoveryRecommendedBatteryComposition,
     usedBatteryRef,
     batteryCount,
+    discoveryRecommendedBatteryComposition,
   ]);
 
   const discoveryDailySimulationBattery = useMemo((): { ref: BatteryReference; count: number } | null => {
@@ -2519,24 +2897,33 @@ export function ProspectDrawer({
     // on retombe sur la logique recommended/premier.
     const visible = panelsData.find((r) => r.visible === true);
     const legacyPick =
-      (prospect?.panelReferenceId ? panelsData.find((r) => r.id === prospect.panelReferenceId) : null) ??
+      (pipelineProspect?.panelReferenceId
+        ? panelsData.find((r) => r.id === pipelineProspect.panelReferenceId)
+        : null) ??
       panelsData.find((r) => r.recommended === true) ??
       panelsData[0] ??
       getPanelReferences()[0] ??
       null;
     setUsedPanelRef(visible ?? legacyPick);
-  }, [isOpen, panelsData, prospect?.panelReferenceId]);
+  }, [isOpen, panelsData, pipelineProspect?.panelReferenceId]);
 
   useEffect(() => {
     if (!invertersData) return;
     const visibleInverters = invertersData.filter((r) => r.visible !== false);
-    const byId =
-      prospect?.inverterReferenceId ? visibleInverters.find((r) => r.id === prospect.inverterReferenceId) : null;
+    const byId = pipelineProspect?.inverterReferenceId
+      ? visibleInverters.find((r) => r.id === pipelineProspect.inverterReferenceId)
+      : null;
     const recommended = visibleInverters.find((r) => r.recommended === true);
     setUsedInverterRef(byId ?? recommended ?? visibleInverters[0] ?? null);
-  }, [invertersData, prospect?.inverterReferenceId]);
+  }, [invertersData, pipelineProspect?.inverterReferenceId]);
 
-  /** Mode Découverte sans prospect : batterie par défaut (recommandée / première) pour le calcul projet. */
+  useEffect(() => {
+    discoveryBatteryManualRef.current = Boolean(
+      discoveryExistingPipelineProspect?.batteryReferenceId
+    );
+  }, [discoveryRow?.id, discoveryExistingPipelineProspect?.id, discoveryExistingPipelineProspect?.batteryReferenceId]);
+
+  /** Mode Découverte sans prospect React : choix persisté → reco dimensionnée → défaut catalogue. */
   useEffect(() => {
     if (!isOpen || prospect || !discoveryRow || !batteriesData?.length) return;
     const visibleBatteries = batteriesData.filter((b) => b.visible !== false);
@@ -2545,13 +2932,62 @@ export function ProspectDrawer({
       setBatteryCount(1);
       return;
     }
-    setUsedBatteryRef((prev) =>
-      prev && visibleBatteries.some((b) => b.id === prev.id)
-        ? prev
-        : visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null
+
+    const saved = discoveryExistingPipelineProspect;
+    const scopeKey = `${discoveryRow.id}|${saved?.id ?? "none"}`;
+    const isNewScope = discoveryBatteryScopeRef.current !== scopeKey;
+    if (isNewScope) {
+      discoveryBatteryScopeRef.current = scopeKey;
+      discoveryBatteryManualRef.current = Boolean(saved?.batteryReferenceId);
+    }
+
+    if (discoveryBatteryManualRef.current && !isNewScope) {
+      return;
+    }
+
+    if (
+      pendingBatteryResyncAfterModeChangeRef.current &&
+      discoveryRecommendedBatteryComposition &&
+      !discoveryBatteryManualRef.current
+    ) {
+      setUsedBatteryRef(discoveryRecommendedBatteryComposition.model);
+      setBatteryCount(discoveryRecommendedBatteryComposition.count);
+      pendingBatteryResyncAfterModeChangeRef.current = false;
+      return;
+    }
+
+    if (saved?.batteryReferenceId) {
+      const byId = visibleBatteries.find((b) => b.id === saved.batteryReferenceId);
+      if (byId) {
+        setUsedBatteryRef(byId);
+        setBatteryCount(
+          saved.batteryCount != null && saved.batteryCount >= 1 ? saved.batteryCount : 1
+        );
+        return;
+      }
+    }
+
+    if (discoveryRecommendedBatteryComposition) {
+      setUsedBatteryRef(discoveryRecommendedBatteryComposition.model);
+      setBatteryCount(discoveryRecommendedBatteryComposition.count);
+      return;
+    }
+
+    setUsedBatteryRef(
+      visibleBatteries.find((r) => r.recommended === true) ?? visibleBatteries[0] ?? null
     );
     setBatteryCount(1);
-  }, [isOpen, prospect, discoveryRow, batteriesData]);
+  }, [
+    isOpen,
+    prospect,
+    discoveryRow,
+    batteriesData,
+    discoveryExistingPipelineProspect?.id,
+    discoveryExistingPipelineProspect?.batteryReferenceId,
+    discoveryExistingPipelineProspect?.batteryCount,
+    discoveryRecommendedBatteryComposition,
+    discoveryConfigurationMode,
+  ]);
 
   useEffect(() => {
     if (!isOpen || !discoveryRow) setDiscoveryPipelineFinanceInputs(null);
@@ -2691,15 +3127,20 @@ export function ProspectDrawer({
 
   const discoveryFootprintSumM2 = useMemo(() => {
     if (!discoveryRow) return 0;
-    const cluster = getParcelleClusterForV5(discoveryRow, discoveryLinkedParcelleRows);
-    const filtered = discoveryComboFootprintSumM2(
-      cluster,
-      discoveryRow,
-      discoverySelectedBuildingIds
-    );
-    if (filtered != null) return filtered;
-    return footprintSumTotalFromV5(discoveryRow, cluster);
-  }, [discoveryRow, discoveryLinkedParcelleRows, discoverySelectedBuildingIds]);
+    return resolveDiscoveryComboEnergyFootprintM2({
+      anchorRow: discoveryRow,
+      parcelleRows: discoveryLinkedParcelleRows ?? [],
+      selectedBuildingIds: discoverySelectedBuildingIds,
+      sqlHint: discoveryComboSqlSurfaceHint,
+      comboFootprintFromOverview: discoveryComboFootprintFromOverview,
+    });
+  }, [
+    discoveryRow,
+    discoveryLinkedParcelleRows,
+    discoverySelectedBuildingIds,
+    discoveryComboSqlSurfaceHint,
+    discoveryComboFootprintFromOverview,
+  ]);
 
   const discoveryPipelineMapHref = useMemo(() => {
     if (!discoveryExistingPipelineProspect) return null;
@@ -2710,7 +3151,16 @@ export function ProspectDrawer({
     if (!discoveryRow) return;
     setIsAdding(true);
     try {
-      const panelRef = getRecommendedPanelReferenceSync();
+      const panelRef =
+        usedPanelRef ??
+        pickDefaultPanelReference(panelsData) ??
+        (await getRecommendedPanelReference(user?.uid)) ??
+        getRecommendedPanelReferenceSync();
+      const inverterRef =
+        usedInverterRef ??
+        pickDefaultInverterReference(invertersData) ??
+        (await getRecommendedInverterReference(user?.uid)) ??
+        getRecommendedInverterReferenceSync();
       const cluster = getParcelleClusterForV5(discoveryRow, discoveryLinkedParcelleRows);
       const centroid = discoveryCentroidFromV5(discoveryRow, cluster);
       let pvgis: PVGISData | null = null;
@@ -2734,34 +3184,97 @@ export function ProspectDrawer({
       const buildingSelectionIds = discoverySelectedBuildingIds
         ? Array.from(discoverySelectedBuildingIds)
         : [];
+      const footprintForPipeline = discoveryFootprintSumM2;
+      const parcelContourForPipeline = discoveryHeroSurfaces?.parcelM2;
+      const batteryRefForAdd = discoveryIncludeBattery ? usedBatteryRef : null;
+      const batteryCountForAdd = discoveryIncludeBattery ? Math.max(1, batteryCount) : 1;
+
+      let financialSummaryForAdd: DiscoveryDrawerFinancialSummary | null = null;
+      if (
+        discoveryPipelineFinanceInputs &&
+        panelRef &&
+        inverterRef
+      ) {
+        financialSummaryForAdd = computeDiscoveryPipelineFinancialSummaryFromInputs({
+          inputs: discoveryPipelineFinanceInputs,
+          panelRef,
+          inverterRef,
+          batteryRef: batteryRefForAdd,
+          batteryCount: batteryCountForAdd,
+          includeBattery: discoveryIncludeBattery,
+        });
+      }
+      if (!financialSummaryForAdd) {
+        financialSummaryForAdd =
+          computeDiscoveryPipelineFinancialSummaryAtAdd({
+            footprintM2: footprintForPipeline,
+            pvgis,
+            panelRef,
+            inverterRef,
+            batteryRef: batteryRefForAdd,
+            batteryCount: batteryCountForAdd,
+            includeBattery: discoveryIncludeBattery,
+          }) ?? discoveryFinancialSummary;
+      }
       const draft = matchingV5RowsToProspectDraft(discoveryRow, discoveryLinkedParcelleRows, {
         panelRef,
         pvgisData: pvgis,
+        ...(discoveryComboId?.trim() ? { matchingV5ComboId: discoveryComboId.trim() } : {}),
         matchingV5ParcelleIds: parcelleIds,
         matchingV5BuildingSelectionIds: buildingSelectionIds,
-        footprintSumM2Override: discoveryFootprintSumM2,
+        footprintSumM2Override: footprintForPipeline,
+        ...(parcelContourForPipeline != null && parcelContourForPipeline > 0
+          ? { parcelContourM2Override: parcelContourForPipeline }
+          : {}),
       });
       const draftForPipeline =
-        discoveryFinancialSummary != null
+        financialSummaryForAdd != null
           ? {
               ...draft,
-              priceRangeMinEur: discoveryFinancialSummary.priceRange.totalMinEur,
-              priceRangeMaxEur: discoveryFinancialSummary.priceRange.totalMaxEur,
-              breakEvenMinYears: discoveryFinancialSummary.breakEvenMin,
-              breakEvenMaxYears: discoveryFinancialSummary.breakEvenMax,
+              configurationMode: discoveryConfigurationMode,
+              ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
+              ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
+              ...(batteryRefForAdd?.id && { batteryReferenceId: batteryRefForAdd.id }),
+              ...(batteryRefForAdd && { batteryCount: batteryCountForAdd }),
+              includeBatteryOverride: discoveryIncludeBattery,
+              priceRangeMinEur: financialSummaryForAdd.priceRange.totalMinEur,
+              priceRangeMaxEur: financialSummaryForAdd.priceRange.totalMaxEur,
+              breakEvenMinYears: financialSummaryForAdd.breakEvenMin,
+              breakEvenMaxYears: financialSummaryForAdd.breakEvenMax,
             }
-          : draft;
-      const kwp = draftForPipeline.solarPotential?.estimatedKwp ?? 0;
+          : {
+              ...draft,
+              configurationMode: discoveryConfigurationMode,
+              ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
+              ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
+              ...(batteryRefForAdd?.id && { batteryReferenceId: batteryRefForAdd.id }),
+              ...(batteryRefForAdd && { batteryCount: batteryCountForAdd }),
+              includeBatteryOverride: discoveryIncludeBattery,
+            };
+      const kwpFromDraft = draftForPipeline.solarPotential?.estimatedKwp ?? 0;
+      const kwpForPipeline =
+        discoveryPipelineFinanceInputs?.kwp ??
+        (pvgis && footprintForPipeline > 0
+          ? discoveryConfigurationMode === "highest_production"
+            ? surfaceToKwp(footprintForPipeline, undefined, undefined, panelRef)
+            : computeDiscoveryKwpEstForPipeline({
+                footprintM2: footprintForPipeline,
+                pvgisAnnualPerKwp: pvgis.annualProduction,
+                panelRef,
+              })
+          : kwpFromDraft);
       const basePipeline =
-        kwp > 0 && discoveryFootprintSumM2 > 0 ? ({ estimatedKwp: kwp } as const) : null;
+        kwpForPipeline > 0 && footprintForPipeline > 0
+          ? ({ estimatedKwp: kwpForPipeline } as const)
+          : null;
       const pipelineOptions =
-        basePipeline && discoveryFinancialSummary
+        basePipeline && financialSummaryForAdd
           ? {
               ...basePipeline,
-              priceRangeMinEur: discoveryFinancialSummary.priceRange.totalMinEur,
-              priceRangeMaxEur: discoveryFinancialSummary.priceRange.totalMaxEur,
-              breakEvenMinYears: discoveryFinancialSummary.breakEvenMin,
-              breakEvenMaxYears: discoveryFinancialSummary.breakEvenMax,
+              priceRangeMinEur: financialSummaryForAdd.priceRange.totalMinEur,
+              priceRangeMaxEur: financialSummaryForAdd.priceRange.totalMaxEur,
+              breakEvenMinYears: financialSummaryForAdd.breakEvenMin,
+              breakEvenMaxYears: financialSummaryForAdd.breakEvenMax,
             }
           : basePipeline ?? undefined;
       const prospectId = await addProspectToPipeline(draftForPipeline, pipelineOptions, user?.uid);
@@ -2911,6 +3424,101 @@ export function ProspectDrawer({
       onSaveSuccess?.();
     } catch (error) {
       alert("Erreur lors de l'enregistrement. Veuillez réessayer.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDiscoveryPipelineSave = async () => {
+    const existing = discoveryExistingPipelineProspect;
+    if (!existing?.id) return;
+
+    setIsSaving(true);
+    try {
+      const batteryRefForSave = discoveryIncludeBattery ? usedBatteryRef : null;
+      const batteryCountForSave = discoveryIncludeBattery ? Math.max(1, batteryCount) : 1;
+      const footprintForPipeline =
+        discoveryFootprintSumM2;
+      const kwp = discoveryPipelineFinanceInputs?.kwp ?? existing.solarPotential?.estimatedKwp;
+
+      let pipelineOptions: {
+        estimatedKwp?: number;
+        priceRangeMinEur?: number;
+        priceRangeMaxEur?: number;
+        breakEvenMinYears?: number | null;
+        breakEvenMaxYears?: number | null;
+      } = {};
+      if (kwp != null && kwp > 0) pipelineOptions.estimatedKwp = kwp;
+      if (discoveryFinancialSummary) {
+        pipelineOptions.priceRangeMinEur = discoveryFinancialSummary.priceRange.totalMinEur;
+        pipelineOptions.priceRangeMaxEur = discoveryFinancialSummary.priceRange.totalMaxEur;
+        pipelineOptions.breakEvenMinYears = discoveryFinancialSummary.breakEvenMin;
+        pipelineOptions.breakEvenMaxYears = discoveryFinancialSummary.breakEvenMax;
+      }
+
+      const buildingSelectionIds = discoverySelectedBuildingIds
+        ? Array.from(discoverySelectedBuildingIds)
+        : existing.matchingV5BuildingSelectionIds;
+
+      const updatedProspect: Prospect = {
+        ...existing,
+        configurationMode: discoveryConfigurationMode,
+        ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
+        ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
+        ...(batteryRefForSave?.id && { batteryReferenceId: batteryRefForSave.id }),
+        ...(batteryRefForSave && { batteryCount: batteryCountForSave }),
+        includeBatteryOverride: discoveryIncludeBattery,
+        ...(buildingSelectionIds?.length
+          ? { matchingV5BuildingSelectionIds: [...buildingSelectionIds] }
+          : {}),
+        ...(footprintForPipeline > 0 && { bdnbFootprintSumM2: Math.round(footprintForPipeline) }),
+        ...(discoveryHeroSurfaces?.parcelM2 != null &&
+          discoveryHeroSurfaces.parcelM2 > 0 && {
+            parcelContourAreaM2: Math.round(discoveryHeroSurfaces.parcelM2),
+          }),
+        ...(kwp != null &&
+          kwp > 0 && {
+            solarPotential: {
+              maxArrayPanelsCount: existing.solarPotential?.maxArrayPanelsCount ?? 0,
+              maxArrayAreaMeters2:
+                existing.solarPotential?.maxArrayAreaMeters2 ?? Math.round(footprintForPipeline),
+              maxSunshineHoursPerYear: existing.solarPotential?.maxSunshineHoursPerYear ?? 0,
+              maxKwhPerYear: existing.solarPotential?.maxKwhPerYear ?? 0,
+              estimatedKwp: kwp,
+              ...(discoveryPipelineFinanceInputs?.annualPerKwp != null && {
+                productionPerKwpAnnual: discoveryPipelineFinanceInputs.annualPerKwp,
+              }),
+              ...(discoveryPipelineFinanceInputs?.monthlyPerKwp?.length === 12 && {
+                productionPerKwpMonthly: discoveryPipelineFinanceInputs.monthlyPerKwp,
+              }),
+              ...(existing.solarPotential?.pvgisDataFetched != null && {
+                pvgisDataFetched: existing.solarPotential.pvgisDataFetched,
+              }),
+            },
+          }),
+        ...(pipelineOptions.priceRangeMinEur != null && {
+          priceRangeMinEur: pipelineOptions.priceRangeMinEur,
+        }),
+        ...(pipelineOptions.priceRangeMaxEur != null && {
+          priceRangeMaxEur: pipelineOptions.priceRangeMaxEur,
+        }),
+        ...(pipelineOptions.breakEvenMinYears !== undefined && {
+          breakEvenMinYears: pipelineOptions.breakEvenMinYears,
+        }),
+        ...(pipelineOptions.breakEvenMaxYears !== undefined && {
+          breakEvenMaxYears: pipelineOptions.breakEvenMaxYears,
+        }),
+      };
+
+      await updateProspectInPipeline(existing.id, updatedProspect, pipelineOptions);
+      onProspectUpdate?.(updatedProspect);
+      toast.success("Enregistré");
+      onSaveSuccess?.();
+      onDiscoveryPipelineAdded?.();
+    } catch {
+      toast.error("Erreur lors de l'enregistrement", {
+        description: "Veuillez réessayer.",
+      });
     } finally {
       setIsSaving(false);
     }
@@ -3138,7 +3746,8 @@ export function ProspectDrawer({
 
   useEffect(() => {
     pendingBatteryResyncAfterModeChangeRef.current = false;
-  }, [prospect?.id]);
+    batteryManualRef.current = Boolean(prospect?.batteryReferenceId);
+  }, [prospect?.id, prospect?.batteryReferenceId]);
 
   // Batterie : toujours une ref issue de batteriesData. Par défaut : choix prospect → composition recommandée → premier avec flag recommandé → premier de la liste.
   // Après clic Perfect fit / Highest production : réaligner modèle + nombre sur recommendedBatteryComposition (y compris quand PVGIS / composition arrive après le clic).
@@ -3152,7 +3761,11 @@ export function ProspectDrawer({
       return;
     }
 
-    if (pendingBatteryResyncAfterModeChangeRef.current && recommendedBatteryComposition != null) {
+    if (
+      pendingBatteryResyncAfterModeChangeRef.current &&
+      recommendedBatteryComposition != null &&
+      !batteryManualRef.current
+    ) {
       const { model, count } = recommendedBatteryComposition;
       setUsedBatteryRef(model);
       setBatteryCount(count);
@@ -3162,6 +3775,14 @@ export function ProspectDrawer({
         batteryReferenceId: model.id,
         batteryCount: count,
       });
+      return;
+    }
+
+    if (batteryManualRef.current) {
+      const lockedById = prospect.batteryReferenceId
+        ? visibleBatteries.find((r) => r.id === prospect.batteryReferenceId)
+        : null;
+      if (lockedById) setUsedBatteryRef(lockedById);
       return;
     }
 
@@ -3484,7 +4105,7 @@ export function ProspectDrawer({
               }
               discoveryComboZoneTags={discoveryComboZoneTags}
               isOpen={isOpen}
-              onPipelineFinanceInputsChange={setDiscoveryPipelineFinanceInputs}
+              onPipelineFinanceInputsChange={handleDiscoveryPipelineFinanceInputsChange}
               pipelineProject={
                 discoveryFinancialSummary && discoveryPipelineFinanceInputs
                   ? { summary: discoveryFinancialSummary }
@@ -3503,6 +4124,7 @@ export function ProspectDrawer({
                     onInverterChange={setUsedInverterRef}
                     usedBatteryRef={usedBatteryRef}
                     onBatteryChange={(b) => {
+                      discoveryBatteryManualRef.current = true;
                       setUsedBatteryRef(b);
                       if (b) {
                         const maxForNew = b.maxBatteriesPerRack ?? 20;
@@ -3510,7 +4132,10 @@ export function ProspectDrawer({
                       }
                     }}
                     batteryCount={batteryCount}
-                    onBatteryCountChange={setBatteryCount}
+                    onBatteryCountChange={(n) => {
+                      discoveryBatteryManualRef.current = true;
+                      setBatteryCount(n);
+                    }}
                     panelCountBadge={discoveryEquipmentCounts.panelCount}
                     inverterCountBadge={discoveryEquipmentCounts.inverterCount}
                     inverterCountExceedsLimit={discoveryInverterCountExceedsLimit}
@@ -3527,8 +4152,17 @@ export function ProspectDrawer({
               discoverySelectedBuildingIds={discoverySelectedBuildingIds}
               onDiscoveryToggleBuilding={onDiscoveryToggleBuilding}
               discoveryEditMode={discoveryEditMode}
-              onDiscoveryEditModeChange={onDiscoveryEditModeChange}
+              onDiscoveryEditStart={onDiscoveryEditStart}
+              onDiscoveryEditValidate={onDiscoveryEditValidate}
+              onDiscoveryEditCancel={onDiscoveryEditCancel}
               discoveryEffectiveParcelleCount={discoveryEffectiveParcelleCount}
+              discoveryHeroSurfaces={discoveryHeroSurfaces}
+              discoveryComboSqlSurfaceHint={discoveryComboSqlSurfaceHint}
+              discoveryComboFootprintFromOverview={discoveryComboFootprintFromOverview}
+              discoveryConfigurationMode={discoveryConfigurationMode}
+              onDiscoveryConfigurationModeChange={handleDiscoveryConfigurationModeChange}
+              discoveryUsedPanelRef={usedPanelRef}
+              discoveryUsedInverterRef={usedInverterRef}
             />
           ) : prospect ? (
             <>
@@ -3839,7 +4473,9 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => {
-                      pendingBatteryResyncAfterModeChangeRef.current = true;
+                      if (!batteryManualRef.current) {
+                        pendingBatteryResyncAfterModeChangeRef.current = true;
+                      }
                       setConfigurationMode("perfect_fit");
                       if (prospect && onProspectUpdate) {
                         onProspectUpdate({ configurationMode: "perfect_fit" });
@@ -3869,7 +4505,9 @@ export function ProspectDrawer({
                   <button
                     type="button"
                     onClick={() => {
-                      pendingBatteryResyncAfterModeChangeRef.current = true;
+                      if (!batteryManualRef.current) {
+                        pendingBatteryResyncAfterModeChangeRef.current = true;
+                      }
                       setConfigurationMode("highest_production");
                       if (prospect && onProspectUpdate) {
                         onProspectUpdate({ configurationMode: "highest_production" });
@@ -4207,6 +4845,7 @@ export function ProspectDrawer({
                               <BatterySelectCard
                                 value={usedBatteryRef}
                                 onChange={(b) => {
+                                  batteryManualRef.current = true;
                                   setUsedBatteryRef(b);
                                   const maxForNew = b?.maxBatteriesPerRack ?? 20;
                                   const clampedCount = b ? Math.min(maxForNew, Math.max(1, batteryCount)) : 1;
@@ -4217,6 +4856,7 @@ export function ProspectDrawer({
                                 }}
                                 count={batteryCount}
                                 onCountChange={(n) => {
+                                  batteryManualRef.current = true;
                                   setBatteryCount(n);
                                   if (prospect && onProspectUpdate) {
                                     onProspectUpdate({ batteryCount: n });
@@ -4230,6 +4870,7 @@ export function ProspectDrawer({
                                   batteryCount === recommendedBatteryComposition.count
                                 }
                                 recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
+                                recommendedBatteryCountForProspect={recommendedBatteryComposition?.count ?? null}
                               />
                             ) : (
                               <p className="text-xs text-muted-foreground">Aucune batterie configurée. Ajoutez-en dans Paramètres.</p>
@@ -4322,6 +4963,12 @@ export function ProspectDrawer({
           <div className="p-4 mt-auto bg-white space-y-2 rounded-b-2xl border-t border-border">
             {discoveryExistingPipelineProspect?.id ? (
               <div className="flex flex-wrap gap-2">
+                <DiscoveryComboEditFooterButtons
+                  discoveryEditMode={discoveryEditMode}
+                  onStart={onDiscoveryEditStart}
+                  onValidate={onDiscoveryEditValidate}
+                  onCancel={onDiscoveryEditCancel}
+                />
                 {discoveryPipelineMapHref && !isOnDiscovery ? (
                   <Button
                     type="button"
@@ -4355,21 +5002,51 @@ export function ProspectDrawer({
                     <ExternalLink className="h-4 w-4" />
                   )}
                 </Button>
-                <Button type="button" variant="outline" className="flex-1 min-w-0" size="lg" asChild>
-                  <Link href="/">Ouvrir le pipeline</Link>
+                <Button
+                  type="button"
+                  className="flex-1 min-w-0"
+                  size="lg"
+                  onClick={() => void handleDiscoveryPipelineSave()}
+                  disabled={isSaving || discoveryEditMode}
+                  title={
+                    discoveryEditMode
+                      ? "Validez ou annulez l’édition du périmètre avant d’enregistrer"
+                      : undefined
+                  }
+                >
+                  {isSaving ? "Enregistrement..." : "Enregistrer"}
                 </Button>
               </div>
             ) : (
-              <Button
-                type="button"
-                variant={discoveryFootprintSumM2 > 0 ? "default" : "secondary"}
-                onClick={() => void handleDiscoveryAddToPipeline()}
-                className="w-full"
-                size="lg"
-                disabled={isAdding || discoveryFootprintSumM2 <= 0}
-              >
-                {isAdding ? "Ajout en cours..." : "Ajouter au pipeline"}
-              </Button>
+              <div className="flex gap-2">
+                <DiscoveryComboEditFooterButtons
+                  discoveryEditMode={discoveryEditMode}
+                  onStart={onDiscoveryEditStart}
+                  onValidate={onDiscoveryEditValidate}
+                  onCancel={onDiscoveryEditCancel}
+                />
+                <Button
+                  type="button"
+                  variant={
+                    discoveryEditMode
+                      ? "secondary"
+                      : discoveryFootprintSumM2 > 0
+                        ? "default"
+                        : "secondary"
+                  }
+                  onClick={() => void handleDiscoveryAddToPipeline()}
+                  className="min-w-0 flex-1"
+                  size="lg"
+                  disabled={isAdding || discoveryFootprintSumM2 <= 0 || discoveryEditMode}
+                  title={
+                    discoveryEditMode
+                      ? "Validez ou annulez l’édition du périmètre avant d’ajouter au pipeline"
+                      : undefined
+                  }
+                >
+                  {isAdding ? "Ajout en cours..." : "Ajouter au pipeline"}
+                </Button>
+              </div>
             )}
           </div>
         )}

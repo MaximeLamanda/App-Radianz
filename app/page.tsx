@@ -32,13 +32,17 @@ import {
   useBatteryReferences,
   useProspectsForPipeline,
 } from "@/lib/swr-hooks";
-import { getEnergyConsumption } from "@/lib/building-energy-consumption";
 import { updateProspect } from "@/lib/firestore";
 import { recordShareLinkCreatorIp } from "@/lib/prospect-share-client";
 import { normalizeProspectPipelineStatus } from "@/lib/prospect-pipeline-status";
 import { getCommercialReferent, buildCommercialReferentFromUser } from "@/lib/commercial-mock";
 import { getUserProfile } from "@/lib/firestore-user-profile";
 import { getSolarEquipmentSettings } from "@/lib/solar-settings";
+import {
+  resolveDiscoveryPipelineEnergyDisplay,
+  resolveDiscoveryProspectPipelineFinancials,
+} from "@/lib/discovery-pipeline-add-financials";
+import { resolveProspectBatteryRef } from "@/lib/prospect-battery-resolution";
 import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { cn } from "@/lib/utils";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell, PieChart, Pie, Cell as PieCell } from "recharts";
@@ -56,7 +60,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useDrawer } from "@/lib/drawer-context";
 import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
+import { ProspectContactAvatarStack } from "@/components/ProspectContactAvatarStack";
 import { loadMatchingV5DrawerContextForProspect } from "@/lib/pipeline-matching-v5-drawer-context";
+import { defaultDiscoveryComboBuildingSelectionIds } from "@/lib/discovery-combo-building-labels";
 
 function EquipmentThumbnail({
   equipment,
@@ -155,7 +161,6 @@ function HomePage() {
   const prospects = prospectsData ?? [];
   const panelRef = panelsData?.find((p) => p.recommended) ?? panelsData?.[0] ?? null;
   const inverterRef = invertersData?.find((i) => i.recommended) ?? invertersData?.[0] ?? null;
-  const batteryRef = batteriesData?.find((b) => b.recommended) ?? batteriesData?.[0] ?? null;
 
   const searchParams = useSearchParams();
 
@@ -235,6 +240,13 @@ function HomePage() {
         return;
       }
       const pid = selectedProspect.id!;
+      const buildingSelectionIds =
+        ctx.persistedBuildingSelectionIds?.length
+          ? new Set(ctx.persistedBuildingSelectionIds)
+          : defaultDiscoveryComboBuildingSelectionIds(
+              ctx.discoveryLinkedParcelleRowsForDrawer,
+              ctx.anchor
+            );
       setDrawerContent(
         <ProspectDrawer
           key={pid}
@@ -242,11 +254,13 @@ function HomePage() {
           discoveryRow={ctx.anchor}
           discoveryLinkedParcelleRows={ctx.discoveryLinkedParcelleRowsForDrawer}
           discoveryExistingPipelineProspect={selectedProspect}
+          discoverySelectedBuildingIds={buildingSelectionIds}
           bdnbLoading={false}
           isOpen
           onOpenChange={handlePipelineDrawerOpenChange}
           voirHref={(_prospectId) => "/discovery"}
           onDiscoveryPipelineAdded={onDiscoveryPipelineAddedFromHome}
+          onSaveSuccess={onDiscoveryPipelineAddedFromHome}
         />
       );
     })();
@@ -411,13 +425,53 @@ function HomePage() {
     () => new Map((invertersData ?? []).map((i) => [i.id, i])),
     [invertersData]
   );
-  const batteryById = useMemo(
-    () => new Map((batteriesData ?? []).map((b) => [b.id, b])),
-    [batteriesData]
-  );
-
   // Cache du réglage batterie global (évite appels répétés à getSolarEquipmentSettings dans la boucle)
   const includeBatteryDefault = getSolarEquipmentSettings().includeBattery ?? true;
+
+  const prospectBatteryByProspectId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof resolveProspectBatteryRef>>();
+    for (const prospect of prospects) {
+      if (!prospect.id) continue;
+      map.set(prospect.id, resolveProspectBatteryRef(prospect, batteriesData));
+    }
+    return map;
+  }, [prospects, batteriesData]);
+
+  const discoveryFinancialsByProspectId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof resolveDiscoveryProspectPipelineFinancials>>();
+    for (const prospect of prospects) {
+      if (prospect.pipelineEntrySource !== "discovery_v5" || !prospect.id) continue;
+      const prospectPanelRef =
+        (prospect.panelReferenceId && panelById.get(prospect.panelReferenceId)) ?? panelRef;
+      const prospectInverterRef =
+        (prospect.inverterReferenceId && inverterById.get(prospect.inverterReferenceId)) ??
+        inverterRef;
+      const { ref: prospectBatteryRef, count: prospectBatteryCount } =
+        prospectBatteryByProspectId.get(prospect.id) ?? { ref: null, count: 1 };
+      const includeBatteryForProspect =
+        prospect.includeBatteryOverride ?? includeBatteryDefault;
+      const fin = resolveDiscoveryProspectPipelineFinancials(
+        prospect,
+        prospectPanelRef,
+        prospectInverterRef,
+        {
+          includeBattery: includeBatteryForProspect,
+          batteryRef: prospectBatteryRef,
+          batteryCount: prospectBatteryCount,
+        }
+      );
+      if (fin) map.set(prospect.id, fin);
+    }
+    return map;
+  }, [
+    prospects,
+    panelById,
+    inverterById,
+    panelRef,
+    inverterRef,
+    prospectBatteryByProspectId,
+    includeBatteryDefault,
+  ]);
 
   const resetFilters = () => {
     setFilterStatus("all");
@@ -679,41 +733,49 @@ function HomePage() {
               <TableBody>
                 {filteredProspects.map((prospect) => {
                   const isDiscovery = prospect.pipelineEntrySource === "discovery_v5";
-                  const totalArea =
-                    prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
-                    prospect.solarPotential?.maxArrayAreaMeters2 ??
-                    0;
-                  const kwp = isDiscovery ? (prospect.solarPotential?.estimatedKwp ?? 0) : 0;
-                  const prodPerKwp = isDiscovery ? prospect.solarPotential?.productionPerKwpAnnual : undefined;
-                  const productionKwh = isDiscovery
-                    ? prospect.solarPotential?.maxKwhPerYear ??
-                      (prodPerKwp != null && kwp > 0 ? Math.round(prodPerKwp * kwp) : 0)
-                    : 0;
-                  const consumptionKwh = isDiscovery
-                    ? prospect.annualConsumptionKwhOverride ??
-                      (totalArea > 0 ? getEnergyConsumption(prospect.placeType) * totalArea : 0)
-                    : 0;
+                  const discoveryEnergy = isDiscovery
+                    ? resolveDiscoveryPipelineEnergyDisplay(prospect)
+                    : null;
+                  const totalArea = isDiscovery
+                    ? (discoveryEnergy?.footprintM2 ?? 0)
+                    : prospect.roofSurfaces?.reduce((sum, s) => sum + s.area, 0) ??
+                      prospect.solarPotential?.maxArrayAreaMeters2 ??
+                      0;
+                  const kwp = isDiscovery ? (discoveryEnergy?.kwp ?? 0) : 0;
+                  const productionKwh = isDiscovery ? (discoveryEnergy?.productionKwh ?? 0) : 0;
+                  const consumptionKwh = isDiscovery ? (discoveryEnergy?.consumptionKwh ?? 0) : 0;
                   const status = normalizeProspectPipelineStatus(prospect.pipelineStatus);
-                  const priceMin = isDiscovery ? prospect.priceRangeMinEur : undefined;
-                  const priceMax = isDiscovery ? prospect.priceRangeMaxEur : undefined;
-                  const breakEvenMin = isDiscovery ? prospect.breakEvenMinYears : undefined;
-                  const breakEvenMax = isDiscovery ? prospect.breakEvenMaxYears : undefined;
+                  const resolvedFinancials = prospect.id
+                    ? discoveryFinancialsByProspectId.get(prospect.id)
+                    : undefined;
+                  const priceMin = isDiscovery
+                    ? (resolvedFinancials?.priceRangeMinEur ?? prospect.priceRangeMinEur)
+                    : undefined;
+                  const priceMax = isDiscovery
+                    ? (resolvedFinancials?.priceRangeMaxEur ?? prospect.priceRangeMaxEur)
+                    : undefined;
+                  const breakEvenMin = isDiscovery
+                    ? (resolvedFinancials?.breakEvenMinYears ?? prospect.breakEvenMinYears)
+                    : undefined;
+                  const breakEvenMax = isDiscovery
+                    ? (resolvedFinancials?.breakEvenMaxYears ?? prospect.breakEvenMaxYears)
+                    : undefined;
                   const breakEvenLabel =
                     isDiscovery && breakEvenMin != null && breakEvenMax != null
                       ? breakEvenMin === breakEvenMax
                         ? `${breakEvenMin} an${breakEvenMin > 1 ? "s" : ""}`
                         : `${breakEvenMin} – ${breakEvenMax} ans`
-                      : "—";
+                      : isDiscovery && breakEvenMin != null
+                        ? `${breakEvenMin} an${breakEvenMin > 1 ? "s" : ""}`
+                        : "—";
                   const contactPhone =
                     prospect.contact?.nationalPhoneNumber ||
                     prospect.contact?.internationalPhoneNumber;
                   const contactWeb = prospect.contact?.websiteUri;
-                  const contactLabel =
-                    (contactPhone ||
-                      contactWeb ||
-                      (prospect.companyLegalName ? String(prospect.companyLegalName) : "") ||
-                      (prospect.siret ? String(prospect.siret) : "")) || "";
-                  const hasContactRow = isDiscovery && contactLabel.length > 0;
+                  const prospectContacts = isDiscovery ? (prospect.contacts ?? []) : [];
+                  const hasProspectContacts = prospectContacts.some((c) => c.fullName.trim().length > 0);
+                  const contactLabel = (contactPhone || contactWeb || "").trim();
+                  const hasLegacyContactRow = isDiscovery && contactLabel.length > 0;
                   const createdAt = prospect.createdAt
                     ? new Date(prospect.createdAt).toLocaleDateString("fr-FR", {
                         day: "numeric",
@@ -725,8 +787,8 @@ function HomePage() {
                     (prospect.panelReferenceId && panelById.get(prospect.panelReferenceId)) ?? panelRef;
                   const prospectInverterRef =
                     (prospect.inverterReferenceId && inverterById.get(prospect.inverterReferenceId)) ?? inverterRef;
-                  const prospectBatteryRef =
-                    (prospect.batteryReferenceId && batteryById.get(prospect.batteryReferenceId)) ?? batteryRef;
+                  const { ref: prospectBatteryRef } =
+                    (prospect.id && prospectBatteryByProspectId.get(prospect.id)) ?? { ref: null, count: 1 };
                   const includeBatteryForProspect =
                     prospect.includeBatteryOverride ?? includeBatteryDefault;
 
@@ -868,9 +930,15 @@ function HomePage() {
                         {breakEvenLabel}
                       </TableCell>
                       <TableCell className="p-2.5 max-w-[110px]">
-                        {hasContactRow ? (
+                        {hasProspectContacts ? (
+                          <ProspectContactAvatarStack contacts={prospectContacts} max={3} size="sm" />
+                        ) : hasLegacyContactRow ? (
                           <span className="truncate flex items-center gap-1.5" title={contactLabel}>
-                            {contactPhone ? <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                            {contactPhone ? (
+                              <Phone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            )}
                             <span className="truncate">{contactLabel}</span>
                           </span>
                         ) : (

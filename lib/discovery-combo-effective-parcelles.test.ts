@@ -3,6 +3,7 @@ import type { ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
 import {
   applyDiscoveryParcelleEditToggle,
   emptyDiscoveryComboParcelleEditState,
+  parcelleEditStateFromPersistedParcelleIds,
   parcelleIdsForComboMerge,
   resolveDiscoveryEffectiveParcelleRows,
 } from "@/lib/discovery-combo-effective-parcelles";
@@ -60,6 +61,20 @@ describe("parcelleIdsForComboMerge", () => {
     const allRows = [a, b, c];
     expect(parcelleIdsForComboMerge("b", allRows).sort()).toEqual(["a", "b"]);
     expect(parcelleIdsForComboMerge("c", allRows)).toEqual(["c"]);
+  });
+});
+
+describe("parcelleEditStateFromPersistedParcelleIds", () => {
+  it("marque les parcelles retirées du cluster matching", () => {
+    const edit = parcelleEditStateFromPersistedParcelleIds(["p1"], ["p1", "p2", "p3"]);
+    expect(edit.removedParcelleIds).toEqual(new Set(["p2", "p3"]));
+    expect(edit.customParcelleIds.size).toBe(0);
+  });
+
+  it("marque les parcelles ajoutées hors cluster matching", () => {
+    const edit = parcelleEditStateFromPersistedParcelleIds(["p1", "p4"], ["p1", "p2"]);
+    expect(edit.customParcelleIds).toEqual(new Set(["p4"]));
+    expect(edit.removedParcelleIds).toEqual(new Set(["p2"]));
   });
 });
 

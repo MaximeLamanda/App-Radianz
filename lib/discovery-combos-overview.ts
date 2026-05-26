@@ -12,6 +12,7 @@ export type DiscoveryComboOverviewPoint = {
   comboId: string;
   position: { lat: number; lng: number };
   footprintSumM2: number;
+  parcelContourSumM2: number;
   parkingSumM2: number;
   hasLanduseWaiver: boolean;
   anchorParcelleId: string;
@@ -104,6 +105,7 @@ export function parseDiscoveryCombosOverviewFeatureCollection(
       comboId,
       position,
       footprintSumM2: asFiniteNumber(props.footprint_sum_m2, 0),
+      parcelContourSumM2: asFiniteNumber(props.parcel_contour_sum_m2, 0),
       parkingSumM2: asFiniteNumber(props.parking_sum_m2, 0),
       hasLanduseWaiver: asBool(props.has_landuse_waiver),
       anchorParcelleId: asTrimmedString(props.anchor_parcelle_id),
@@ -125,8 +127,10 @@ export function discoveryComboMarkersFromOverview(
     comboId: p.comboId,
     position: p.position,
     anchorParcelleId: p.anchorParcelleId,
+    parcelleScoutV5Ids: [...p.parcelleScoutV5Ids],
     osmBuildingIds: [...p.osmBuildingIds],
     footprintSumM2: p.footprintSumM2,
+    parcelContourSumM2: p.parcelContourSumM2,
     zoneTags: [...p.zoneTags],
     constructionYears: [...p.constructionYears],
     nafDivisions: [...p.nafDivisions],

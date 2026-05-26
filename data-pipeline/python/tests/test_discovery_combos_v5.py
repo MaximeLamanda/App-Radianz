@@ -135,6 +135,29 @@ def _buildings_with_parkings(parkings_json: list[dict]) -> str:
     )
 
 
+def test_combo_parking_sum_dedup_way_and_negative_relation_id():
+    dc = _load_discovery_combos_v5()
+    import json
+
+    parking_w = {
+        "osm_parking_type": "w",
+        "osm_parking_id": 99,
+        "parking_area_m2": 800.0,
+        "parking_parcels_json": [],
+        "common_parcels_json": [],
+        "charging_stations_json": [],
+    }
+    parking_r = dict(parking_w)
+    parking_r["osm_parking_type"] = "r"
+    parking_r["osm_parking_id"] = -99
+    bj = json.dumps(
+        [{"batiment_construction_id": "bc-1", "parkings_json": [parking_w, parking_r]}],
+        ensure_ascii=False,
+    )
+    records = dc.build_combo_records_for_commune([_parcelle("p1", buildings_json=bj)])
+    assert records[0]["parking_sum_m2"] == 800.0
+
+
 def test_combo_parking_sum_dedup_same_parking():
     dc = _load_discovery_combos_v5()
     import json

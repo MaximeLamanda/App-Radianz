@@ -148,17 +148,48 @@ export function isCombosOverviewNafDivision(division: string): boolean {
 
 export type CombosOverviewSirenFilterInput = {
   role: CombosOverviewSirenRole;
-  siren: string;
+  sirens: readonly string[];
 };
+
+/** Parse `siren` query (répété ou séparé par des virgules). */
+export function parseCombosOverviewSirensParam(
+  raw: string | readonly string[] | null | undefined
+): string[] {
+  const parts = raw == null
+    ? []
+    : typeof raw === "string"
+      ? raw.split(",")
+      : raw.flatMap((s) => s.split(","));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of parts) {
+    const s = part.trim();
+    if (!isCombosOverviewSirenExact(s) || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
 
 export function buildCombosOverviewSirenWhere(
   input: CombosOverviewSirenFilterInput,
   startParamIndex: number
 ): CombosOverviewSurfaceWhereResult {
   const col = input.role === "owner" ? "owner_sirens" : "domiciliation_sirens";
+  const sirens = input.sirens.map((s) => s.trim()).filter(isCombosOverviewSirenExact);
+  if (sirens.length === 0) {
+    return { sqlFragments: [], params: [], nextParamIndex: startParamIndex };
+  }
+  if (sirens.length === 1) {
+    return {
+      sqlFragments: [`$${startParamIndex} = ANY(${col})`],
+      params: [sirens[0]!],
+      nextParamIndex: startParamIndex + 1,
+    };
+  }
   return {
-    sqlFragments: [`$${startParamIndex} = ANY(${col})`],
-    params: [input.siren.trim()],
+    sqlFragments: [`$${startParamIndex}::text[] && ${col}`],
+    params: [sirens],
     nextParamIndex: startParamIndex + 1,
   };
 }
@@ -191,7 +222,7 @@ export function buildCombosOverviewSearchParams(input: {
   minFootprintRatioPct?: number;
   maxFootprintRatioPct?: number;
   sirenRole?: CombosOverviewSirenRole;
-  siren?: string;
+  sirens?: readonly string[];
   nafDivision?: string;
   limit?: number;
 }): URLSearchParams {
@@ -218,9 +249,12 @@ export function buildCombosOverviewSearchParams(input: {
   if (input.maxFootprintRatioPct != null && Number.isFinite(input.maxFootprintRatioPct)) {
     p.set("maxFootprintRatioPct", String(input.maxFootprintRatioPct));
   }
-  if (input.sirenRole && input.siren && isCombosOverviewSirenExact(input.siren)) {
+  const sirens = parseCombosOverviewSirensParam(input.sirens ?? null);
+  if (input.sirenRole && sirens.length > 0) {
     p.set("sirenRole", input.sirenRole);
-    p.set("siren", input.siren.trim());
+    for (const siren of sirens) {
+      p.append("siren", siren);
+    }
   }
   if (input.nafDivision != null && isCombosOverviewNafDivision(input.nafDivision)) {
     p.set("nafDivision", input.nafDivision.trim());

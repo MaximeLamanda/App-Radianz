@@ -22,6 +22,7 @@ export function BatterySelectCard({
   maxCount = 20,
   isRecommendedForProspect,
   recommendedBatteryIdForProspect,
+  recommendedBatteryCountForProspect,
 }: {
   value: BatteryReference | null;
   onChange: (b: BatteryReference | null) => void;
@@ -33,11 +34,28 @@ export function BatterySelectCard({
   isRecommendedForProspect?: boolean;
   /** Modèle dont la ligne affiche « recommandé » dans la liste (= dimensionnement calculé, un seul id) */
   recommendedBatteryIdForProspect?: string | null;
+  /** Nombre recommandé pour le modèle dimensionné (popover nombre). */
+  recommendedBatteryCountForProspect?: number | null;
 }) {
   const showRecommended = isRecommendedForProspect === true;
   const [countPopoverOpen, setCountPopoverOpen] = useState(false);
   const effectiveMax = Math.max(1, maxCount);
   const clampedCount = Math.min(effectiveMax, Math.max(1, count));
+  const recommendedCount =
+    recommendedBatteryCountForProspect != null && recommendedBatteryCountForProspect >= 1
+      ? recommendedBatteryCountForProspect
+      : null;
+  const recommendedModel =
+    recommendedBatteryIdForProspect != null
+      ? batteries.find((b) => b.id === recommendedBatteryIdForProspect) ?? null
+      : null;
+  const recommendedCountForCurrentModel =
+    recommendedCount != null &&
+    value != null &&
+    recommendedBatteryIdForProspect != null &&
+    value.id === recommendedBatteryIdForProspect
+      ? Math.min(effectiveMax, recommendedCount)
+      : null;
 
   const countBadge = (
     <Popover open={countPopoverOpen} onOpenChange={setCountPopoverOpen}>
@@ -46,12 +64,37 @@ export function BatterySelectCard({
           type="button"
           className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 cursor-pointer hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
           title="Paramètres utilisés dans les calculs (injection / tirage batterie). Cliquer pour modifier le nombre."
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
           {clampedCount}
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-56 p-3" align="end">
         <div className="space-y-2">
+          {recommendedCountForCurrentModel != null && (
+            <div className="flex items-center justify-between rounded-md bg-muted/50 px-2 py-1.5">
+              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                Nombre recommandé
+              </span>
+              <span className="text-xs font-semibold tabular-nums">{recommendedCountForCurrentModel}</span>
+            </div>
+          )}
+          {recommendedCount != null &&
+            recommendedCountForCurrentModel == null &&
+            recommendedModel != null && (
+              <div className="rounded-md bg-muted/50 px-2 py-1.5 space-y-0.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    Nombre recommandé
+                  </span>
+                  <span className="text-xs font-semibold tabular-nums">{recommendedCount}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  Pour {recommendedModel.name}
+                </p>
+              </div>
+            )}
           <Label htmlFor="battery-count">Nombre de batteries</Label>
           <Input
             id="battery-count"
@@ -99,9 +142,7 @@ export function BatterySelectCard({
           <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
             <div className="flex w-full items-start justify-between gap-2">
               <div className="flex-1 min-w-0 font-semibold text-xs text-foreground truncate">{b.name}</div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {badges}
-              </div>
+              <div className="flex items-center gap-1.5 shrink-0">{badges}</div>
             </div>
             <div className="flex items-center gap-1 mt-0 flex-wrap leading-none">
               <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">€{b.costEur}</span>

@@ -29,9 +29,13 @@ export type DiscoveryComboMarker = {
   comboId: string;
   position: { lat: number; lng: number };
   anchorParcelleId: string;
+  /** Parcelles du combo (`scout_matching_v5_combos.parcelle_scout_v5_ids`), si overview SQL. */
+  parcelleScoutV5Ids?: string[];
   osmBuildingIds: string[];
   /** Σ empreintes OSM du combo (aligné tiroir `footprintSumTotalFromV5`). */
   footprintSumM2: number;
+  /** Σ contours parcelle (`parcel_contour_sum_m2`), si overview SQL. */
+  parcelContourSumM2?: number;
   /** Tags activité OSM agrégés (table `scout_matching_v5_combos.zone_tags`). */
   zoneTags: string[];
   /** Années de construction connues (table `scout_matching_v5_combos.construction_years`). */

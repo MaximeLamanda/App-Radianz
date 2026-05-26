@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ScoutMatchingV5Row } from "./scout-matching-v5-map";
 import { findMatchingV5LinkedParcelleRowsTransitive, findMatchingV5ParcelleRowsForBuilding } from "./scout-matching-v5-map";
-import { linkedParcelleRowsForV5DrawerAnchor, matchingV5SelectionMatchesProspect } from "./discovery-pipeline-match";
+import {
+  buildingSelectionIdsForDiscoveryProspect,
+  findDiscoveryProspectByComboId,
+  legacyComboIdFromProspect,
+  linkedParcelleRowsForV5DrawerAnchor,
+  matchingV5SelectionMatchesProspect,
+  parcelleRowsForDiscoveryProspect,
+} from "./discovery-pipeline-match";
 import type { Prospect } from "@/types";
 
 function parcelle(
@@ -90,6 +97,92 @@ describe("linkedParcelleRowsForV5DrawerAnchor", () => {
     });
     const rows = [a, b];
     expect(linkedParcelleRowsForV5DrawerAnchor(a, rows)).toEqual(findMatchingV5LinkedParcelleRowsTransitive(a, rows));
+  });
+});
+
+describe("parcelleRowsForDiscoveryProspect", () => {
+  const pj = JSON.stringify([{ code_insee: "33318", section: "HC", numero_norm: "0045" }]);
+  const p1 = parcelle({ id: "p1", codeInsee: "33318", section: "HC", numeroNorm: "0045" });
+  const p2 = parcelle({ id: "p2", codeInsee: "33318", section: "HC", numeroNorm: "0046" });
+  const allRows = [p1, p2];
+
+  it("utilise matchingV5ParcelleIds quand présents", () => {
+    const rows = parcelleRowsForDiscoveryProspect(
+      { matchingV5ParcelleIds: ["p2"] },
+      p1,
+      allRows
+    );
+    expect(rows.map((r) => r.id)).toEqual(["p2"]);
+  });
+});
+
+describe("buildingSelectionIdsForDiscoveryProspect", () => {
+  it("retourne les ids persistés", () => {
+    expect(
+      buildingSelectionIdsForDiscoveryProspect({
+        matchingV5BuildingSelectionIds: ["bc:1"],
+      })
+    ).toEqual(["bc:1"]);
+  });
+
+  it("retourne undefined si vide", () => {
+    expect(buildingSelectionIdsForDiscoveryProspect({})).toBeUndefined();
+  });
+});
+
+describe("findDiscoveryProspectByComboId", () => {
+  const comboA = "combo:p1|p2";
+  const comboB = "combo:p2|p3";
+
+  it("retourne le prospect si matchingV5ComboId correspond", () => {
+    const prospects: Prospect[] = [
+      {
+        id: "doc-a",
+        address: "a",
+        coordinates: { lat: 0, lng: 0 },
+        roofSurface: { area: 1, polygon: [] },
+        placeType: "other",
+        qualityScore: 1,
+        pipelineEntrySource: "discovery_v5",
+        matchingV5ComboId: comboA,
+        matchingV5ParcelleIds: ["p1", "p2"],
+      },
+    ];
+    expect(findDiscoveryProspectByComboId(comboA, prospects)?.id).toBe("doc-a");
+  });
+
+  it("retourne null si comboId différent même parcelle partagée", () => {
+    const prospects: Prospect[] = [
+      {
+        id: "doc-a",
+        address: "a",
+        coordinates: { lat: 0, lng: 0 },
+        roofSurface: { area: 1, polygon: [] },
+        placeType: "other",
+        qualityScore: 1,
+        pipelineEntrySource: "discovery_v5",
+        matchingV5ComboId: comboA,
+        matchingV5ParcelleIds: ["p1", "p2"],
+      },
+    ];
+    expect(findDiscoveryProspectByComboId(comboB, prospects)).toBeNull();
+  });
+
+  it("fallback legacy: dérive comboId depuis matchingV5ParcelleIds si champ absent", () => {
+    const prospects: Prospect[] = [
+      {
+        id: "legacy",
+        address: "a",
+        coordinates: { lat: 0, lng: 0 },
+        roofSurface: { area: 1, polygon: [] },
+        placeType: "other",
+        qualityScore: 1,
+        pipelineEntrySource: "discovery_v5",
+        matchingV5ParcelleIds: ["p2", "p1"],
+      },
+    ];
+    expect(legacyComboIdFromProspect(prospects[0]!)).toBe(comboA);
+    expect(findDiscoveryProspectByComboId(comboA, prospects)?.id).toBe("legacy");
   });
 });
 

@@ -2,7 +2,6 @@
 
 import React, { useState, type ReactNode } from "react";
 import Image from "next/image";
-import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverTrigger,
@@ -30,6 +29,35 @@ export interface EquipmentSelectCardProps<T> {
   warningBadge?: ReactNode;
 }
 
+/** Empêche l’ouverture du sélecteur équipement quand on interagit avec un badge (ex. nombre batterie). */
+function BadgeSlot({
+  children,
+  title,
+  interactive = false,
+}: {
+  children: ReactNode;
+  title?: string;
+  interactive?: boolean;
+}) {
+  if (!interactive) {
+    return (
+      <span className="inline-flex items-center" title={title}>
+        {children}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center"
+      title={title}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {children}
+    </span>
+  );
+}
+
 export function EquipmentSelectCard<T>({
   value,
   options,
@@ -47,14 +75,21 @@ export function EquipmentSelectCard<T>({
 
   if (!options.length) return null;
 
+  const rightBadgeInteractive = React.isValidElement(rightBadge);
+
   const badges = (
     <>
       {warningBadge}
-      {rightBadge != null && (
-        React.isValidElement(rightBadge) ? (
-          <span className="inline-flex items-center" title={rightBadgeTitle}>
+      {!warningBadge && showRecommendedBadge && (
+        <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">
+          recommandé
+        </span>
+      )}
+      {rightBadge != null &&
+        (rightBadgeInteractive ? (
+          <BadgeSlot title={rightBadgeTitle} interactive>
             {rightBadge}
-          </span>
+          </BadgeSlot>
         ) : (
           <span
             className="inline-flex items-center rounded-md bg-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-700"
@@ -62,17 +97,23 @@ export function EquipmentSelectCard<T>({
           >
             {rightBadge}
           </span>
-        )
-      )}
+        ))}
     </>
   );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          className="w-full h-auto rounded-xl border border-border bg-white p-3 flex items-stretch gap-3 justify-start text-left hover:bg-muted/50 focus:outline-none font-normal text-xs"
+        <div
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setOpen(true);
+            }
+          }}
+          className="w-full h-auto rounded-xl border border-border bg-white p-3 flex items-stretch gap-3 justify-start text-left hover:bg-muted/50 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 font-normal text-xs"
         >
           {value ? (
             renderTriggerContent(value, { badges })
@@ -81,7 +122,7 @@ export function EquipmentSelectCard<T>({
               {placeholder}
             </div>
           )}
-        </Button>
+        </div>
       </PopoverTrigger>
       <PopoverContent
         className="w-[var(--radix-popover-trigger-width)] max-w-[360px] p-2"

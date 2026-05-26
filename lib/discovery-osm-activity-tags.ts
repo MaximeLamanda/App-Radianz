@@ -67,7 +67,7 @@ export function discoveryZoneTagsForDrawer(
   return [...out].sort((a, b) => a.localeCompare(b));
 }
 
-/** Libellé court pour badge hero / pills (ex. « Industriel · Commercial »). */
+/** Libellé court pour badge hero / pills (ex. « Industriel · Tertiaire »). */
 export function discoveryComboActivityHeroBadgeLabel(zoneTags: readonly string[]): string {
   const normalized = new Set(
     zoneTags.map((t) => String(t ?? "").trim().toLowerCase()).filter(Boolean)

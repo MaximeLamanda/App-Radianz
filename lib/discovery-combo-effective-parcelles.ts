@@ -13,6 +13,40 @@ export function emptyDiscoveryComboParcelleEditState(): DiscoveryComboParcelleEd
   return { customParcelleIds: new Set(), removedParcelleIds: new Set() };
 }
 
+export function cloneDiscoveryComboParcelleEditState(
+  edit: DiscoveryComboParcelleEditState
+): DiscoveryComboParcelleEditState {
+  return {
+    customParcelleIds: new Set(edit.customParcelleIds),
+    removedParcelleIds: new Set(edit.removedParcelleIds),
+  };
+}
+
+/**
+ * Reconstruit l’état d’édition à partir du périmètre persisté en pipeline
+ * (`matchingV5ParcelleIds`) vs le cluster matching d’origine.
+ */
+export function parcelleEditStateFromPersistedParcelleIds(
+  persistedParcelleIds: readonly string[],
+  matchingLinkedParcelleIds: readonly string[]
+): DiscoveryComboParcelleEditState {
+  const matching = new Set(
+    matchingLinkedParcelleIds.map((id) => id.trim()).filter(Boolean)
+  );
+  const persisted = new Set(
+    persistedParcelleIds.map((id) => id.trim()).filter(Boolean)
+  );
+  const customParcelleIds = new Set<string>();
+  const removedParcelleIds = new Set<string>();
+  for (const id of persisted) {
+    if (!matching.has(id)) customParcelleIds.add(id);
+  }
+  for (const id of matching) {
+    if (!persisted.has(id)) removedParcelleIds.add(id);
+  }
+  return { customParcelleIds, removedParcelleIds };
+}
+
 /**
  * Identifiants parcelle à ajouter quand l’utilisateur sélectionne une parcelle (fusion combo si partage).
  */

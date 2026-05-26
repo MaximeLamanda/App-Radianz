@@ -15,6 +15,7 @@ import {
   formatV5OsmPoiTypeLabelForDisplay,
   mergeOsmBuildingContactsFromRows,
   mergeOsmPoisFromParcelleRows,
+  mergeMatchingV5RowsPreservingDetail,
   osmBrowseUrlFromBuildingId,
   isV5OsmActivityZoneTag,
   parseGoogleNearbyRankedJson,
@@ -28,7 +29,7 @@ import {
 
 describe("formatV5ZoneTagLabel", () => {
   it("retourne les libellés FR pour landuse / leisure courants", () => {
-    expect(formatV5ZoneTagLabel("residential")).toBe("Zone résidentielle");
+    expect(formatV5ZoneTagLabel("residential")).toBe("Résidentiel");
     expect(formatV5ZoneTagLabel("education")).toBe("École · université · campus");
     expect(formatV5ZoneTagLabel("farmland")).toBe("Zone agricole");
     expect(formatV5ZoneTagLabel("sports_centre")).toBe("Centre sportif");
@@ -892,5 +893,39 @@ describe("collectMatchingV5BuildingFeatures", () => {
     const features = collectMatchingV5BuildingFeatures([p, buildingRow("building:x", "[]")]);
     expect(features).toHaveLength(1);
     expect(features[0]!.id).toBe("bdnbcstr:bc-1");
+  });
+});
+
+describe("mergeMatchingV5RowsPreservingDetail", () => {
+  const base = (id: string, geom: ScoutMatchingV5Row["geometry"], bg = ""): ScoutMatchingV5Row =>
+    ({
+      id,
+      grain: "parcelle",
+      geometry: geom,
+      buildingsJson: "[]",
+      buildingGeometriesJson: bg,
+      footprintSumM2: 0,
+      batimentConstructionId: "",
+      batimentGroupeId: null,
+      osmBuildingId: "",
+      statusMetier: "",
+      properties: {},
+    }) as ScoutMatchingV5Row;
+
+  it("garde le polygone hydraté quand le viewport renvoie un Point overview", () => {
+    const hydrated = base("p1", {
+      type: "Polygon",
+      coordinates: [
+        [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+          [0, 0],
+        ],
+      ],
+    });
+    const overview = base("p1", { type: "Point", coordinates: [0, 0] });
+    const merged = mergeMatchingV5RowsPreservingDetail([hydrated], [overview]);
+    expect(merged[0]!.geometry.type).toBe("Polygon");
   });
 });

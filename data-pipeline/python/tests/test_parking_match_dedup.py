@@ -99,6 +99,35 @@ def test_merge_keeps_osm_when_geometries_disjoint():
     assert ("w", 99) in keys
 
 
+def test_parking_index_key_merges_negative_relation_with_way():
+    m = _load()
+    rows = [
+        {
+            "osm_type": "w",
+            "osm_id": 42,
+            "parking_area_m2": 1000.0,
+            "geometry": _square(-0.5, 44.8, 0.01),
+            "code_insee": "33318",
+            "section": "AB",
+            "numero_norm": "1",
+            "tags": {},
+        },
+        {
+            "osm_type": "r",
+            "osm_id": -42,
+            "parking_area_m2": 1000.0,
+            "geometry": _square(-0.5, 44.8, 0.01),
+            "code_insee": "33318",
+            "section": "AB",
+            "numero_norm": "2",
+            "tags": {},
+        },
+    ]
+    index = m.build_parking_index_from_rows(rows)
+    assert len(index) == 1
+    assert ("w", 42) in index
+
+
 def test_build_parking_export_entry_enr_source():
     m = _load()
     entry = m.build_parking_export_entry(

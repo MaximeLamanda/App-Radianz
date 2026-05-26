@@ -431,7 +431,6 @@ export type DiscoveryMapViewProps = {
   discoveryEditMode?: boolean;
   addableParcellesFc?: GeoJSON.FeatureCollection;
   onToggleAdjacentParcelle?: (parcelleId: string, include: boolean) => void;
-  adjacentParcellesLoading?: boolean;
   /** Périmètre parcelles courant (toggle ajout / retrait sur les voisines). */
   effectiveParcelleIds?: ReadonlySet<string>;
   /** Polygones parking OSM (`parking_geometries_json`) pour la sélection courante. */
@@ -472,7 +471,6 @@ export function DiscoveryMapView({
   discoveryEditMode = false,
   addableParcellesFc = { type: "FeatureCollection", features: [] },
   onToggleAdjacentParcelle,
-  adjacentParcellesLoading = false,
   effectiveParcelleIds,
   parkingHighlightFc,
   selectedOsmBuildingId,
@@ -686,16 +684,6 @@ export function DiscoveryMapView({
           onEachFeature={bindParkingHighlightTooltip}
         />
       ) : null}
-      {discoveryEditMode ? (
-        <div
-          className="pointer-events-none absolute left-3 top-3 z-[1000] max-w-[min(100%,20rem)] rounded-lg border border-blue-200/80 bg-white/95 px-3 py-2 text-xs text-foreground shadow-sm"
-          role="status"
-        >
-          {adjacentParcellesLoading
-            ? "Chargement des parcelles voisines…"
-            : "Parcelles voisines : clic pour ajouter (pointillés) ou retirer (plein bleu)."}
-        </div>
-      ) : null}
       <GeoJSON
         key={`parcelles-hl-${parcelleHighlightKey}`}
         data={parcelleHighlightFc}
@@ -739,7 +727,10 @@ export function DiscoveryMapView({
           }}
         />
       ) : null}
-      {buildingNumberLabels.length > 0 && onToggleDiscoveryBuilding && selectedBuildingIds ? (
+      {discoveryEditMode &&
+      buildingNumberLabels.length > 0 &&
+      onToggleDiscoveryBuilding &&
+      selectedBuildingIds ? (
         <DiscoveryComboBuildingNumberLabelsLayer
           labels={buildingNumberLabels}
           selectedBuildingIds={selectedBuildingIds}

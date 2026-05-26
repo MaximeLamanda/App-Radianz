@@ -22,6 +22,18 @@ def parcel_key(code_insee: str, section: str, numero_norm: str) -> tuple[str, st
     return (str(code_insee or "").strip(), str(section or "").strip(), str(numero_norm or "").strip())
 
 
+def parking_index_key(osm_type: str, osm_id: int) -> tuple[str, int]:
+    """
+    Clé stable pour dédupliquer un parking OSM.
+    Osmium expose les ways fermées aussi comme Area (id négatif) → aligner r:-123 sur w:123.
+    """
+    ot = (str(osm_type or "w").strip() or "w")
+    oid = int(osm_id)
+    if ot == "r" and oid < 0:
+        return ("w", abs(oid))
+    return (ot, oid)
+
+
 def parking_source_from_type(osm_type: str) -> str:
     return "enr" if str(osm_type or "").strip() == PARKING_TYPE_ENR else "osm"
 
@@ -159,7 +171,7 @@ def collect_parking_geometries_for_bdetails(
         for p in item.get("parkings_json") or []:
             ot = str(p.get("osm_parking_type") or "w")
             oid = int(p.get("osm_parking_id") or 0)
-            key = (ot, oid)
+            key = parking_index_key(ot, oid)
             if key in seen:
                 continue
             seen.add(key)
@@ -168,8 +180,8 @@ def collect_parking_geometries_for_bdetails(
                 continue
             out.append(
                 {
-                    "osm_parking_type": ot,
-                    "osm_parking_id": oid,
+                    "osm_parking_type": str(pdata.get("osm_type") or key[0]),
+                    "osm_parking_id": int(pdata.get("osm_id") or key[1]),
                     "geometry": pdata["geometry"],
                 }
             )
@@ -181,7 +193,7 @@ def build_parking_index_from_rows(rows: list[dict[str, Any]]) -> dict[tuple[str,
     for r in rows:
         ot = str(r.get("osm_type") or "w")
         oid = int(r.get("osm_id") or 0)
-        key = (ot, oid)
+        key = parking_index_key(ot, oid)
         pk_tuple = parcel_key(
             str(r.get("code_insee") or ""),
             str(r.get("section") or ""),
@@ -193,8 +205,8 @@ def build_parking_index_from_rows(rows: list[dict[str, Any]]) -> dict[tuple[str,
             if not isinstance(tags, dict):
                 tags = tags_dict(tags)
             index[key] = {
-                "osm_type": ot,
-                "osm_id": oid,
+                "osm_type": key[0],
+                "osm_id": key[1],
                 "parking_tag": r.get("parking_tag"),
                 "parking_value": r.get("parking_value"),
                 "parking_area_m2": r.get("parking_area_m2"),

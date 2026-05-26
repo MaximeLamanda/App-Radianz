@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { defaultDiscoveryComboBuildingSelectionIds } from "@/lib/discovery-combo-building-labels";
 import {
   discoveryBuildingSelectionIdFromEntry,
+  discoveryBuildingSelectionSetsEqual,
+  discoveryBuildingSelectionSignature,
+  isDiscoveryBuildingFilterActive,
+  isDiscoveryBuildingEntrySelected,
   isDiscoveryBuildingSelected,
   toggleDiscoveryBuildingSelection,
 } from "@/lib/discovery-combo-building-selection";
@@ -79,9 +83,42 @@ describe("defaultDiscoveryComboBuildingSelectionIds", () => {
   });
 });
 
+describe("isDiscoveryBuildingEntrySelected", () => {
+  it("matche bc: ou osm: pour le même bâtiment", () => {
+    const buildingEntry = entry("bc1", "w:42");
+    expect(isDiscoveryBuildingEntrySelected(new Set(["bc:bc1"]), buildingEntry)).toBe(true);
+    expect(isDiscoveryBuildingEntrySelected(new Set(["osm:w:42"]), buildingEntry)).toBe(true);
+    expect(isDiscoveryBuildingEntrySelected(new Set(["osm:w:99"]), buildingEntry)).toBe(false);
+  });
+});
+
+describe("isDiscoveryBuildingFilterActive", () => {
+  it("distingue filtre absent vs filtre actif (même vide)", () => {
+    expect(isDiscoveryBuildingFilterActive(undefined)).toBe(false);
+    expect(isDiscoveryBuildingFilterActive(null)).toBe(false);
+    expect(isDiscoveryBuildingFilterActive(new Set())).toBe(true);
+    expect(isDiscoveryBuildingFilterActive(new Set(["bc:1"]))).toBe(true);
+  });
+});
+
 describe("isDiscoveryBuildingSelected", () => {
   it("retourne true si présent dans le set", () => {
     expect(isDiscoveryBuildingSelected(new Set(["bc:1"]), "bc:1")).toBe(true);
     expect(isDiscoveryBuildingSelected(new Set(["bc:1"]), "bc:2")).toBe(false);
+  });
+});
+
+describe("discoveryBuildingSelectionSignature", () => {
+  it("ignore l’ordre d’insertion", () => {
+    expect(discoveryBuildingSelectionSignature(new Set(["bc:b", "bc:a"]))).toBe(
+      discoveryBuildingSelectionSignature(new Set(["bc:a", "bc:b"]))
+    );
+  });
+});
+
+describe("discoveryBuildingSelectionSetsEqual", () => {
+  it("compare le contenu, pas la référence", () => {
+    expect(discoveryBuildingSelectionSetsEqual(new Set(["a"]), new Set(["a"]))).toBe(true);
+    expect(discoveryBuildingSelectionSetsEqual(new Set(["a"]), new Set(["b"]))).toBe(false);
   });
 });

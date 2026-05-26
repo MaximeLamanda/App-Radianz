@@ -27,17 +27,16 @@ import {
 } from "@/components/ui/table";
 import { fetchWithAuth } from "@/lib/api-client";
 import { mergeProspectContacts } from "@/lib/apollo-people-search";
-import { updateProspect } from "@/lib/firestore";
 import type { ProspectContact } from "@/types";
+import { updateProspect } from "@/lib/firestore";
 
-/** Forme minimale du POI nécessaire pour l'appel Apollo. */
+/** Forme minimale du POI pour l'appel Apollo. */
 export type DiscoveryPoiContactsSheetPoi = {
   key: string;
   source: "osm" | "google" | "osm_building";
   name: string;
   website: string;
   externalUrl: string;
-  /** `place_id` Google (uniquement quand `source === "google"`). */
   placeId?: string;
 };
 
@@ -47,26 +46,31 @@ interface ApolloRouteResponse {
   rawCount?: number;
   contacts?: ProspectContact[];
   error?: string;
-  retryAfterSeconds?: number;
 }
 
 interface DiscoveryDrawerPoiContactsPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  poi: DiscoveryPoiContactsSheetPoi | null;
-  /** ID du prospect Firestore associé (si la ligne est déjà dans le pipeline). */
+  poi: DiscoveryPoiContactsSheetPoi;
   prospectId?: string;
-  /** Contacts déjà persistés sur le prospect (pour fusion à la sauvegarde). */
   existingContacts?: ProspectContact[];
-  /** Callback invoqué après une sauvegarde réussie sur Firestore. */
   onContactsPersisted?: (contacts: ProspectContact[]) => void;
 }
 
 type Status = "idle" | "loading" | "ok" | "error";
 
-/**
- * Panneau Apollo (people search par domaine) — contenu du popover.
- */
+function hydrateContactDates(contacts: ProspectContact[]): ProspectContact[] {
+  return contacts.map((c) => ({
+    ...c,
+    fetchedAt:
+      c.fetchedAt instanceof Date
+        ? c.fetchedAt
+        : typeof c.fetchedAt === "string"
+          ? new Date(c.fetchedAt)
+          : new Date(),
+  }));
+}
+
 function DiscoveryDrawerPoiContactsPanel({
   open,
   onOpenChange,
@@ -83,7 +87,10 @@ function DiscoveryDrawerPoiContactsPanel({
   const lastRequestKey = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!open || !poi) return;
+    if (!open) {
+      lastRequestKey.current = null;
+      return;
+    }
     const requestKey = poi.key;
     if (lastRequestKey.current === requestKey) return;
     lastRequestKey.current = requestKey;
@@ -112,8 +119,7 @@ function DiscoveryDrawerPoiContactsPanel({
         });
         const data = (await res.json().catch(() => ({}))) as ApolloRouteResponse;
         if (!res.ok || !data.ok) {
-          const fallback = `Apollo HTTP ${res.status}`;
-          setErrorMessage(data.error || fallback);
+          setErrorMessage(data.error || `Apollo HTTP ${res.status}`);
           setStatus("error");
           return;
         }
@@ -130,12 +136,6 @@ function DiscoveryDrawerPoiContactsPanel({
     return () => controller.abort();
   }, [open, poi]);
 
-  useEffect(() => {
-    if (!open) {
-      lastRequestKey.current = null;
-    }
-  }, [open]);
-
   const canPersist = useMemo(
     () => Boolean(prospectId) && contacts.length > 0 && status === "ok",
     [prospectId, contacts.length, status]
@@ -145,16 +145,14 @@ function DiscoveryDrawerPoiContactsPanel({
     if (!prospectId || contacts.length === 0) return;
     setPersistPending(true);
     try {
-      const hydratedContacts: ProspectContact[] = contacts.map((c) => ({
+      const withPoi = contacts.map((c) => ({
         ...c,
-        fetchedAt:
-          c.fetchedAt instanceof Date
-            ? c.fetchedAt
-            : typeof c.fetchedAt === "string"
-              ? new Date(c.fetchedAt)
-              : new Date(),
+        poiKey: poi.key,
+        originKind: "poi" as const,
+        originRef: poi.key,
+        originLabel: poi.name.trim() || poi.key,
       }));
-      const merged = mergeProspectContacts(existingContacts, hydratedContacts);
+      const merged = mergeProspectContacts(existingContacts, hydrateContactDates(withPoi));
       await updateProspect(prospectId, { contacts: merged });
       toast.success(
         `${contacts.length} contact${contacts.length > 1 ? "s" : ""} enregistré${
@@ -176,19 +174,13 @@ function DiscoveryDrawerPoiContactsPanel({
       <div className="shrink-0 border-b px-4 py-3 pr-12">
         <h2 className="text-sm font-semibold leading-tight text-foreground">Contacts décisionnaires</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          {poi ? (
-            <span className="block break-words">
-              <span className="font-medium text-foreground">{poi.name}</span>
-              {domain ? (
-                <>
-                  {" — "}
-                  <span className="font-mono text-[0.7rem] text-muted-foreground">{domain}</span>
-                </>
-              ) : null}
-            </span>
-          ) : (
-            "Aucun POI sélectionné."
-          )}
+          <span className="font-medium text-foreground">{poi.name}</span>
+          {domain ? (
+            <>
+              {" — "}
+              <span className="font-mono text-[0.7rem] text-muted-foreground">{domain}</span>
+            </>
+          ) : null}
         </p>
       </div>
 
@@ -196,7 +188,6 @@ function DiscoveryDrawerPoiContactsPanel({
         {status === "loading" ? (
           <div className="space-y-3" aria-label="Recherche Apollo en cours">
             <Skeleton className="h-4 w-1/2" />
-            <Skeleton className="h-12 w-full rounded-md" />
             <Skeleton className="h-12 w-full rounded-md" />
             <Skeleton className="h-12 w-full rounded-md" />
           </div>
@@ -240,11 +231,6 @@ function DiscoveryDrawerPoiContactsPanel({
                       <span className="block break-words text-xs font-medium leading-snug text-foreground">
                         {c.fullName}
                       </span>
-                      {c.organizationName ? (
-                        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                          {c.organizationName}
-                        </span>
-                      ) : null}
                     </TableCell>
                     <TableCell className="min-w-0 align-top text-muted-foreground">
                       <span className="block break-words text-xs leading-snug">{c.title || "—"}</span>
@@ -272,10 +258,9 @@ function DiscoveryDrawerPoiContactsPanel({
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground hover:bg-accent"
-                            title="Ouvrir LinkedIn"
                           >
                             <Linkedin className="h-3 w-3" aria-hidden />
-                            <span>LinkedIn</span>
+                            LinkedIn
                             <ExternalLink className="h-2.5 w-2.5 text-muted-foreground" aria-hidden />
                           </a>
                         ) : null}
@@ -287,9 +272,6 @@ function DiscoveryDrawerPoiContactsPanel({
                             <Phone className="h-3 w-3" aria-hidden />
                             <span>{c.phone}</span>
                           </a>
-                        ) : null}
-                        {!c.email && !c.linkedinUrl && !c.phone ? (
-                          <span className="text-[10px] text-muted-foreground">—</span>
                         ) : null}
                       </div>
                     </TableCell>
@@ -305,7 +287,7 @@ function DiscoveryDrawerPoiContactsPanel({
         <p className="mb-3 text-[11px] leading-snug text-muted-foreground">
           {prospectId
             ? "Les contacts seront fusionnés avec ceux déjà enregistrés sur le prospect."
-            : "Cette ligne n'est pas dans le pipeline. Ajoutez le prospect pour persister les contacts."}
+            : "Ajoutez le prospect au pipeline pour persister les contacts."}
         </p>
         <div className="flex items-center justify-end gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
@@ -337,17 +319,13 @@ function DiscoveryDrawerPoiContactsPanel({
 
 export interface DiscoveryDrawerPoiContactsDialogCellProps {
   poi: DiscoveryPoiContactsSheetPoi;
-  /** ID du prospect Firestore associé (si la ligne est déjà dans le pipeline). */
   prospectId?: string;
   existingContacts?: ProspectContact[];
   onContactsPersisted?: (contacts: ProspectContact[]) => void;
-  /** Libellés accessibilité / tooltip du déclencheur. */
   enrichTitle: string;
 }
 
-/**
- * Bouton noir + flèche ouvrant un dialog Apollo (people search par domaine).
- */
+/** Bouton Apollo (people search par domaine du POI). */
 export function DiscoveryDrawerPoiContactsDialogCell({
   poi,
   prospectId,

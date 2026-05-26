@@ -12,9 +12,9 @@ import { cn } from "@/lib/utils";
 import type { CombosOverviewSirenRole } from "@/lib/discovery-combos-overview-http";
 import type { DiscoveryNafDivisionOption } from "@/lib/discovery-naf-divisions";
 import { DiscoveryNafDivisionPicker } from "@/components/discovery/DiscoveryNafDivisionPicker";
+import { DiscoverySirenTagsInput } from "@/components/discovery/DiscoverySirenTagsInput";
 import { Spinner } from "@/components/ui/spinner";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import {
   Accordion,
@@ -89,8 +89,10 @@ export type DiscoveryFiltersPanelProps = {
   onSelectedOsmActivityTagChange: (tag: string | null) => void;
   sirenRole: CombosOverviewSirenRole;
   onSirenRoleChange: (role: CombosOverviewSirenRole) => void;
-  sirenQuery: string;
-  onSirenQueryChange: (value: string) => void;
+  selectedSirens: readonly string[];
+  sirenDraft: string;
+  onSelectedSirensChange: (sirens: string[]) => void;
+  onSirenDraftChange: (value: string) => void;
   nafDivisionQuery: string;
   onNafDivisionQueryChange: (value: string) => void;
   nafDivisionOptions: readonly DiscoveryNafDivisionOption[];
@@ -136,8 +138,10 @@ export function DiscoveryFiltersPanel({
   onSelectedOsmActivityTagChange,
   sirenRole,
   onSirenRoleChange,
-  sirenQuery,
-  onSirenQueryChange,
+  selectedSirens,
+  sirenDraft,
+  onSelectedSirensChange,
+  onSirenDraftChange,
   nafDivisionQuery,
   onNafDivisionQueryChange,
   nafDivisionOptions,
@@ -277,16 +281,11 @@ export function DiscoveryFiltersPanel({
               );
             })}
           </div>
-          <Input
-            inputMode="numeric"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={9}
-            placeholder="SIREN (9 chiffres)"
-            value={sirenQuery}
-            onChange={(e) => onSirenQueryChange(e.target.value.replace(/\D/g, "").slice(0, 9))}
-            aria-label="Filtrer par SIREN"
-            className="h-9 font-mono text-sm tabular-nums"
+          <DiscoverySirenTagsInput
+            value={selectedSirens}
+            draft={sirenDraft}
+            onValueChange={onSelectedSirensChange}
+            onDraftChange={onSirenDraftChange}
           />
           {sirenRole === "domiciliation" ? (
             <div className="space-y-1.5">
@@ -335,8 +334,11 @@ export function DiscoveryFiltersPanel({
               if (v.length < 2) return;
               const a = Number.isFinite(v[0]) ? v[0]! : 0;
               const b = Number.isFinite(v[1]) ? v[1]! : DISCOVERY_SURFACE_SLIDER_MAX_M2;
-              onSurfaceMinChange(Math.min(a, b));
-              onSurfaceMaxChange(Math.max(a, b));
+              const nextLo = Math.min(a, b);
+              const nextHi = Math.max(a, b);
+              if (nextLo === lo && nextHi === hi) return;
+              onSurfaceMinChange(nextLo);
+              onSurfaceMaxChange(nextHi);
             }}
             className="py-1"
           />
@@ -391,8 +393,11 @@ export function DiscoveryFiltersPanel({
               if (!parkingFilterEnabled || v.length < 2) return;
               const a = Number.isFinite(v[0]) ? v[0]! : 0;
               const b = Number.isFinite(v[1]) ? v[1]! : DISCOVERY_PARKING_SLIDER_MAX_M2;
-              onParkingMinChange(Math.min(a, b));
-              onParkingMaxChange(Math.max(a, b));
+              const nextLo = Math.min(a, b);
+              const nextHi = Math.max(a, b);
+              if (nextLo === pLo && nextHi === pHi) return;
+              onParkingMinChange(nextLo);
+              onParkingMaxChange(nextHi);
             }}
             className={cn("py-1", !parkingFilterEnabled && "opacity-45")}
           />
@@ -433,8 +438,11 @@ export function DiscoveryFiltersPanel({
               const b = Number.isFinite(v[1])
                 ? v[1]!
                 : DISCOVERY_FOOTPRINT_RATIO_SLIDER_MAX_PCT;
-              onFootprintRatioMinChange(Math.min(a, b));
-              onFootprintRatioMaxChange(Math.max(a, b));
+              const nextLo = Math.min(a, b);
+              const nextHi = Math.max(a, b);
+              if (nextLo === rLo && nextHi === rHi) return;
+              onFootprintRatioMinChange(nextLo);
+              onFootprintRatioMaxChange(nextHi);
             }}
             className="py-1"
           />
@@ -472,8 +480,11 @@ export function DiscoveryFiltersPanel({
               const b = Number.isFinite(v[1])
                 ? Math.round(v[1]!)
                 : constructionYearSliderMax;
-              onConstructionYearMinChange(Math.min(a, b));
-              onConstructionYearMaxChange(Math.max(a, b));
+              const nextLo = Math.min(a, b);
+              const nextHi = Math.max(a, b);
+              if (nextLo === yLo && nextHi === yHi) return;
+              onConstructionYearMinChange(nextLo);
+              onConstructionYearMaxChange(nextHi);
             }}
             className="py-1"
           />
@@ -547,8 +558,11 @@ export function DiscoveryFiltersPanel({
                   const b = Number.isFinite(v[1])
                     ? v[1]!
                     : DISCOVERY_ENEDIS_MWH_SLIDER_MAX;
-                  onEnedisMwhMinChange(Math.min(a, b));
-                  onEnedisMwhMaxChange(Math.max(a, b));
+                  const nextLo = Math.min(a, b);
+                  const nextHi = Math.max(a, b);
+                  if (nextLo === eLo && nextHi === eHi) return;
+                  onEnedisMwhMinChange(nextLo);
+                  onEnedisMwhMaxChange(nextHi);
                 }}
                 className="py-1"
               />

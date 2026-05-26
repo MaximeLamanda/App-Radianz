@@ -56,14 +56,15 @@ export function DiscoveryNafDivisionPicker({
             aria-expanded={open}
             aria-label="Choisir une division NAF"
             className={cn(
-              "h-9 min-w-0 flex-1 justify-between gap-2 px-2.5 font-normal",
+              "h-7 min-h-7 min-w-0 flex-1 justify-between gap-1.5 px-2 py-1 text-[11px] font-normal shadow-none",
+              "bg-card dark:bg-card/80",
               !triggerLabel && "text-muted-foreground"
             )}
           >
-            <span className="min-w-0 truncate text-left text-sm">
+            <span className="min-w-0 truncate text-left">
               {triggerLabel ?? "Division NAF…"}
             </span>
-            <ChevronsUpDown className="size-4 shrink-0 opacity-50" aria-hidden />
+            <ChevronsUpDown className="size-3 shrink-0 opacity-50" aria-hidden />
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -140,11 +141,11 @@ export function DiscoveryNafDivisionPicker({
           type="button"
           variant="ghost"
           size="icon"
-          className="size-9 shrink-0"
+          className="size-7 shrink-0"
           aria-label="Effacer le filtre NAF"
           onClick={() => onValueChange("")}
         >
-          <X className="size-4" aria-hidden />
+          <X className="size-3" aria-hidden />
         </Button>
       ) : null}
     </div>

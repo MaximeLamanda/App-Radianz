@@ -6,8 +6,17 @@ import {
   parkingSourceHoverText,
   parkingSourceLabel,
 } from "@/lib/matching-v5-parking";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Info } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 type Props = {
   parkings: V5ParkingEntry[];
@@ -19,7 +28,7 @@ export function DiscoveryDrawerParkingSection({ parkings }: Props) {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <section aria-labelledby="discovery-info-parking" className="space-y-2">
+      <section aria-labelledby="discovery-info-parking" className="space-y-2 border-t border-border pt-5">
         <h4
           id="discovery-info-parking"
           className="drawer-discovery-section-title flex items-center justify-between gap-3"
@@ -37,16 +46,25 @@ export function DiscoveryDrawerParkingSection({ parkings }: Props) {
             Aucun parking associé à ce bâtiment (parcelle cadastrale commune requise).
           </div>
         ) : (
-          <ul className="space-y-3">
-            {parkings.map((p) => (
-              <li
-                key={`${p.osmParkingType}:${p.osmParkingId}`}
-                className="rounded-xl border border-border/80 bg-muted/20 px-3 py-2.5 text-xs"
-              >
-                <ParkingCard parking={p} />
-              </li>
-            ))}
-          </ul>
+          <div className="drawer-discovery-table-wrap">
+            <Table className="text-[11px]">
+              <TableHeader>
+                <TableRow className="border-0 hover:bg-transparent">
+                  <TableHead className="whitespace-nowrap">N°</TableHead>
+                  <TableHead className="whitespace-nowrap">Source</TableHead>
+                  <TableHead className="min-w-[10rem]">Nom</TableHead>
+                  <TableHead className="whitespace-nowrap">Surface</TableHead>
+                  <TableHead className="min-w-[8rem]">Parcelles</TableHead>
+                  <TableHead className="whitespace-nowrap">Bornes</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {parkings.map((p, i) => (
+                  <ParkingTableRow key={`${p.osmParkingType}:${p.osmParkingId}`} parking={p} index={i} />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </section>
     </TooltipProvider>
@@ -80,13 +98,15 @@ function ParkingSourceLegend({ enrCount, osmCount }: { enrCount: number; osmCoun
             <span className="font-medium text-amber-700">OSM</span> — OpenStreetMap
           </li>
         </ul>
-        <p className="mt-1.5 text-[10px] text-muted-foreground">Survolez un parking sur la carte ou l’icône ℹ️ pour le détail.</p>
+        <p className="mt-1.5 text-[10px] text-muted-foreground">
+          Survolez un parking sur la carte ou l’icône ℹ️ pour le détail.
+        </p>
       </TooltipContent>
     </Tooltip>
   );
 }
 
-function ParkingSourceInfo({ source }: { source: V5ParkingSource }) {
+function ParkingSourceBadge({ source }: { source: V5ParkingSource }) {
   const short = source === "enr" ? "ENR" : "OSM";
   const badgeClass =
     source === "enr"
@@ -98,7 +118,10 @@ function ParkingSourceInfo({ source }: { source: V5ParkingSource }) {
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={`inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${badgeClass}`}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset",
+            badgeClass
+          )}
           aria-label={`Source : ${parkingSourceHoverText(source)}`}
         >
           {short}
@@ -112,85 +135,86 @@ function ParkingSourceInfo({ source }: { source: V5ParkingSource }) {
   );
 }
 
-function ParkingCard({ parking }: { parking: V5ParkingEntry }) {
-  const title =
+function parkingTitle(parking: V5ParkingEntry): string {
+  return (
     (parking.parkingName || "").trim() ||
-    `Parking ${parking.osmParkingType}:${parking.osmParkingId}`;
-  const parcels: V5ParkingParcelEntry[] =
-    parking.parkingParcels.length > 0
-      ? parking.parkingParcels
-      : parking.commonParcels.map((c) => ({
-          codeInsee: c.codeInsee,
-          section: c.section,
-          numeroNorm: c.numeroNorm,
-        }));
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 font-semibold text-foreground">{title}</div>
-        <ParkingSourceInfo source={parking.parkingSource} />
-      </div>
-      <div className="text-muted-foreground">
-        {parkingSourceLabel(parking.parkingSource)}
-        {" · "}
-        Surface :{" "}
-        <span className="font-mono text-foreground">{formatParkingAreaM2(parking.parkingAreaM2)}</span>
-      </div>
-      <ParcelList parcels={parcels} />
-      <ChargingList stations={parking.chargingStations} />
-    </div>
+    `Parking ${parking.osmParkingType}:${parking.osmParkingId}`
   );
 }
 
-function ParcelList({ parcels }: { parcels: V5ParkingParcelEntry[] }) {
-  if (parcels.length === 0) return null;
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Parcelles (intersection)
-      </div>
-      <ul className="space-y-0.5 font-mono text-[11px] text-foreground/90">
-        {parcels.map((par) => (
-          <li key={`${par.section}-${par.numeroNorm}`}>
-            {par.section} {par.numeroNorm}
-            {par.intersectionAreaM2 != null
-              ? ` · ${Math.round(par.intersectionAreaM2).toLocaleString("fr-FR")} m²`
-              : ""}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+function parkingParcelsForRow(parking: V5ParkingEntry): V5ParkingParcelEntry[] {
+  if (parking.parkingParcels.length > 0) return parking.parkingParcels;
+  return parking.commonParcels.map((c) => ({
+    codeInsee: c.codeInsee,
+    section: c.section,
+    numeroNorm: c.numeroNorm,
+  }));
 }
 
-function ChargingList({ stations }: { stations: V5ChargingStationEntry[] }) {
-  if (stations.length === 0) {
-    return <div className="text-muted-foreground">Aucune borne sur les parcelles communes.</div>;
+function formatParcelleCell(parcels: V5ParkingParcelEntry[]): { label: string; title?: string } {
+  if (parcels.length === 0) return { label: "—" };
+  const lines = parcels.map((par) => {
+    const base = `${par.section} ${par.numeroNorm}`.trim();
+    if (par.intersectionAreaM2 != null) {
+      return `${base} · ${Math.round(par.intersectionAreaM2).toLocaleString("fr-FR")} m²`;
+    }
+    return base;
+  });
+  return {
+    label: lines.length === 1 ? lines[0]! : `${lines.length} parcelles`,
+    title: lines.join("\n"),
+  };
+}
+
+function formatBornesCell(stations: V5ChargingStationEntry[]): { label: string; title?: string } {
+  if (stations.length === 0) return { label: "—" };
+  const lines = stations.map((st) => {
+    const cap = st.capacity ? ` · ${st.capacity} place(s)` : "";
+    return `${st.poiTypeLabel}${cap}`;
+  });
+  if (stations.length === 1) {
+    return { label: stations[0]!.poiTypeLabel, title: lines[0] };
   }
+  return {
+    label: String(stations.length),
+    title: lines.join("\n"),
+  };
+}
+
+function ParkingTableRow({ parking, index }: { parking: V5ParkingEntry; index: number }) {
+  const title = parkingTitle(parking);
+  const parcels = parkingParcelsForRow(parking);
+  const parcelleCell = formatParcelleCell(parcels);
+  const bornesCell = formatBornesCell(parking.chargingStations);
+
   return (
-    <div>
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        Bornes de recharge
-      </div>
-      <ul className="mt-1 space-y-1">
-        {stations.map((st) => (
-          <li key={`${st.osmType}:${st.osmId}`} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span>{st.poiTypeLabel}</span>
-            {st.capacity ? <span className="text-muted-foreground">· {st.capacity} place(s)</span> : null}
-            {st.osmUrl ? (
-              <a
-                href={st.osmUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sky-600 underline-offset-2 hover:underline"
-              >
-                OSM
-              </a>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-    </div>
+    <TableRow className="border-0 align-top">
+      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums align-top">
+        {index + 1}
+      </TableCell>
+      <TableCell className="min-w-0 align-top">
+        <ParkingSourceBadge source={parking.parkingSource} />
+      </TableCell>
+      <TableCell className="min-w-0 align-top">
+        <span className="block truncate font-medium text-foreground" title={title}>
+          {title}
+        </span>
+        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground" title={parkingSourceLabel(parking.parkingSource)}>
+          {parkingSourceLabel(parking.parkingSource)}
+        </span>
+      </TableCell>
+      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums align-top">
+        {formatParkingAreaM2(parking.parkingAreaM2)}
+      </TableCell>
+      <TableCell
+        className="min-w-0 align-top font-mono text-[11px] text-muted-foreground"
+        title={parcelleCell.title}
+      >
+        <span className="block min-w-0 text-foreground">{parcelleCell.label}</span>
+      </TableCell>
+      <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums align-top" title={bornesCell.title}>
+        {bornesCell.label}
+      </TableCell>
+    </TableRow>
   );
 }

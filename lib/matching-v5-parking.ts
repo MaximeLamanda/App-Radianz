@@ -59,8 +59,19 @@ function numPropNullable(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * Clé de dédup parking (alignée `parking_index_key` Python).
+ * Area osmium issue d'une way → id négatif en `r` ; fusionner avec `w:abs(id)`.
+ */
+export function parkingDedupKey(type: string, id: number): string {
+  const t = (type || "w").trim() || "w";
+  const oid = Math.trunc(id);
+  if (t === "r" && oid < 0) return `w:${Math.abs(oid)}`;
+  return `${t}:${oid}`;
+}
+
 function parkingKey(type: string, id: number): string {
-  return `${type}:${id}`;
+  return parkingDedupKey(type, id);
 }
 
 function parseParkingParcels(raw: unknown): V5ParkingParcelEntry[] {

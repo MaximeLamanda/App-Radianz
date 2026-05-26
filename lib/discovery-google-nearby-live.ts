@@ -3,13 +3,18 @@
  * parcelle aligné sur {@link rankNearbyPlaces}, export au format {@link V5GoogleNearbyRankedEntry}.
  */
 
-import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
+import { centroidFromGeoJsonPolygonLike, latLngFromMatchingGeometry } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
 import { haversineMeters } from "@/lib/matching-v5-google-poi-fallback/haversine";
+import { pointInParcelGeometry } from "@/lib/matching-v5-google-poi-fallback/point-in-geojson-polygon";
 import { rankNearbyPlaces } from "@/lib/matching-v5-google-poi-fallback/rank-candidates";
 import type { NearbyPlaceResult, RankedNearbyPlace } from "@/lib/matching-v5-google-poi-fallback/types";
 import type { ScoutMatchingV5Row, V5GoogleNearbyRankedEntry } from "@/lib/scout-matching-v5-map";
 
-const MIN_RADIUS_M = 100;
+const MIN_RADIUS_M = 80;
+const MAX_NEARBY_RADIUS_M = 180;
+const RADIUS_MARGIN_M = 25;
+/** Tampon minimal pour parcelle encore en `Point` (aperçu carte, pas de contour cadastral). */
+const POINT_PARCEL_FILTER_RADIUS_M = 50;
 
 /** Attend que le script Maps JS (injecté par GoogleMapsLoader ou autre) expose `google.maps`. */
 export async function waitForGoogleMapsReady(opts?: { timeoutMs?: number }): Promise<boolean> {
@@ -45,53 +50,110 @@ function forEachLngLatInGeometry(
   }
 }
 
+function polygonFromParts(parts: number[][][][]): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return { type: "Polygon", coordinates: parts[0]! };
+  return { type: "MultiPolygon", coordinates: parts };
+}
+
+/** Cercle approché (WGS84) pour une parcelle encore en `Point` (overview carte). */
+export function circlePolygonFromCenterRadiusM(
+  lat: number,
+  lng: number,
+  radiusM: number,
+  segments = 16
+): GeoJSON.Polygon {
+  const latRad = (lat * Math.PI) / 180;
+  const metersPerDegLat = 111_320;
+  const metersPerDegLng = 111_320 * Math.max(0.2, Math.cos(latRad));
+  const ring: number[][] = [];
+  for (let i = 0; i <= segments; i++) {
+    const angle = (2 * Math.PI * i) / segments;
+    const dx = Math.cos(angle) * radiusM;
+    const dy = Math.sin(angle) * radiusM;
+    ring.push([lng + dx / metersPerDegLng, lat + dy / metersPerDegLat]);
+  }
+  return { type: "Polygon", coordinates: [ring] };
+}
+
+export type GoogleNearbyParcelSearchContext = {
+  /** Emprise stricte pour filtrer les POI (contours cadastraux ; tampon 50 m seulement sans polygone). */
+  filterParcelGeometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  /** Étendue pour le rayon Nearby (peut inclure des tampons Point non utilisés au filtre). */
+  searchExtentGeometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+};
+
 /**
  * Union géométrique des parcelles (MultiPolygon si plusieurs polygones distincts).
+ * Les lignes `Point` (aperçu carte) sont ignorées — préférer {@link parcelSearchContextForGoogleNearby}.
  */
 export function buildParcelUnionGeometry(
   rows: ScoutMatchingV5Row[]
 ): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  const ctx = parcelSearchContextForGoogleNearby(rows);
+  return ctx?.filterParcelGeometry ?? null;
+}
+
+/**
+ * Emprise Google pour le combo effectif : filtre sur cadastre réel ;
+ * tampon 50 m uniquement si la parcelle n’a pas encore de polygone (aperçu carte).
+ */
+export function parcelSearchContextForGoogleNearby(
+  rows: ScoutMatchingV5Row[]
+): GoogleNearbyParcelSearchContext | null {
   const parcelles = rows.filter((r) => r.grain === "parcelle");
-  const parts: number[][][][] = [];
+  const cadastralParts: number[][][][] = [];
+  const pointBufferParts: number[][][][] = [];
+
   for (const r of parcelles) {
     const g = r.geometry;
     if (!g) continue;
     if (g.type === "Polygon") {
-      parts.push(g.coordinates);
+      cadastralParts.push(g.coordinates);
     } else if (g.type === "MultiPolygon") {
       for (const poly of g.coordinates) {
-        parts.push(poly);
+        cadastralParts.push(poly);
       }
+    } else if (g.type === "Point") {
+      const c = latLngFromMatchingGeometry(g);
+      if (!c) continue;
+      pointBufferParts.push(
+        circlePolygonFromCenterRadiusM(
+          c.lat,
+          c.lng,
+          POINT_PARCEL_FILTER_RADIUS_M
+        ).coordinates
+      );
     }
   }
-  if (parts.length === 0) return null;
-  if (parts.length === 1) {
-    return { type: "Polygon", coordinates: parts[0]! };
-  }
-  return { type: "MultiPolygon", coordinates: parts };
+
+  const filterParcelGeometry = polygonFromParts(
+    cadastralParts.length > 0 ? cadastralParts : pointBufferParts
+  );
+  if (!filterParcelGeometry) return null;
+
+  const searchExtentGeometry =
+    polygonFromParts([...cadastralParts, ...pointBufferParts]) ?? filterParcelGeometry;
+
+  return { filterParcelGeometry, searchExtentGeometry };
 }
 
 /**
- * Diagonale de la bbox (m) sur toutes les coordonnées du polygone / multipolygone, ×1.5, min 100 m.
- * Même esprit que `listPoisNearPolygon` pour le rayon Nearby.
+ * Rayon Nearby : distance centroïde → sommet le plus éloigné + marge, plafonné
+ * (évite d’aspirer tout le quartier sur les grands bbox multi-parcelles).
  */
 export function nearbySearchRadiusMForGeometry(g: GeoJSON.Polygon | GeoJSON.MultiPolygon): number {
-  let minLat = Infinity;
-  let maxLat = -Infinity;
-  let minLng = Infinity;
-  let maxLng = -Infinity;
+  const centroid = centroidFromGeoJsonPolygonLike(g);
+  if (!centroid) return MIN_RADIUS_M;
+
+  let maxDistM = 0;
   forEachLngLatInGeometry(g, (lng, lat) => {
-    minLat = Math.min(minLat, lat);
-    maxLat = Math.max(maxLat, lat);
-    minLng = Math.min(minLng, lng);
-    maxLng = Math.max(maxLng, lng);
+    const d = haversineMeters(centroid, { lat, lng });
+    if (d > maxDistM) maxDistM = d;
   });
-  if (!Number.isFinite(minLat) || !Number.isFinite(maxLat)) return MIN_RADIUS_M * 2;
-  const diagonal = haversineMeters(
-    { lat: minLat, lng: minLng },
-    { lat: maxLat, lng: maxLng }
-  );
-  return Math.max(diagonal * 1.5, MIN_RADIUS_M);
+
+  const withMargin = maxDistM + RADIUS_MARGIN_M;
+  return Math.min(Math.max(withMargin, MIN_RADIUS_M), MAX_NEARBY_RADIUS_M);
 }
 
 function placeResultToNearby(place: google.maps.places.PlaceResult): NearbyPlaceResult | null {
@@ -115,6 +177,21 @@ function placeResultToNearby(place: google.maps.places.PlaceResult): NearbyPlace
 /**
  * Mappe les lieux classés vers le même schéma que `_serialize_ranked_nearby` (pipeline Python).
  */
+/** Conserve uniquement les entrées dont les coordonnées sont dans l’emprise parcelle. */
+export function filterGoogleNearbyEntriesInParcel(
+  entries: readonly V5GoogleNearbyRankedEntry[],
+  parcelGeometry: GeoJSON.Polygon | GeoJSON.MultiPolygon
+): V5GoogleNearbyRankedEntry[] {
+  return entries.filter((e) => {
+    const lat = e.lat;
+    const lng = e.lng;
+    if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return false;
+    }
+    return pointInParcelGeometry(lng, lat, parcelGeometry);
+  });
+}
+
 export function rankedNearbyPlacesToV5Entries(ranked: RankedNearbyPlace[]): V5GoogleNearbyRankedEntry[] {
   return ranked.map((r, i) => {
     const lat = r.geometry?.location?.lat;
@@ -150,7 +227,8 @@ export type FetchNearbyRankedInParcelResult =
  * Lance Nearby Search (establishment), puis {@link rankNearbyPlaces} avec l’emprise parcelle.
  */
 export async function fetchNearbyRankedInParcel(params: {
-  parcelGeometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  filterParcelGeometry: GeoJSON.Polygon | GeoJSON.MultiPolygon;
+  searchExtentGeometry?: GeoJSON.Polygon | GeoJSON.MultiPolygon;
 }): Promise<FetchNearbyRankedInParcelResult> {
   const apiKey =
     typeof process !== "undefined" ? String(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "").trim() : "";
@@ -162,7 +240,10 @@ export async function fetchNearbyRankedInParcel(params: {
     };
   }
 
-  const centroid = centroidFromGeoJsonPolygonLike(params.parcelGeometry);
+  const filterParcelGeometry = params.filterParcelGeometry;
+  const searchExtentGeometry = params.searchExtentGeometry ?? filterParcelGeometry;
+
+  const centroid = centroidFromGeoJsonPolygonLike(filterParcelGeometry);
   if (!centroid) {
     return { ok: false, code: "no_centroid", message: "Impossible de calculer le centroïde de la parcelle." };
   }
@@ -205,7 +286,7 @@ export async function fetchNearbyRankedInParcel(params: {
     };
   }
 
-  const radiusM = nearbySearchRadiusMForGeometry(params.parcelGeometry);
+  const radiusM = nearbySearchRadiusMForGeometry(searchExtentGeometry);
   const request: google.maps.places.PlaceSearchRequest = {
     location: new maps.LatLng(centroid.lat, centroid.lng),
     radius: Math.round(radiusM),
@@ -249,7 +330,7 @@ export async function fetchNearbyRankedInParcel(params: {
 
   const { ranked } = rankNearbyPlaces(centroid, nearbyList, {
     maxRanked: 20,
-    parcelGeometry: params.parcelGeometry,
+    parcelGeometry: filterParcelGeometry,
   });
 
   return { ok: true, entries: rankedNearbyPlacesToV5Entries(ranked) };

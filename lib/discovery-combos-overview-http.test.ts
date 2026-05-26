@@ -86,15 +86,24 @@ describe("buildCombosOverviewParkingWhere", () => {
 });
 
 describe("buildCombosOverviewSirenWhere", () => {
-  it("filtre owner_sirens", () => {
-    const r = buildCombosOverviewSirenWhere({ role: "owner", siren: "123456789" }, 3);
+  it("filtre owner_sirens (un SIREN)", () => {
+    const r = buildCombosOverviewSirenWhere({ role: "owner", sirens: ["123456789"] }, 3);
     expect(r.sqlFragments[0]).toBe("$3 = ANY(owner_sirens)");
     expect(r.params[0]).toBe("123456789");
   });
 
-  it("filtre domiciliation_sirens", () => {
-    const r = buildCombosOverviewSirenWhere({ role: "domiciliation", siren: "987654321" }, 2);
+  it("filtre domiciliation_sirens (un SIREN)", () => {
+    const r = buildCombosOverviewSirenWhere({ role: "domiciliation", sirens: ["987654321"] }, 2);
     expect(r.sqlFragments[0]).toBe("$2 = ANY(domiciliation_sirens)");
+  });
+
+  it("filtre plusieurs SIREN (overlap)", () => {
+    const r = buildCombosOverviewSirenWhere(
+      { role: "owner", sirens: ["123456789", "987654321"] },
+      5
+    );
+    expect(r.sqlFragments[0]).toBe("$5::text[] && owner_sirens");
+    expect(r.params[0]).toEqual(["123456789", "987654321"]);
   });
 });
 
@@ -167,12 +176,24 @@ describe("buildCombosOverviewSearchParams", () => {
       minLng: -1,
       maxLng: 0,
       sirenRole: "domiciliation",
-      siren: "123456789",
+      sirens: ["123456789"],
       nafDivision: "47",
     });
     expect(p.get("sirenRole")).toBe("domiciliation");
-    expect(p.get("siren")).toBe("123456789");
+    expect(p.getAll("siren")).toEqual(["123456789"]);
     expect(p.get("nafDivision")).toBe("47");
+  });
+
+  it("inclut plusieurs SIREN", () => {
+    const p = buildCombosOverviewSearchParams({
+      minLat: 44,
+      maxLat: 45,
+      minLng: -1,
+      maxLng: 0,
+      sirenRole: "owner",
+      sirens: ["123456789", "987654321"],
+    });
+    expect(p.getAll("siren")).toEqual(["123456789", "987654321"]);
   });
 
   it("ignore SIREN incomplet", () => {
@@ -182,8 +203,8 @@ describe("buildCombosOverviewSearchParams", () => {
       minLng: -1,
       maxLng: 0,
       sirenRole: "owner",
-      siren: "123",
+      sirens: ["123"],
     });
-    expect(p.get("siren")).toBeNull();
+    expect(p.getAll("siren")).toEqual([]);
   });
 });

@@ -1937,6 +1937,7 @@ export default function ProspectSharePage() {
                                         selectedBatteryCount === recommendedBatteryComposition.count
                                       }
                                       recommendedBatteryIdForProspect={recommendedBatteryComposition?.model.id ?? null}
+                                      recommendedBatteryCountForProspect={recommendedBatteryComposition?.count ?? null}
                                     />
                                   </div>
                                 ) : batteriesData !== undefined ? (

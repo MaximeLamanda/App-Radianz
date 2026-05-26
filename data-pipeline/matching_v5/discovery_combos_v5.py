@@ -324,6 +324,15 @@ def combo_zone_tags(parcelle_rows: list[dict[str, Any]]) -> list[str]:
     return sorted(tags)
 
 
+def _parking_dedup_key(osm_type: str, osm_id: int) -> str:
+    """Aligné parking_index_key / parkingDedupKey (TS)."""
+    t = (str(osm_type or "w").strip() or "w")
+    oid = int(osm_id)
+    if t == "r" and oid < 0:
+        return f"w:{abs(oid)}"
+    return f"{t}:{oid}"
+
+
 def combo_parking_sum_m2(parcelle_rows: list[dict[str, Any]]) -> float:
     """Somme parking_area_m2 des parkings distincts (aligné collectParkingsFromMatchingRows TS)."""
     seen: set[str] = set()
@@ -341,7 +350,7 @@ def combo_parking_sum_m2(parcelle_rows: list[dict[str, Any]]) -> float:
                     pid = int(p.get("osm_parking_id"))
                 except (TypeError, ValueError):
                     continue
-                key = f"{t}:{pid}"
+                key = _parking_dedup_key(t, pid)
                 if key in seen:
                     continue
                 seen.add(key)

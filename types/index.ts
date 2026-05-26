@@ -81,10 +81,21 @@ export interface CommercialReferent {
 /** Mode de configuration : Perfect fit (prod ≈ conso) ou Highest production (max surface) */
 export type ProspectConfigurationMode = "perfect_fit" | "highest_production";
 
-/** Contact décisionnaire enrichi (Apollo people search). */
+/** Rattachement métier d'un contact décisionnaire. */
+export type ProspectContactOriginKind = "poi" | "parcelle" | "etablissement" | "autre";
+
+/** Contact décisionnaire (Apollo ou saisie manuelle). */
 export interface ProspectContact {
-  /** Identifiant Apollo (`person_id`) quand disponible. Sert à la déduplication forte. */
+  /** Identifiant stable : UUID (manuel) ou `person_id` Apollo. */
   id?: string;
+  /** @deprecated Préférer `originKind` + `originRef` ; conservé pour Apollo / rétrocompat. */
+  poiKey?: string;
+  /** Type d'origine (POI, parcelle cadastrale, établissement SIRET, autre). */
+  originKind?: ProspectContactOriginKind;
+  /** Identifiant selon le type : clé POI, id parcelle, SIRET, ou libre pour « autre ». */
+  originRef?: string;
+  /** Libellé affiché (nom du lieu, parcelle, raison sociale, texte libre). */
+  originLabel?: string;
   firstName?: string;
   lastName?: string;
   fullName: string;
@@ -95,10 +106,11 @@ export interface ProspectContact {
   emailStatus?: "verified" | "unverified" | "guessed";
   linkedinUrl?: string;
   phone?: string;
-  /** Source de l'enrichissement (pour l'instant uniquement Apollo). */
-  source: "apollo";
-  /** Horodatage de récupération (sert au cache / refresh). */
+  source: "apollo" | "manual";
+  /** Horodatage de récupération Apollo. */
   fetchedAt?: Date;
+  createdAt?: Date;
+  updatedAt?: Date;
   organizationName?: string;
   organizationDomain?: string;
 }
@@ -190,6 +202,8 @@ export interface Prospect {
   pipelineEntrySource?: "discovery_v5";
   /** Identifiant de la ligne / cluster matching V5 à l’origine du prospect. */
   matchingV5RowId?: string;
+  /** Clé combo Discovery (`combo:parcelleA|parcelleB|…`) — rattachement pipeline strict. */
+  matchingV5ComboId?: string;
   /** Périmètre parcelles personnalisé (agrégat pipeline, sans modifier Scout V5). */
   matchingV5ParcelleIds?: string[];
   /** Bâtiments inclus (`bc:…` / `osm:…`) dans l’agrégat pipeline. */

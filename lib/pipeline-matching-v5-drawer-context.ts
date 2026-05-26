@@ -1,5 +1,8 @@
 import { fetchWithAuth } from "@/lib/api-client";
-import { linkedParcelleRowsForV5DrawerAnchor } from "@/lib/discovery-pipeline-match";
+import {
+  buildingSelectionIdsForDiscoveryProspect,
+  parcelleRowsForDiscoveryProspect,
+} from "@/lib/discovery-pipeline-match";
 import { parseMatchingV5GeoJsonFeatureCollection, type ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
 import type { Prospect } from "@/types";
 
@@ -12,8 +15,21 @@ export type PipelineDiscoveryDrawerContext =
       anchor: ScoutMatchingV5Row;
       /** Même agrégation que la page Découverte (`effectiveDiscoveryLinkedParcelleRows`). */
       discoveryLinkedParcelleRowsForDrawer: ScoutMatchingV5Row[];
+      /** Sélection bâtiments enregistrée à l’ajout pipeline (si présente). */
+      persistedBuildingSelectionIds?: string[];
     }
   | { ok: false; message: string };
+
+async function fetchMatchingRowByScoutV5Id(scoutV5Id: string): Promise<ScoutMatchingV5Row | null> {
+  const res = await fetchWithAuth(
+    `/api/matching-v5/features?scout_v5_id=${encodeURIComponent(scoutV5Id)}&limit=1`
+  );
+  if (!res.ok) return null;
+  const json: unknown = await res.json();
+  const { rows, error: parseErr } = parseMatchingV5GeoJsonFeatureCollection(json);
+  if (parseErr || rows.length === 0) return null;
+  return rows[0] ?? null;
+}
 
 /**
  * Charge les features matching V5 autour du prospect et calcule l’ancre + parcelles liées pour le tiroir Découverte.
@@ -57,12 +73,30 @@ export async function loadMatchingV5DrawerContextForProspect(
     };
   }
 
-  /** Aligné sur `effectiveDiscoveryLinkedParcelleRows` quand le prospect pointe déjà sur cette ligne. */
-  const discoveryLinkedParcelleRowsForDrawer = linkedParcelleRowsForV5DrawerAnchor(anchor, rows);
+  let discoveryLinkedParcelleRowsForDrawer = parcelleRowsForDiscoveryProspect(prospect, anchor, rows);
+
+  const persistedParcelleIds = prospect.matchingV5ParcelleIds?.map((s) => s.trim()).filter(Boolean) ?? [];
+  if (persistedParcelleIds.length > 0) {
+    const byId = new Map(discoveryLinkedParcelleRowsForDrawer.map((r) => [r.id, r]));
+    for (const id of persistedParcelleIds) {
+      if (byId.has(id)) continue;
+      const fetched = await fetchMatchingRowByScoutV5Id(id);
+      if (fetched?.grain === "parcelle") byId.set(id, fetched);
+    }
+    discoveryLinkedParcelleRowsForDrawer = persistedParcelleIds
+      .map((id) => byId.get(id))
+      .filter((r): r is ScoutMatchingV5Row => r != null);
+    if (discoveryLinkedParcelleRowsForDrawer.length === 0) {
+      discoveryLinkedParcelleRowsForDrawer = parcelleRowsForDiscoveryProspect(prospect, anchor, rows);
+    }
+  }
+
+  const persistedBuildingSelectionIds = buildingSelectionIdsForDiscoveryProspect(prospect);
 
   return {
     ok: true,
     anchor,
     discoveryLinkedParcelleRowsForDrawer,
+    persistedBuildingSelectionIds,
   };
 }
