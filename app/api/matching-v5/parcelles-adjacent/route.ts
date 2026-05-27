@@ -19,6 +19,72 @@ import {
 const COMBOS_QUALIFIED = "public.scout_matching_v5_combos";
 const CADASTRE_QUALIFIED = "public.cadastre_france_feuilles_geom";
 
+type CadastreRow = {
+  scout_v5_id: string;
+  geometry: GeoJSON.Geometry;
+  code_insee: string;
+  section: string;
+  numero_norm: string;
+  combo_id: string | null;
+  combo_parcelle_scout_v5_ids: string[] | null;
+  matching_scout_v5_id: string | null;
+};
+
+function mapParcelleRows(rows: CadastreRow[]) {
+  return rows
+    .filter(
+      (r) =>
+        r.geometry &&
+        (r.geometry.type === "Polygon" || r.geometry.type === "MultiPolygon") &&
+        r.code_insee &&
+        r.section &&
+        r.numero_norm
+    )
+    .map((r) => {
+      const scoutId =
+        r.scout_v5_id || scoutV5IdFromCadastreKeys(r.code_insee, r.section, r.numero_norm);
+      const comboIds = Array.isArray(r.combo_parcelle_scout_v5_ids)
+        ? r.combo_parcelle_scout_v5_ids.filter((s) => typeof s === "string" && s.length > 0)
+        : [];
+      return {
+        scout_v5_id: scoutId,
+        geometry: r.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon,
+        code_insee: r.code_insee,
+        section: r.section,
+        numero_norm: r.numero_norm,
+        combo_id: r.combo_id ?? null,
+        combo_parcelle_scout_v5_ids: comboIds,
+        cadastre_label: cadastreLabelFromKeys(r.code_insee, r.section, r.numero_norm),
+        in_matching_v5: Boolean(r.matching_scout_v5_id),
+      };
+    });
+}
+
+function cadastreParcelleSelectSql(matchingQualified: string): string {
+  return `
+    SELECT DISTINCT ON (c.code_insee, c.section, c.numero_norm)
+      ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm) AS scout_v5_id,
+      ST_AsGeoJSON(c.geom)::json AS geometry,
+      c.code_insee,
+      c.section,
+      c.numero_norm,
+      combo.combo_id,
+      combo.parcelle_scout_v5_ids AS combo_parcelle_scout_v5_ids,
+      m.scout_v5_id AS matching_scout_v5_id
+    FROM ${CADASTRE_QUALIFIED} c
+    LEFT JOIN ${matchingQualified} m
+      ON m.grain = 'parcelle'
+      AND m.scout_v5_id = ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm)
+    LEFT JOIN LATERAL (
+      SELECT cmb.combo_id, cmb.parcelle_scout_v5_ids
+      FROM ${COMBOS_QUALIFIED} cmb
+      WHERE m.scout_v5_id IS NOT NULL
+        AND m.scout_v5_id = ANY(cmb.parcelle_scout_v5_ids)
+      LIMIT 1
+    ) combo ON true
+  `;
+}
+
 export async function GET(request: NextRequest) {
   const authResult = await requireAuth(request);
   if (!authResult.ok) return authResult.response;
@@ -40,23 +106,48 @@ export async function GET(request: NextRequest) {
   }
 
   const matchingRef = getScoutMatchingV5TableRef(process.env.SCOUT_MATCHING_V5_TABLE);
-  const { parcelleIds, excludeIds, bufferM } = parsed;
-
-  const params: unknown[] = [parcelleIds, excludeIds, bufferM, PARCELLES_ADJACENT_MAX_RESULTS];
+  const selectSql = cadastreParcelleSelectSql(matchingRef.qualifiedSql);
 
   const client = new Client({ connectionString: databaseUrl });
   try {
     await client.connect();
-    const res = await client.query<{
-      scout_v5_id: string;
-      geometry: GeoJSON.Geometry;
-      code_insee: string;
-      section: string;
-      numero_norm: string;
-      combo_id: string | null;
-      combo_parcelle_scout_v5_ids: string[] | null;
-      matching_scout_v5_id: string | null;
-    }>(
+
+    if (parsed.mode === "bbox") {
+      const { bounds, codeInsee, excludeIds } = parsed;
+      const res = await client.query<CadastreRow>(
+        `
+        ${selectSql}
+        WHERE c.code_insee = ANY($1::text[])
+          AND c.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+          AND ST_Intersects(c.geom, ST_MakeEnvelope($2, $3, $4, $5, 4326))
+          AND NOT (
+            ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm) = ANY($6::text[])
+          )
+        ORDER BY c.code_insee, c.section, c.numero_norm
+        LIMIT $7
+        `,
+        [
+          codeInsee,
+          bounds.sw.lng,
+          bounds.sw.lat,
+          bounds.ne.lng,
+          bounds.ne.lat,
+          excludeIds,
+          PARCELLES_ADJACENT_MAX_RESULTS,
+        ]
+      );
+
+      const parcelles = mapParcelleRows(res.rows);
+      return NextResponse.json({
+        parcelles,
+        source: "cadastre_france_feuilles_geom",
+        mode: "bbox",
+        truncated: parcelles.length >= PARCELLES_ADJACENT_MAX_RESULTS,
+      });
+    }
+
+    const { parcelleIds, excludeIds, bufferM } = parsed;
+    const res = await client.query<CadastreRow>(
       `
       WITH anchors AS (
         SELECT geom, NULLIF(TRIM(code_insee), '') AS code_insee
@@ -72,27 +163,8 @@ export async function GET(request: NextRequest) {
       union_anchor AS (
         SELECT ST_Union(geom) AS geom FROM anchors
       )
-      SELECT DISTINCT ON (c.code_insee, c.section, c.numero_norm)
-        ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm) AS scout_v5_id,
-        ST_AsGeoJSON(c.geom)::json AS geometry,
-        c.code_insee,
-        c.section,
-        c.numero_norm,
-        combo.combo_id,
-        combo.parcelle_scout_v5_ids AS combo_parcelle_scout_v5_ids,
-        m.scout_v5_id AS matching_scout_v5_id
-      FROM ${CADASTRE_QUALIFIED} c
+      ${selectSql}
       CROSS JOIN union_anchor ua
-      LEFT JOIN ${matchingRef.qualifiedSql} m
-        ON m.grain = 'parcelle'
-        AND m.scout_v5_id = ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm)
-      LEFT JOIN LATERAL (
-        SELECT cmb.combo_id, cmb.parcelle_scout_v5_ids
-        FROM ${COMBOS_QUALIFIED} cmb
-        WHERE m.scout_v5_id IS NOT NULL
-          AND m.scout_v5_id = ANY(cmb.parcelle_scout_v5_ids)
-        LIMIT 1
-      ) combo ON true
       WHERE c.code_insee IN (SELECT code_insee FROM anchor_insee)
         AND NOT (
           ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm) = ANY($2::text[])
@@ -105,39 +177,16 @@ export async function GET(request: NextRequest) {
       ORDER BY c.code_insee, c.section, c.numero_norm
       LIMIT $4
       `,
-      params
+      [parcelleIds, excludeIds, bufferM, PARCELLES_ADJACENT_MAX_RESULTS]
     );
 
-    const parcelles = res.rows
-      .filter(
-        (r) =>
-          r.geometry &&
-          (r.geometry.type === "Polygon" || r.geometry.type === "MultiPolygon") &&
-          r.code_insee &&
-          r.section &&
-          r.numero_norm
-      )
-      .map((r) => {
-        const scoutId =
-          r.scout_v5_id ||
-          scoutV5IdFromCadastreKeys(r.code_insee, r.section, r.numero_norm);
-        const comboIds = Array.isArray(r.combo_parcelle_scout_v5_ids)
-          ? r.combo_parcelle_scout_v5_ids.filter((s) => typeof s === "string" && s.length > 0)
-          : [];
-        return {
-          scout_v5_id: scoutId,
-          geometry: r.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon,
-          code_insee: r.code_insee,
-          section: r.section,
-          numero_norm: r.numero_norm,
-          combo_id: r.combo_id ?? null,
-          combo_parcelle_scout_v5_ids: comboIds,
-          cadastre_label: cadastreLabelFromKeys(r.code_insee, r.section, r.numero_norm),
-          in_matching_v5: Boolean(r.matching_scout_v5_id),
-        };
-      });
-
-    return NextResponse.json({ parcelles, source: "cadastre_france_feuilles_geom" });
+    const parcelles = mapParcelleRows(res.rows);
+    return NextResponse.json({
+      parcelles,
+      source: "cadastre_france_feuilles_geom",
+      mode: "anchor",
+      truncated: parcelles.length >= PARCELLES_ADJACENT_MAX_RESULTS,
+    });
   } catch (err) {
     console.error("[matching-v5/parcelles-adjacent]", err);
     return NextResponse.json({ error: "Erreur requête Postgres" }, { status: 500 });

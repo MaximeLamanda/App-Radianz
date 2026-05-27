@@ -286,6 +286,91 @@ def test_matched_passerelle_kept_when_ban_reverse_would_win():
     assert meta.get("corroboration") == "sirene_matched_passerelle"
 
 
+def test_parcel_ban_query_points_samples_perimeter():
+    geom = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [-0.65446494, 44.78321655],
+                [-0.65438385, 44.7835089],
+                [-0.6535632, 44.7834763],
+                [-0.6536093, 44.78309732],
+                [-0.65446494, 44.78321655],
+            ]
+        ],
+    }
+    pts = _resolver.parcel_ban_query_points(geom, max_points=32)
+    assert len(pts) >= 4
+    assert len(pts) <= 32
+    lats = [p[0] for p in pts]
+    assert max(lats) - min(lats) > 0.0001
+
+
+def test_ban_reverse_accepts_via_parcel_shape_not_centroid():
+    """Centroïde profond dans le lot : BAN trop loin ; un point du contour passe le seuil 25 m."""
+    geom = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [-0.65446494, 44.78321655],
+                [-0.65438385, 44.7835089],
+                [-0.6535632, 44.7834763],
+                [-0.6536093, 44.78309732],
+                [-0.65446494, 44.78321655],
+            ]
+        ],
+    }
+    centroid = _resolver.centroid_from_geojson(geom)
+    assert centroid is not None
+    cent_lat, cent_lon = centroid
+    north_lat = 44.7835089
+    north_lon = -0.65438385
+
+    def fake_reverse(lon: float, lat: float, *, limit: int = 1):
+        if abs(lat - north_lat) < 1e-4 and abs(lon - north_lon) < 1e-4:
+            return _hit(label="3 Avenue Léonard de Vinci 33600 Pessac", distance_m=15.0)
+        if abs(lat - cent_lat) < 1e-4 and abs(lon - cent_lon) < 1e-4:
+            return _hit(label="3 Avenue Léonard de Vinci 33600 Pessac", distance_m=27.0)
+        dist = 27.0 if lat < cent_lat else 15.0
+        return _hit(label="3 Avenue Léonard de Vinci 33600 Pessac", distance_m=dist)
+
+    class FakeGeo(GeoplateformeGeocoder):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1):
+            return fake_reverse(lon, lat)
+
+    resolver = _resolver.DisplayAddressResolver(geocoder=FakeGeo(), enabled=True)
+    out_centroid_only = resolver.resolve_for_building(
+        code_insee="33318",
+        osm_raw_tags={},
+        osm_address_text="",
+        zone_source="",
+        zone_tag="",
+        ppm_info={},
+        etab_match={},
+        centroid_lat=cent_lat,
+        centroid_lon=cent_lon,
+        parcel_geom_geojson=None,
+    )
+    assert out_centroid_only["display_address_confidence"] == "none"
+
+    out_shape = resolver.resolve_for_building(
+        code_insee="33318",
+        osm_raw_tags={},
+        osm_address_text="",
+        zone_source="",
+        zone_tag="",
+        ppm_info={},
+        etab_match={},
+        centroid_lat=cent_lat,
+        centroid_lon=cent_lon,
+        parcel_geom_geojson=geom,
+    )
+    assert out_shape["display_address_confidence"] == "confirmed"
+    assert out_shape["display_address_source"] == "ban_reverse"
+    meta = json.loads(out_shape["display_address_meta_json"])
+    assert meta.get("ban_query_mode") == "parcel_shape"
+
+
 def test_pick_parcel_display_from_largest_footprint():
     picked = _resolver.pick_parcel_display_from_buildings(
         [

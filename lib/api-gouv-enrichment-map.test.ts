@@ -42,4 +42,18 @@ describe("mapResultatApiToEnrichment", () => {
     expect(m.companyTrancheEffectif).toBe("05");
     expect(m.companyAnneeTrancheEffectif).toBe("2022");
   });
+
+  it("mappe tous les dirigeants personnes physiques", () => {
+    const m = mapResultatApiToEnrichment({
+      siren: "123456789",
+      dirigeants: [
+        { type_dirigeant: "personne physique", prenoms: "Jean", nom: "Dupont", qualite: "Président" },
+        { type_dirigeant: "personne physique", prenoms: "Marie", nom: "Martin", qualite: "DG" },
+        { type_dirigeant: "personne morale", denomination: "HOLDING SA" },
+      ],
+    });
+    expect(m.dirigeantsPhysiques).toHaveLength(2);
+    expect(m.dirigeantsPhysiques?.[0]).toMatchObject({ nom: "Dupont", qualite: "Président" });
+    expect(m.companyManagerName).toContain("Jean");
+  });
 });

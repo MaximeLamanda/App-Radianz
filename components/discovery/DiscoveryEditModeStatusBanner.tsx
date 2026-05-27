@@ -23,15 +23,15 @@ export function DiscoveryEditModeStatusBanner({ loading }: Props) {
           {loading ? (
             <>
               <span className="font-medium text-foreground">Chargement du cadastre</span>
-              <span className="text-muted-foreground"> — parcelles voisines…</span>
+              <span className="text-muted-foreground"> — cadastre de la zone visible…</span>
             </>
           ) : (
             <>
               <span className="font-medium text-foreground">Mode édition</span>
               <span className="text-muted-foreground">
                 {" "}
-                — parcelles voisines sur la carte (pointillés / plein bleu) ; cochez ou numérotez les bâtiments
-                dans le tiroir.
+                — parcelles du cadastre dans la zone visible (pointillés / plein bleu) ; cochez ou numérotez les
+                bâtiments dans le tiroir.
               </span>
             </>
           )}

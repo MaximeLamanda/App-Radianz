@@ -1,4 +1,4 @@
-import type { EnrichmentResult } from "@/lib/recherche-entreprises";
+import type { DirigeantPhysiqueGouv, EnrichmentResult } from "@/lib/recherche-entreprises";
 
 /** Établissement (siège ou secondaire) dans la réponse API recherche-entreprises */
 export interface ApiEtablissementGouv {
@@ -48,19 +48,39 @@ export type MapResultatApiToEnrichmentOpts = {
   preferSiret?: string;
 };
 
+export function extractDirigeantsPhysiques(
+  result: ResultatApiRechercheEntreprises
+): DirigeantPhysiqueGouv[] {
+  const out: DirigeantPhysiqueGouv[] = [];
+  for (const d of result.dirigeants ?? []) {
+    if ((d as { type_dirigeant?: string }).type_dirigeant !== "personne physique") continue;
+    if (!("nom" in d) || !("prenoms" in d)) continue;
+    const pp = d as DirigeantPersonnePhysiqueGouv;
+    const nom = String(pp.nom ?? "").trim();
+    const prenoms = String(pp.prenoms ?? "").trim();
+    if (!nom && !prenoms) continue;
+    out.push({
+      nom: nom || undefined,
+      prenoms: prenoms || undefined,
+      qualite: pp.qualite?.trim() || undefined,
+    });
+  }
+  return out;
+}
+
+export function formatDirigeantPhysiqueName(d: DirigeantPhysiqueGouv): string {
+  return [d.prenoms, d.nom].filter(Boolean).join(" ").trim();
+}
+
 export function mapResultatApiToEnrichment(
   result: ResultatApiRechercheEntreprises,
   opts?: MapResultatApiToEnrichmentOpts
 ): EnrichmentResult {
   const siege = result.siege;
-  const firstDirigeantPhysique = result.dirigeants?.find(
-    (d): d is DirigeantPersonnePhysiqueGouv =>
-      (d as { type_dirigeant?: string }).type_dirigeant === "personne physique" &&
-      "nom" in d &&
-      "prenoms" in d
-  );
+  const dirigeantsPhysiques = extractDirigeantsPhysiques(result);
+  const firstDirigeantPhysique = dirigeantsPhysiques[0];
   const managerName = firstDirigeantPhysique
-    ? [firstDirigeantPhysique.prenoms, firstDirigeantPhysique.nom].filter(Boolean).join(" ") +
+    ? formatDirigeantPhysiqueName(firstDirigeantPhysique) +
       (firstDirigeantPhysique.qualite ? ` (${firstDirigeantPhysique.qualite})` : "")
     : undefined;
 
@@ -117,6 +137,7 @@ export function mapResultatApiToEnrichment(
     siret: siretOut,
     companyLegalName: result.nom_complet ?? result.nom_raison_sociale ?? undefined,
     companyManagerName: managerName,
+    dirigeantsPhysiques: dirigeantsPhysiques.length > 0 ? dirigeantsPhysiques : undefined,
     companyAddress: siege?.geo_adresse ?? siege?.adresse ?? undefined,
     companyNaf: nafFromEtab ?? result.activite_principale ?? undefined,
     /** Code INSEE seul (ex. 03), pas de libellé */

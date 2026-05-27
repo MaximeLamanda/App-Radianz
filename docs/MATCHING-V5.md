@@ -150,7 +150,7 @@ Cascade conservative au **centroïde bâtiment** (repli centroïde parcelle si a
 
 1. OSM `addr:full` ou (`addr:street` + `addr:housenumber`) sur l’empreinte
 2. PPM `passerelle_address` si numéro présent **et** corroboration géocodage inverse Géoplateforme
-3. Géocodage inverse Géoplateforme (`https://data.geopf.fr/geocodage/reverse`) — seuils stricts (0,85 / 25 m ; 0,88 / 20 m en zone `landuse` commercial / industrial / retail)
+3. Géocodage inverse Géoplateforme (`https://data.geopf.fr/geocodage/reverse`) — points d’essai le long du **contour parcelle** (pas le seul centroïde bâtiment : échantillon ~1 % du périmètre, retrait intérieur ~1 % de √surface) ; seuils stricts (0,85 / 25 m ; 0,88 / 20 m en zone `landuse` commercial / industrial / retail)
 4. Adresse SIRENE du match si géocodage direct à ≤ 50 m du bâtiment
 
 `display_address_confidence` vaut `confirmed` ou `none` (pas d’adresse affichée si non confirmée). Désactivation : `--no-address-resolve` sur `run_matching_v5.py`. Détail : [`docs/plans/2026-05-18-matching-v5-address-resolver-design.md`](plans/2026-05-18-matching-v5-address-resolver-design.md).

@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from rapidfuzz import fuzz
-from shapely.geometry import shape
+from shapely.geometry import LineString, MultiPolygon, Polygon, shape
+from shapely.ops import transform
 
 from scout_pipeline.address_normalization import (
     normalize_address_parts,
@@ -25,6 +26,10 @@ from import_osm_buildings import _format_osm_address
 
 _PRO_LANDUSE_TAGS = frozenset({"commercial", "industrial", "retail"})
 _ACCEPTED_BAN_TYPES = frozenset({"housenumber", "street"})
+# Échantillonnage du contour parcelle pour BAN (au lieu du seul centroïde bâtiment/parcelle).
+PARCEL_SHAPE_STEP_FRACTION = 0.01
+PARCEL_SHAPE_INSET_FRACTION = 0.01
+_MAX_PARCEL_BAN_QUERY_POINTS = 64
 _EMPTY_DISPLAY: dict[str, str] = {
     "display_address": "",
     "display_address_source": "none",
@@ -48,7 +53,7 @@ def is_pro_zone(zone_source: str | None, zone_tag: str | None) -> bool:
     return str(zone_tag or "").strip().lower() in _PRO_LANDUSE_TAGS
 
 
-def centroid_from_geojson(geom_geojson: str | dict[str, Any] | None) -> tuple[float, float] | None:
+def _shape_from_geojson(geom_geojson: str | dict[str, Any] | None):
     if geom_geojson is None:
         return None
     try:
@@ -60,10 +65,104 @@ def centroid_from_geojson(geom_geojson: str | dict[str, Any] | None) -> tuple[fl
             geom = shape(geom_geojson)
         if geom.is_empty:
             return None
+        return geom
+    except Exception:
+        return None
+
+
+def centroid_from_geojson(geom_geojson: str | dict[str, Any] | None) -> tuple[float, float] | None:
+    geom = _shape_from_geojson(geom_geojson)
+    if geom is None:
+        return None
+    try:
         c = geom.centroid
         return float(c.y), float(c.x)
     except Exception:
         return None
+
+
+def _to_2154(geom: Any) -> Any:
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
+    return transform(transformer.transform, geom)
+
+
+def _to_4326(geom: Any) -> Any:
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
+    return transform(transformer.transform, geom)
+
+
+def _largest_polygon(geom: Any) -> Polygon | None:
+    if isinstance(geom, Polygon):
+        return geom if not geom.is_empty else None
+    if isinstance(geom, MultiPolygon):
+        polys = [p for p in geom.geoms if isinstance(p, Polygon) and not p.is_empty]
+        if not polys:
+            return None
+        return max(polys, key=lambda p: p.area)
+    return None
+
+
+def parcel_ban_query_points(
+    geom_geojson: str | dict[str, Any] | None,
+    *,
+    step_fraction: float = PARCEL_SHAPE_STEP_FRACTION,
+    inset_fraction: float = PARCEL_SHAPE_INSET_FRACTION,
+    max_points: int = _MAX_PARCEL_BAN_QUERY_POINTS,
+) -> list[tuple[float, float]]:
+    """
+    Points (lat, lon) le long du contour parcelle pour le géocodage inverse BAN.
+
+    - Pas d'échantillon : ~1 % du périmètre (min. 2 m en Lambert-93).
+    - Retrait intérieur : ~1 % de sqrt(surface) pour rester dans la parcelle.
+    """
+    geom = _shape_from_geojson(geom_geojson)
+    if geom is None:
+        return []
+    try:
+        g2154 = _to_2154(geom)
+        poly = _largest_polygon(g2154)
+        if poly is None:
+            return []
+        area_m2 = float(poly.area)
+        if area_m2 <= 0:
+            return []
+        scale_m = math.sqrt(area_m2)
+        inset_m = max(0.5, float(inset_fraction) * scale_m)
+        inner = poly.buffer(-inset_m)
+        if inner.is_empty:
+            inner = poly
+        elif isinstance(inner, MultiPolygon):
+            lp = _largest_polygon(inner)
+            inner = lp if lp is not None else poly
+        elif not isinstance(inner, Polygon):
+            inner = poly
+        line = LineString(inner.exterior.coords)
+        perimeter_m = float(line.length)
+        if perimeter_m <= 0:
+            c = inner.centroid
+            pt4326 = _to_4326(c)
+            return [(float(pt4326.y), float(pt4326.x))]
+        step_m = max(2.0, float(step_fraction) * perimeter_m)
+        n_steps = min(max_points, max(4, int(perimeter_m / step_m) + 1))
+        distances = [perimeter_m * i / n_steps for i in range(n_steps)]
+        seen: set[tuple[float, float]] = set()
+        out: list[tuple[float, float]] = []
+        for dist in distances:
+            pt = line.interpolate(dist % perimeter_m)
+            pt4326 = _to_4326(pt)
+            key = (round(float(pt4326.y), 5), round(float(pt4326.x), 5))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+        return out
+    except Exception:
+        lat_lon = centroid_from_geojson(geom_geojson)
+        return [lat_lon] if lat_lon else []
 
 
 def osm_structured_address_label(osm_raw_tags: dict[str, Any] | None, osm_address_text: str | None) -> str | None:
@@ -237,6 +336,52 @@ class DisplayAddressResolver:
         self._reverse_cache[key] = hit
         return hit
 
+    def reverse_best_for_parcel_shape(
+        self,
+        parcel_geom_geojson: str | dict[str, Any] | None,
+        *,
+        code_insee: str,
+        is_pro: bool,
+        parcel_fallback: bool,
+        fallback_lat: float | None = None,
+        fallback_lon: float | None = None,
+        require_housenumber: bool = False,
+    ) -> tuple[GeoplateformeAddressHit | None, float | None, float | None]:
+        """
+        Essaie le géocodage inverse sur le contour parcelle (1 % / 1 %).
+        Retourne le meilleur hit accepté (distance BAN minimale) et le point de requête utilisé.
+        """
+        points = parcel_ban_query_points(parcel_geom_geojson)
+        if not points and fallback_lat is not None and fallback_lon is not None:
+            points = [(fallback_lat, fallback_lon)]
+        best_hit: GeoplateformeAddressHit | None = None
+        best_lat: float | None = None
+        best_lon: float | None = None
+        best_dist = float("inf")
+        for lat, lon in points:
+            hit = self.reverse_cached(lon, lat)
+            if hit is None:
+                continue
+            if require_housenumber and not normalize_text(hit.housenumber):
+                continue
+            ok, meta = _accept_ban_reverse(
+                hit,
+                query_lat=lat,
+                query_lon=lon,
+                code_insee=code_insee,
+                is_pro=is_pro,
+                parcel_fallback=parcel_fallback,
+            )
+            if not ok:
+                continue
+            dist_m = float(meta.get("distance_m") or float("inf"))
+            if dist_m < best_dist:
+                best_dist = dist_m
+                best_hit = hit
+                best_lat = lat
+                best_lon = lon
+        return best_hit, best_lat, best_lon
+
     def resolve_for_building(
         self,
         *,
@@ -249,6 +394,7 @@ class DisplayAddressResolver:
         etab_match: dict[str, Any],
         centroid_lat: float | None,
         centroid_lon: float | None,
+        parcel_geom_geojson: str | dict[str, Any] | None = None,
         parcel_fallback: bool = False,
     ) -> dict[str, str]:
         if not self.enabled:
@@ -264,22 +410,45 @@ class DisplayAddressResolver:
                 {"step": 1, "source": "osm_structured_tags"},
             )
 
-        if centroid_lat is None or centroid_lon is None:
+        query_lat = centroid_lat
+        query_lon = centroid_lon
+        ban_hit: GeoplateformeAddressHit | None = None
+        ban_query_mode = "centroid"
+
+        if parcel_geom_geojson:
+            ban_hit, query_lat, query_lon = self.reverse_best_for_parcel_shape(
+                parcel_geom_geojson,
+                code_insee=code_insee,
+                is_pro=is_pro,
+                parcel_fallback=parcel_fallback,
+                fallback_lat=centroid_lat,
+                fallback_lon=centroid_lon,
+            )
+            if ban_hit is not None:
+                ban_query_mode = "parcel_shape"
+        elif query_lat is not None and query_lon is not None:
+            ban_hit = self.reverse_cached(query_lon, query_lat)
+        else:
             return dict(_EMPTY_DISPLAY)
 
-        ban_hit = self.reverse_cached(centroid_lon, centroid_lat)
+        if query_lat is None or query_lon is None:
+            return dict(_EMPTY_DISPLAY)
 
         passerelle = str(ppm_info.get("passerelle_address") or "").strip()
         if passerelle and ban_hit is not None:
             ok, ppm_meta = corroborate_ppm_with_ban(
                 ppm_info,
                 ban_hit,
-                query_lat=centroid_lat,
-                query_lon=centroid_lon,
+                query_lat=query_lat,
+                query_lon=query_lon,
                 code_insee=code_insee,
             )
             if ok:
-                return _confirmed_result(passerelle, "ppm", {"step": 2, **ppm_meta})
+                return _confirmed_result(
+                    passerelle,
+                    "ppm",
+                    {"step": 2, "ban_query_mode": ban_query_mode, **ppm_meta},
+                )
 
         # Adresse qui a servi au matching SIRENE (passerelle) — pas le libellé BAN reverse ni
         # adresse_etablissement géocodée (ancienne étape 4).
@@ -297,14 +466,18 @@ class DisplayAddressResolver:
         if ban_hit is not None:
             ok, ban_meta = _accept_ban_reverse(
                 ban_hit,
-                query_lat=centroid_lat,
-                query_lon=centroid_lon,
+                query_lat=query_lat,
+                query_lon=query_lon,
                 code_insee=code_insee,
                 is_pro=is_pro,
                 parcel_fallback=parcel_fallback,
             )
             if ok:
-                return _confirmed_result(ban_hit.label, "ban_reverse", {"step": 3, **ban_meta})
+                return _confirmed_result(
+                    ban_hit.label,
+                    "ban_reverse",
+                    {"step": 3, "ban_query_mode": ban_query_mode, **ban_meta},
+                )
 
         return dict(_EMPTY_DISPLAY)
 
@@ -317,6 +490,7 @@ def enrich_building_detail_with_display(
     etab_match: dict[str, Any],
     code_insee: str,
     resolver: DisplayAddressResolver,
+    parcel_geom_geojson: str | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     geom = payload.get("geometry") or ""
     lat_lon = centroid_from_geojson(str(geom) if geom else None)
@@ -334,6 +508,7 @@ def enrich_building_detail_with_display(
         etab_match=etab_match,
         centroid_lat=lat,
         centroid_lon=lon,
+        parcel_geom_geojson=parcel_geom_geojson,
     )
     out = dict(item)
     out.update(display)
@@ -397,6 +572,21 @@ def build_synthetic_ppm_from_geoplateforme_hit(hit: GeoplateformeAddressHit) -> 
     }
 
 
+def _parcel_is_pro_zone(
+    pk: tuple[str, str, str],
+    *,
+    by_parcel: dict[tuple[str, str, str], set[str]],
+    by_building: dict[str, list[dict[str, Any]]],
+) -> bool:
+    for bid in by_parcel.get(pk) or ():
+        for entry in by_building.get(bid, []):
+            if (str(entry.get("code_insee")), str(entry.get("section")), str(entry.get("numero_norm"))) != pk:
+                continue
+            if is_pro_zone(entry.get("zone_source"), entry.get("zone_tag")):
+                return True
+    return False
+
+
 def _parcel_query_centroid(
     pk: tuple[str, str, str],
     *,
@@ -405,7 +595,7 @@ def _parcel_query_centroid(
     payload_by_bat: dict[str, dict[str, Any]],
     parcel_geom: dict[tuple[str, str, str], str],
 ) -> tuple[float, float, bool] | None:
-    """(lat, lon, is_pro_zone) — centroïde bâtiment le plus grand, sinon parcelle."""
+    """(lat, lon, is_pro_zone) — centroïde bâtiment le plus grand, sinon parcelle (repli uniquement)."""
     is_pro = False
     best_fp = -1.0
     best_lat_lon: tuple[float, float] | None = None
@@ -491,30 +681,32 @@ def augment_ppm_passerelle_for_etab(
         if geocoder is None:
             continue
 
-        centroid = _parcel_query_centroid(
+        is_pro = _parcel_is_pro_zone(
+            pk,
+            by_parcel=by_parcel,
+            by_building=by_building,
+        )
+        parcel_gj = parcel_geom.get(pk)
+        fallback = _parcel_query_centroid(
             pk,
             by_parcel=by_parcel,
             by_building=by_building,
             payload_by_bat=payload_by_bat,
             parcel_geom=parcel_geom,
         )
-        if not centroid:
-            continue
-        lat, lon, is_pro = centroid
-        key = (round(lon, 5), round(lat, 5))
-        if key not in reverse_cache:
-            reverse_cache[key] = geocoder.reverse(lon, lat)
-        hit = reverse_cache[key]
-        if hit is None:
-            continue
-        ok, _meta = accept_geoplateforme_for_etab_passerelle(
-            hit,
-            query_lat=lat,
-            query_lon=lon,
+        fallback_lat = fallback[0] if fallback else None
+        fallback_lon = fallback[1] if fallback else None
+        resolver = DisplayAddressResolver(geocoder=geocoder, enabled=True, _reverse_cache=reverse_cache)
+        hit, lat, lon = resolver.reverse_best_for_parcel_shape(
+            parcel_gj,
             code_insee=code_insee,
             is_pro=is_pro,
+            parcel_fallback=False,
+            fallback_lat=fallback_lat,
+            fallback_lon=fallback_lon,
+            require_housenumber=True,
         )
-        if not ok:
+        if hit is None or lat is None or lon is None:
             continue
         syn = build_synthetic_ppm_from_geoplateforme_hit(hit)
         base = dict(info)
@@ -564,9 +756,7 @@ def resolve_parcel_centroid_fallback(
     zone_tag: str | None,
 ) -> dict[str, str]:
     lat_lon = centroid_from_geojson(parcel_geom_geojson)
-    if not lat_lon:
-        return dict(_EMPTY_DISPLAY)
-    lat, lon = lat_lon
+    lat, lon = lat_lon if lat_lon else (None, None)
     return resolver.resolve_for_building(
         code_insee=code_insee,
         osm_raw_tags=None,
@@ -577,5 +767,6 @@ def resolve_parcel_centroid_fallback(
         etab_match=etab_match,
         centroid_lat=lat,
         centroid_lon=lon,
+        parcel_geom_geojson=parcel_geom_geojson,
         parcel_fallback=True,
     )

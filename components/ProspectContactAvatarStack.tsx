@@ -1,6 +1,11 @@
 "use client";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarGroup,
+  AvatarGroupCount,
+} from "@/components/ui/avatar";
 import { prospectContactInitials } from "@/lib/prospect-contacts";
 import type { ProspectContact } from "@/types";
 import { cn } from "@/lib/utils";
@@ -18,7 +23,7 @@ export type ProspectContactAvatarStackProps = {
   className?: string;
 };
 
-/** Pile d'avatars chevauchants (pattern shadcn : `-space-x-2` + `ring-background`). */
+/** Pile d'avatars chevauchants (AvatarGroup shadcn + z-index croissant). */
 export function ProspectContactAvatarStack({
   contacts,
   max = 3,
@@ -34,28 +39,27 @@ export function ProspectContactAvatarStack({
   const sizeClass = SIZE_CLASS[size];
 
   return (
-    <div
-      className={cn("flex -space-x-2", className)}
-      title={title}
-      aria-label={title}
-    >
-      {visible.map((contact) => (
+    <AvatarGroup ring="card" className={className} title={title} aria-label={title}>
+      {visible.map((contact, index) => (
         <Avatar
           key={contact.id}
-          className={cn(sizeClass, "ring-2 ring-background")}
+          className={cn(sizeClass, "box-border bg-card")}
+          style={{ zIndex: index + 1 }}
         >
-          <AvatarFallback className="bg-primary/10 font-semibold text-primary">
+          <AvatarFallback className="bg-secondary font-semibold text-primary">
             {prospectContactInitials(contact)}
           </AvatarFallback>
         </Avatar>
       ))}
       {overflow > 0 ? (
-        <Avatar className={cn(sizeClass, "ring-2 ring-background")}>
-          <AvatarFallback className="bg-muted text-[10px] font-medium text-muted-foreground">
-            +{overflow}
-          </AvatarFallback>
-        </Avatar>
+        <AvatarGroupCount
+          ring="card"
+          className={cn(sizeClass, "text-muted-foreground")}
+          style={{ zIndex: visible.length + 1 }}
+        >
+          +{overflow}
+        </AvatarGroupCount>
       ) : null}
-    </div>
+    </AvatarGroup>
   );
 }

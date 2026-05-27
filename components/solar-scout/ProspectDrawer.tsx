@@ -200,6 +200,12 @@ import {
   DiscoveryProjectContactsList,
   type DiscoveryContactOriginOptions,
 } from "@/components/discovery/DiscoveryDrawerContactsOverview";
+import { DiscoveryDrawerDirigeantsSuggestions } from "@/components/discovery/DiscoveryDrawerDirigeantsSuggestions";
+import {
+  collectUniqueSirensForDirigeantFetch,
+  sirenFromSiretOrSiren,
+} from "@/lib/discovery-dirigeants-suggestions";
+import type { DirigeantPhysiqueGouv } from "@/lib/recherche-entreprises";
 
 /** Config des lignes données prospect : liste fixe, une entrée par ligne (skeleton / valeur / "No data"). */
 function websiteHref(raw: string): string {
@@ -595,6 +601,9 @@ function ProspectDrawerDiscoverySection({
   onDiscoveryConfigurationModeChange,
   discoveryUsedPanelRef = null,
   discoveryUsedInverterRef = null,
+  discoveryContacts,
+  onDiscoveryContactsPersisted,
+  onDeleteDiscoveryManualContact,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
@@ -634,6 +643,9 @@ function ProspectDrawerDiscoverySection({
   onDiscoveryConfigurationModeChange?: (mode: ProspectConfigurationMode) => void;
   discoveryUsedPanelRef?: PanelReference | null;
   discoveryUsedInverterRef?: InverterReference | null;
+  discoveryContacts: ProspectContact[];
+  onDiscoveryContactsPersisted: (contacts: ProspectContact[]) => void;
+  onDeleteDiscoveryManualContact: (contact: ProspectContact) => Promise<void>;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -766,23 +778,6 @@ function ProspectDrawerDiscoverySection({
     });
   }, [discoveryOsmPoisNamed, discoveryGooglePoisNamed, discoveryOsmBuildingNamed]);
 
-  const [discoveryContacts, setDiscoveryContacts] = useState<ProspectContact[]>(
-    () => pipelineProspectForShareKpis?.contacts ?? []
-  );
-  useEffect(() => {
-    setDiscoveryContacts(pipelineProspectForShareKpis?.contacts ?? []);
-  }, [pipelineProspectForShareKpis?.id]);
-  useEffect(() => {
-    const fromPipeline = pipelineProspectForShareKpis?.contacts;
-    if (fromPipeline !== undefined) {
-      setDiscoveryContacts(fromPipeline);
-    }
-  }, [pipelineProspectForShareKpis?.contacts]);
-
-  const handleDiscoveryContactsPersisted = useCallback((contacts: ProspectContact[]) => {
-    setDiscoveryContacts(contacts);
-  }, []);
-
   const [manualContactDialogOpen, setManualContactDialogOpen] = useState(false);
   const [editingManualContact, setEditingManualContact] = useState<ProspectContact | null>(null);
 
@@ -797,23 +792,6 @@ function ProspectDrawerDiscoverySection({
     setManualContactDialogOpen(true);
   }, []);
 
-  const handleDeleteManualContact = useCallback(
-    async (contact: ProspectContact) => {
-      const prospectId = pipelineProspectForShareKpis?.id;
-      if (!prospectId || contact.source !== "manual" || !contact.id) return;
-      try {
-        const next = (discoveryContacts ?? []).filter((c) => c.id !== contact.id);
-        await updateProspect(prospectId, { contacts: next });
-        setDiscoveryContacts(next);
-        toast.success("Contact supprimé.");
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Erreur inconnue";
-        toast.error("Suppression impossible.", { description: message });
-      }
-    },
-    [discoveryContacts, pipelineProspectForShareKpis?.id]
-  );
-
   const discoveryClusterKey = useMemo(
     () => `${row.id}|${parcelleCluster.map((p) => p.id).sort().join(",")}`,
     [row.id, parcelleCluster]
@@ -822,19 +800,23 @@ function ProspectDrawerDiscoverySection({
   const matchingV5ApiNomFetchedRef = useRef<Set<string>>(new Set());
   const discoveryGouvEtabFetchedRef = useRef<Set<string>>(new Set());
   const discoveryGouvUlFetchedRef = useRef<Set<string>>(new Set());
+  const discoveryGouvDirigeantsFetchedRef = useRef<Set<string>>(new Set());
   const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
     Record<string, DiscoveryApiNomEntry>
   >({});
   const [discoveryMainTab, setDiscoveryMainTab] = useState("batiments");
   const [showAllEstablishments, setShowAllEstablishments] = useState(false);
+  const [showAllDirigeantEtablissements, setShowAllDirigeantEtablissements] = useState(false);
   const initialDiscoveryEstablishmentsVisible = 5;
 
   useEffect(() => {
     matchingV5ApiNomFetchedRef.current.clear();
     discoveryGouvEtabFetchedRef.current.clear();
     discoveryGouvUlFetchedRef.current.clear();
+    discoveryGouvDirigeantsFetchedRef.current.clear();
     setMatchingV5ApiNomBySiren({});
     setShowAllEstablishments(false);
+    setShowAllDirigeantEtablissements(false);
     setLiveGoogleNearbyOverride(null);
   }, [discoveryClusterKey]);
 
@@ -1052,10 +1034,12 @@ function ProspectDrawerDiscoverySection({
           const data = (await res.json()) as {
             result?: {
               siret?: string;
+              companyLegalName?: string;
               companyNaf?: string;
               companyTrancheEffectif?: string;
               companyAnneeTrancheEffectif?: string;
               companyManagerName?: string;
+              dirigeantsPhysiques?: DirigeantPhysiqueGouv[];
             } | null;
           };
           if (cancelled) return;
@@ -1069,6 +1053,8 @@ function ProspectDrawerDiscoverySection({
               annee: r?.companyAnneeTrancheEffectif?.trim() || undefined,
               manager: r?.companyManagerName?.trim() || undefined,
               siret: r?.siret?.trim() || undefined,
+              companyLegalName: r?.companyLegalName?.trim() || undefined,
+              dirigeantsPhysiques: r?.dirigeantsPhysiques,
             },
           }));
         } catch {
@@ -1234,7 +1220,7 @@ function ProspectDrawerDiscoverySection({
     >
   >({});
 
-  /** Enrichissement unité légale (SIREN seul) pour les lignes Passerelle PPM. */
+  /** Enrichissement unité légale (SIREN) — PPM, dirigeants suggérés (onglet Contact). */
   const [discoveryGouvUlBySiren, setDiscoveryGouvUlBySiren] = useState<
     Record<
       string,
@@ -1245,6 +1231,8 @@ function ProspectDrawerDiscoverySection({
         annee?: string;
         manager?: string;
         siret?: string;
+        companyLegalName?: string;
+        dirigeantsPhysiques?: DirigeantPhysiqueGouv[];
       }
     >
   >({});
@@ -1252,6 +1240,7 @@ function ProspectDrawerDiscoverySection({
   useEffect(() => {
     discoveryGouvEtabFetchedRef.current.clear();
     discoveryGouvUlFetchedRef.current.clear();
+    discoveryGouvDirigeantsFetchedRef.current.clear();
     setDiscoveryGouvEtabBySiret({});
     setDiscoveryGouvUlBySiren({});
   }, [discoveryClusterKey]);
@@ -1300,10 +1289,13 @@ function ProspectDrawerDiscoverySection({
           }
           const data = (await res.json()) as {
             result?: {
+              siren?: string;
+              companyLegalName?: string;
               companyNaf?: string;
               companyTrancheEffectif?: string;
               companyAnneeTrancheEffectif?: string;
               companyManagerName?: string;
+              dirigeantsPhysiques?: DirigeantPhysiqueGouv[];
             } | null;
           };
           if (cancelled) return;
@@ -1318,6 +1310,21 @@ function ProspectDrawerDiscoverySection({
               manager: r?.companyManagerName?.trim() || undefined,
             },
           }));
+          const ulSiren = sirenFromSiretOrSiren(r?.siren ?? siret);
+          if (ulSiren && r) {
+            setDiscoveryGouvUlBySiren((p) => ({
+              ...p,
+              [ulSiren]: {
+                status: "ok",
+                manager: r.companyManagerName?.trim() || undefined,
+                companyLegalName: r.companyLegalName?.trim() || undefined,
+                dirigeantsPhysiques: r.dirigeantsPhysiques,
+                naf: r.companyNaf?.trim() || p[ulSiren]?.naf,
+                tranche: r.companyTrancheEffectif?.trim() || p[ulSiren]?.tranche,
+                annee: r.companyAnneeTrancheEffectif?.trim() || p[ulSiren]?.annee,
+              },
+            }));
+          }
         } catch {
           if (!cancelled) {
             setDiscoveryGouvEtabBySiret((p) => ({ ...p, [siret]: { status: "err" } }));
@@ -1781,6 +1788,156 @@ function ProspectDrawerDiscoverySection({
     [discoveryContactOriginOptions]
   );
 
+  const discoveryDirigeantParcelleGroups = useMemo(() => {
+    const groups: Array<{
+      parcelleId: string;
+      parcelleLabel: string;
+      siren: string;
+      companyName?: string;
+    }> = [];
+    for (const pr of informationParcellesRows) {
+      const parcelleLabel = discoveryParcellePasserelleLabel(pr);
+      const seenSiren = new Set<string>();
+      for (const ppm of parsePasserelleAddressesJson(pr.passerelleAddressesJson)) {
+        const siren = String(ppm.siren ?? "").trim();
+        if (!/^\d{9}$/.test(siren) || seenSiren.has(siren)) continue;
+        seenSiren.add(siren);
+        const denom = String(ppm.denomination ?? "").trim();
+        groups.push({
+          parcelleId: pr.id,
+          parcelleLabel,
+          siren,
+          companyName: denom || undefined,
+        });
+      }
+    }
+    return groups;
+  }, [informationParcellesRows]);
+
+  const discoveryDirigeantEtabGroups = useMemo(
+    () =>
+      discoverySiretRows.map(({ key, e }) => {
+        const siret = e.siret.trim();
+        const siren =
+          sirenFromSiretOrSiren(String(e.siren ?? "").trim()) ?? sirenFromSiretOrSiren(siret) ?? "";
+        const denom = (e.denomination || "").trim();
+        return {
+          siret,
+          siren,
+          label: denom || siret,
+        };
+      }).filter((g) => /^\d{9}$/.test(g.siren) && /^\d{14}$/.test(g.siret)),
+    [discoverySiretRows]
+  );
+
+  const hiddenDirigeantEtabCount = useMemo(() => {
+    if (showAllDirigeantEtablissements) return 0;
+    return Math.max(
+      0,
+      discoveryDirigeantEtabGroups.length - initialDiscoveryEstablishmentsVisible
+    );
+  }, [
+    showAllDirigeantEtablissements,
+    discoveryDirigeantEtabGroups.length,
+    initialDiscoveryEstablishmentsVisible,
+  ]);
+
+  const discoveryDirigeantSirensKey = useMemo(() => {
+    const etabSlice = showAllDirigeantEtablissements
+      ? discoveryDirigeantEtabGroups
+      : discoveryDirigeantEtabGroups.slice(0, initialDiscoveryEstablishmentsVisible);
+    return collectUniqueSirensForDirigeantFetch({
+      parcelleSirens: discoveryDirigeantParcelleGroups.map((g) => g.siren),
+      etablissementSirensOrSirets: etabSlice.map((g) => g.siret),
+    }).join("\u0001");
+  }, [
+    discoveryDirigeantParcelleGroups,
+    discoveryDirigeantEtabGroups,
+    showAllDirigeantEtablissements,
+    initialDiscoveryEstablishmentsVisible,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen || discoveryMainTab !== "terrain" || !discoveryDirigeantSirensKey) return;
+    let cancelled = false;
+    for (const siren of discoveryDirigeantSirensKey.split("\u0001")) {
+      if (!siren || discoveryGouvDirigeantsFetchedRef.current.has(siren)) continue;
+
+      let skipFetch = false;
+      setDiscoveryGouvUlBySiren((prev) => {
+        const existing = prev[siren];
+        if (existing?.status === "ok" && existing.dirigeantsPhysiques !== undefined) {
+          skipFetch = true;
+          discoveryGouvDirigeantsFetchedRef.current.add(siren);
+          return prev;
+        }
+        if (existing?.status === "loading") {
+          skipFetch = true;
+          return prev;
+        }
+        return { ...prev, [siren]: { ...existing, status: "loading" } };
+      });
+      if (skipFetch) continue;
+
+      discoveryGouvDirigeantsFetchedRef.current.add(siren);
+      const releaseCancelledDirigeantFetch = () => {
+        if (!cancelled) return;
+        discoveryGouvDirigeantsFetchedRef.current.delete(siren);
+        setDiscoveryGouvUlBySiren((p) => {
+          if (p[siren]?.status !== "loading") return p;
+          const { [siren]: _removed, ...rest } = p;
+          return rest;
+        });
+      };
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/recherche-entreprises?q=${encodeURIComponent(siren)}&per_page=1`
+          );
+          if (cancelled) {
+            releaseCancelledDirigeantFetch();
+            return;
+          }
+          if (!res.ok) {
+            setDiscoveryGouvUlBySiren((p) => ({ ...p, [siren]: { status: "err" } }));
+            return;
+          }
+          const data = (await res.json()) as {
+            result?: {
+              companyLegalName?: string;
+              companyManagerName?: string;
+              dirigeantsPhysiques?: DirigeantPhysiqueGouv[];
+            } | null;
+          };
+          if (cancelled) {
+            releaseCancelledDirigeantFetch();
+            return;
+          }
+          const r = data.result;
+          setDiscoveryGouvUlBySiren((p) => ({
+            ...p,
+            [siren]: {
+              ...p[siren],
+              status: "ok",
+              companyLegalName: r?.companyLegalName?.trim() || undefined,
+              manager: r?.companyManagerName?.trim() || p[siren]?.manager,
+              dirigeantsPhysiques: r?.dirigeantsPhysiques ?? [],
+            },
+          }));
+        } catch {
+          if (cancelled) {
+            releaseCancelledDirigeantFetch();
+            return;
+          }
+          setDiscoveryGouvUlBySiren((p) => ({ ...p, [siren]: { status: "err" } }));
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, discoveryMainTab, discoveryDirigeantSirensKey]);
+
   const parcellePasserelleLabels = useMemo(
     () => new Set(informationParcellesRows.map(discoveryParcellePasserelleLabel)),
     [informationParcellesRows]
@@ -2018,7 +2175,7 @@ function ProspectDrawerDiscoverySection({
               onOpenChange={handleManualContactDialogOpenChange}
               editingContact={editingManualContact}
               onBeforeAddOpen={() => setEditingManualContact(null)}
-              onContactsPersisted={handleDiscoveryContactsPersisted}
+              onContactsPersisted={onDiscoveryContactsPersisted}
             />
           </div>
           <DiscoveryProjectContactsList
@@ -2026,7 +2183,7 @@ function ProspectDrawerDiscoverySection({
             originLabelContext={discoveryContactOriginLabelContext}
             allowManualActions={Boolean(pipelineProspectForShareKpis?.id)}
             onEditManual={handleEditManualContact}
-            onDeleteManual={(c) => void handleDeleteManualContact(c)}
+            onDeleteManual={(c) => void onDeleteDiscoveryManualContact(c)}
             emptyMessage="Aucun contact. Ajoutez-en un manuellement ou via Apollo depuis un POI."
           />
         </section>
@@ -2066,9 +2223,22 @@ function ProspectDrawerDiscoverySection({
             showTitle={false}
             prospectId={pipelineProspectForShareKpis?.id}
             existingContacts={discoveryContacts}
-            onContactsPersisted={handleDiscoveryContactsPersisted}
+            onContactsPersisted={onDiscoveryContactsPersisted}
           />
         </section>
+
+        <DiscoveryDrawerDirigeantsSuggestions
+          prospectId={pipelineProspectForShareKpis?.id}
+          existingContacts={discoveryContacts}
+          parcelleGroups={discoveryDirigeantParcelleGroups}
+          etablissementGroups={discoveryDirigeantEtabGroups}
+          gouvBySiren={discoveryGouvUlBySiren}
+          showAllEtablissements={showAllDirigeantEtablissements}
+          onShowAllEtablissements={() => setShowAllDirigeantEtablissements(true)}
+          hiddenEtablissementCount={hiddenDirigeantEtabCount}
+          etablissementsPageSize={initialDiscoveryEstablishmentsVisible}
+          onContactsPersisted={onDiscoveryContactsPersisted}
+        />
       </TabsContent>
 
       <TabsContent value="solaire" className="drawer-discovery-panel space-y-3">
@@ -2800,6 +2970,44 @@ export function ProspectDrawer({
   /** Prospect Firestore associé (mode classique ou déjà en pipeline depuis Découverte). */
   const pipelineProspect = prospect ?? discoveryExistingPipelineProspect ?? null;
 
+  const [discoveryContacts, setDiscoveryContacts] = useState<ProspectContact[]>(
+    () => discoveryExistingPipelineProspect?.contacts ?? []
+  );
+  useEffect(() => {
+    setDiscoveryContacts(discoveryExistingPipelineProspect?.contacts ?? []);
+  }, [discoveryExistingPipelineProspect?.id]);
+  useEffect(() => {
+    const fromPipeline = discoveryExistingPipelineProspect?.contacts;
+    if (fromPipeline !== undefined) {
+      setDiscoveryContacts(fromPipeline);
+    }
+  }, [discoveryExistingPipelineProspect?.contacts]);
+
+  const handleDiscoveryContactsPersisted = useCallback(
+    (contacts: ProspectContact[]) => {
+      setDiscoveryContacts(contacts);
+      onDiscoveryPipelineAdded?.();
+    },
+    [onDiscoveryPipelineAdded]
+  );
+
+  const handleDeleteDiscoveryManualContact = useCallback(
+    async (contact: ProspectContact) => {
+      const prospectId = discoveryExistingPipelineProspect?.id;
+      if (!prospectId || contact.source !== "manual" || !contact.id) return;
+      try {
+        const next = discoveryContacts.filter((c) => c.id !== contact.id);
+        await updateProspect(prospectId, { contacts: next });
+        handleDiscoveryContactsPersisted(next);
+        toast.success("Contact supprimé.");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Erreur inconnue";
+        toast.error("Suppression impossible.", { description: message });
+      }
+    },
+    [discoveryContacts, discoveryExistingPipelineProspect?.id, handleDiscoveryContactsPersisted]
+  );
+
   useEffect(() => {
     if (!discoveryRow) return;
     setDiscoveryIncludeBattery(
@@ -3462,6 +3670,7 @@ export function ProspectDrawer({
 
       const updatedProspect: Prospect = {
         ...existing,
+        contacts: discoveryContacts,
         configurationMode: discoveryConfigurationMode,
         ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
         ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
@@ -4163,6 +4372,9 @@ export function ProspectDrawer({
               onDiscoveryConfigurationModeChange={handleDiscoveryConfigurationModeChange}
               discoveryUsedPanelRef={usedPanelRef}
               discoveryUsedInverterRef={usedInverterRef}
+              discoveryContacts={discoveryContacts}
+              onDiscoveryContactsPersisted={handleDiscoveryContactsPersisted}
+              onDeleteDiscoveryManualContact={handleDeleteDiscoveryManualContact}
             />
           ) : prospect ? (
             <>

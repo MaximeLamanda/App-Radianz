@@ -1964,6 +1964,7 @@ def main() -> int:
                 etab_match=etab_match_by_parcel.get(pk0) or {},
                 code_insee=str(pk0[0]),
                 resolver=address_resolver,
+                parcel_geom_geojson=parcel_geom.get(pk0),
             )
             building_display = {
                 "display_address": bdetail0.get("display_address") or "",
@@ -2134,6 +2135,7 @@ def main() -> int:
                 etab_match=etab_match_by_parcel.get(pk) or {},
                 code_insee=pk[0],
                 resolver=address_resolver,
+                parcel_geom_geojson=parcel_geom.get(pk),
             )
             bdetails_enriched.append(enriched)
         if not args.no_osm_parking and parking_index:

@@ -42,7 +42,8 @@ import {
   type DiscoveryComboSqlSurfaceHint,
 } from "@/lib/discovery-combo-hero-surfaces";
 import {
-  buildParcellesAdjacentSearchParams,
+  buildParcellesAdjacentBboxSearchParams,
+  isMapBoundsAreaAllowed,
   type DiscoveryAdjacentParcelle,
 } from "@/lib/matching-v5-parcelles-adjacent-http";
 import { adjacentParcellesToFeatureCollection } from "@/lib/discovery-adjacent-parcelles-map";
@@ -61,6 +62,7 @@ import {
 import {
   DISCOVERY_COMBOS_OVERVIEW_CLIENT_LIMIT,
   DISCOVERY_COMBOS_OVERVIEW_FETCH_DEBOUNCE_MS,
+  DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM,
   DISCOVERY_VIEWPORT_FETCH_DEBOUNCE_MS,
   matchingDataModeFromZoom,
   isMatchingOverviewZoom,
@@ -292,8 +294,11 @@ function DiscoveryContent() {
   const pendingFocusComboIdRef = useRef<string | null>(null);
   const appliedUrlFocusSigRef = useRef<string | null>(null);
   const focusFailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Parcelles déjà dans le périmètre au début du mode édition (exclues de l’API voisins, pas les ajouts). */
+  /** Parcelles déjà dans le périmètre au début du mode édition (exclues du cadastre affiché). */
   const adjacentExcludeAtEditStartRef = useRef<string[] | null>(null);
+  /** Bbox viewport figée à l’entrée en mode édition (pas de refetch au pan). */
+  const editSessionViewportBoundsRef = useRef<MapBounds | null>(null);
+  const editSessionCodeInseeRef = useRef<string[] | null>(null);
   const adjacentFetchGenRef = useRef(0);
   const discoveryEditSessionSnapshotRef = useRef<{
     parcelleEdit: DiscoveryComboParcelleEditState;
@@ -1328,6 +1333,8 @@ function DiscoveryContent() {
     setDiscoveryEditMode(false);
     setAdjacentParcelleCandidates([]);
     adjacentExcludeAtEditStartRef.current = null;
+    editSessionViewportBoundsRef.current = null;
+    editSessionCodeInseeRef.current = null;
     adjacentFetchGenRef.current += 1;
 
     if (!discoveryComboSelectionKey) {
@@ -1443,6 +1450,46 @@ function DiscoveryContent() {
   );
 
   const onDiscoveryEditStart = useCallback(() => {
+    const vz = viewportZoomRef.current;
+    if (isMatchingOverviewZoom(vz)) {
+      toast.info(
+        `Zoomez au-delà du niveau ${DISCOVERY_FOOTPRINT_CLUSTER_MAX_ZOOM} pour modifier le périmètre sur la carte.`
+      );
+      return;
+    }
+    const vb = viewBoundsRef.current;
+    if (!vb) {
+      toast.info("Attendez le chargement de la carte avant de modifier le périmètre.");
+      return;
+    }
+    if (!isMapBoundsAreaAllowed(vb)) {
+      toast.info("Zoomez davantage — la zone visible est trop grande pour charger le cadastre.");
+      return;
+    }
+
+    const codeInseeRaw = effectiveDiscoveryLinkedParcelleRows
+      .map((r) => r.codeInsee.trim())
+      .filter(Boolean);
+    const codeInsee = codeInseeRaw
+      .filter((ci, i) => codeInseeRaw.indexOf(ci) === i)
+      .slice(0, 3);
+    if (codeInsee.length === 0 && selectedRow?.codeInsee?.trim()) {
+      codeInsee.push(selectedRow.codeInsee.trim());
+    }
+    if (codeInsee.length === 0) {
+      toast.error("Commune inconnue pour ce combo — impossible de charger le cadastre.");
+      return;
+    }
+
+    const excludeIds = new Set(effectiveDiscoveryLinkedParcelleRows.map((r) => r.id));
+    for (const id of Array.from(parcelleEditState.customParcelleIds)) {
+      if (!parcelleEditState.removedParcelleIds.has(id)) excludeIds.add(id);
+    }
+
+    editSessionViewportBoundsRef.current = vb;
+    editSessionCodeInseeRef.current = codeInsee;
+    adjacentExcludeAtEditStartRef.current = Array.from(excludeIds);
+
     const buildingIds =
       selectedBuildingIds ??
       (selectedRow
@@ -1523,24 +1570,20 @@ function DiscoveryContent() {
     [allMatchingRowsForCombo, fetchMatchingRowById, adjacentParcelleCandidates]
   );
 
-  const refetchAdjacentParcelles = useCallback(
-    async (
-      anchorParcelleIds: readonly string[],
-      options?: { notifyIfEmpty?: boolean }
-    ) => {
-      const ids = anchorParcelleIds.map((id) => id.trim()).filter(Boolean);
-      if (ids.length === 0) {
+  const refetchEditViewportParcelles = useCallback(
+    async (options?: { notifyIfEmpty?: boolean }) => {
+      const bounds = editSessionViewportBoundsRef.current;
+      const codeInsee = editSessionCodeInseeRef.current;
+      const excludeIds = adjacentExcludeAtEditStartRef.current ?? [];
+      if (!bounds || !codeInsee?.length) {
         setAdjacentParcelleCandidates([]);
         return;
       }
-      if (adjacentExcludeAtEditStartRef.current === null) {
-        adjacentExcludeAtEditStartRef.current = [...ids];
-      }
       const gen = ++adjacentFetchGenRef.current;
-      const sp = buildParcellesAdjacentSearchParams({
-        parcelleIds: ids,
-        excludeIds: adjacentExcludeAtEditStartRef.current,
-        bufferM: 5,
+      const sp = buildParcellesAdjacentBboxSearchParams({
+        bounds,
+        codeInsee,
+        excludeIds,
       });
       setAdjacentParcellesLoading(true);
       try {
@@ -1548,20 +1591,26 @@ function DiscoveryContent() {
         if (adjacentFetchGenRef.current !== gen) return;
         if (!res.ok) {
           setAdjacentParcelleCandidates([]);
-          toast.error("Impossible de charger les parcelles voisines.");
+          const errJson = (await res.json().catch(() => null)) as { error?: string } | null;
+          toast.error(errJson?.error ?? "Impossible de charger le cadastre visible.");
           return;
         }
-        const json = (await res.json()) as { parcelles?: DiscoveryAdjacentParcelle[] };
+        const json = (await res.json()) as {
+          parcelles?: DiscoveryAdjacentParcelle[];
+          truncated?: boolean;
+        };
         if (adjacentFetchGenRef.current !== gen) return;
         const parcelles = Array.isArray(json.parcelles) ? json.parcelles : [];
         setAdjacentParcelleCandidates(parcelles);
-        if (parcelles.length === 0 && options?.notifyIfEmpty) {
-          toast.info("Aucune parcelle cadastrale voisine trouvée à proximité.");
+        if (json.truncated) {
+          toast.info("Trop de parcelles dans la zone — zoomez pour affiner la sélection.");
+        } else if (parcelles.length === 0 && options?.notifyIfEmpty) {
+          toast.info("Aucune autre parcelle cadastrale dans la zone visible.");
         }
       } catch {
         if (adjacentFetchGenRef.current !== gen) return;
         setAdjacentParcelleCandidates([]);
-        toast.error("Impossible de charger les parcelles voisines.");
+        toast.error("Impossible de charger le cadastre visible.");
       } finally {
         if (adjacentFetchGenRef.current === gen) {
           setAdjacentParcellesLoading(false);
@@ -1630,21 +1679,16 @@ function DiscoveryContent() {
   useEffect(() => {
     if (!discoveryEditMode) {
       adjacentExcludeAtEditStartRef.current = null;
+      editSessionViewportBoundsRef.current = null;
+      editSessionCodeInseeRef.current = null;
       adjacentFetchGenRef.current += 1;
       setAdjacentParcelleCandidates([]);
       setAdjacentParcellesLoading(false);
       return;
     }
-    if (effectiveAnchorParcelleIds.length === 0) return;
 
-    void refetchAdjacentParcelles(effectiveAnchorParcelleIds, { notifyIfEmpty: true });
-  }, [
-    discoveryEditMode,
-    discoveryComboSelectionKey,
-    effectiveParcelleIdsSignature,
-    refetchAdjacentParcelles,
-    effectiveAnchorParcelleIds,
-  ]);
+    void refetchEditViewportParcelles({ notifyIfEmpty: true });
+  }, [discoveryEditMode, discoveryComboSelectionKey, refetchEditViewportParcelles]);
 
   useEffect(() => {
     const ids = discoveryPipelineMatch?.matchingV5BuildingSelectionIds;

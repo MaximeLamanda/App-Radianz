@@ -1,11 +1,20 @@
 import type { Prospect } from "@/types";
 
+/** Dirigeant personne physique (api.gouv recherche-entreprises). */
+export interface DirigeantPhysiqueGouv {
+  prenoms?: string;
+  nom?: string;
+  qualite?: string;
+}
+
 /** Résultat d'enrichissement entreprise (api.gouv) pour un prospect */
 export interface EnrichmentResult {
   siren?: string;
   siret?: string;
   companyLegalName?: string;
   companyManagerName?: string;
+  /** Tous les dirigeants « personne physique » de l’unité légale. */
+  dirigeantsPhysiques?: DirigeantPhysiqueGouv[];
   companyAddress?: string;
   companyNaf?: string;
   companyPhone?: string;

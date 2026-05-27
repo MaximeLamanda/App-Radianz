@@ -11,6 +11,7 @@ const Avatar = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <AvatarPrimitive.Root
     ref={ref}
+    data-slot="avatar"
     className={cn(
       "relative flex h-10 w-10 shrink-0 overflow-hidden rounded-full",
       className
@@ -47,4 +48,43 @@ const AvatarFallback = React.forwardRef<
 ))
 AvatarFallback.displayName = AvatarPrimitive.Fallback.displayName
 
-export { Avatar, AvatarImage, AvatarFallback }
+type AvatarGroupProps = React.ComponentProps<"div"> & {
+  /** Couleur de la bordure de séparation entre avatars chevauchants. */
+  ring?: "card" | "background"
+}
+
+function AvatarGroup({ className, ring = "card", ...props }: AvatarGroupProps) {
+  return (
+    <div
+      data-slot="avatar-group"
+      className={cn(
+        "flex -space-x-2",
+        ring === "card"
+          ? "*:data-[slot=avatar]:border-2 *:data-[slot=avatar]:border-card *:data-[slot=avatar]:bg-card"
+          : "*:data-[slot=avatar]:border-2 *:data-[slot=avatar]:border-background *:data-[slot=avatar]:bg-background",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function AvatarGroupCount({
+  className,
+  ring = "card",
+  ...props
+}: React.ComponentProps<"div"> & { ring?: "card" | "background" }) {
+  return (
+    <div
+      data-slot="avatar-group-count"
+      className={cn(
+        "relative box-border flex size-7 shrink-0 items-center justify-center rounded-full border-2 bg-muted text-[10px] font-medium text-muted-foreground",
+        ring === "card" ? "border-card" : "border-background",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Avatar, AvatarImage, AvatarFallback, AvatarGroup, AvatarGroupCount }
