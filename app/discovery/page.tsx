@@ -43,11 +43,13 @@ import {
 } from "@/lib/discovery-combo-hero-surfaces";
 import {
   buildParcellesAdjacentBboxSearchParams,
+  expandMapBoundsForEditParcelSearch,
   isMapBoundsAreaAllowed,
   type DiscoveryAdjacentParcelle,
 } from "@/lib/matching-v5-parcelles-adjacent-http";
 import { adjacentParcellesToFeatureCollection } from "@/lib/discovery-adjacent-parcelles-map";
 import { scoutMatchingV5RowFromAdjacentCadastreParcel } from "@/lib/discovery-cadastre-parcel";
+import { fetchMatchingV5ParcelleRowsWithCadastreFallback } from "@/lib/discovery-cadastre-parcel-fetch";
 import { collectMatchingV5ParkingFeatures } from "@/lib/matching-v5-parking";
 import { useProspectsForPipeline, type MapBounds } from "@/lib/swr-hooks";
 import {
@@ -298,7 +300,6 @@ function DiscoveryContent() {
   const adjacentExcludeAtEditStartRef = useRef<string[] | null>(null);
   /** Bbox viewport figée à l’entrée en mode édition (pas de refetch au pan). */
   const editSessionViewportBoundsRef = useRef<MapBounds | null>(null);
-  const editSessionCodeInseeRef = useRef<string[] | null>(null);
   const adjacentFetchGenRef = useRef(0);
   const discoveryEditSessionSnapshotRef = useRef<{
     parcelleEdit: DiscoveryComboParcelleEditState;
@@ -1334,7 +1335,6 @@ function DiscoveryContent() {
     setAdjacentParcelleCandidates([]);
     adjacentExcludeAtEditStartRef.current = null;
     editSessionViewportBoundsRef.current = null;
-    editSessionCodeInseeRef.current = null;
     adjacentFetchGenRef.current += 1;
 
     if (!discoveryComboSelectionKey) {
@@ -1467,27 +1467,12 @@ function DiscoveryContent() {
       return;
     }
 
-    const codeInseeRaw = effectiveDiscoveryLinkedParcelleRows
-      .map((r) => r.codeInsee.trim())
-      .filter(Boolean);
-    const codeInsee = codeInseeRaw
-      .filter((ci, i) => codeInseeRaw.indexOf(ci) === i)
-      .slice(0, 3);
-    if (codeInsee.length === 0 && selectedRow?.codeInsee?.trim()) {
-      codeInsee.push(selectedRow.codeInsee.trim());
-    }
-    if (codeInsee.length === 0) {
-      toast.error("Commune inconnue pour ce combo — impossible de charger le cadastre.");
-      return;
-    }
-
     const excludeIds = new Set(effectiveDiscoveryLinkedParcelleRows.map((r) => r.id));
     for (const id of Array.from(parcelleEditState.customParcelleIds)) {
       if (!parcelleEditState.removedParcelleIds.has(id)) excludeIds.add(id);
     }
 
-    editSessionViewportBoundsRef.current = vb;
-    editSessionCodeInseeRef.current = codeInsee;
+    editSessionViewportBoundsRef.current = expandMapBoundsForEditParcelSearch(vb);
     adjacentExcludeAtEditStartRef.current = Array.from(excludeIds);
 
     const buildingIds =
@@ -1551,6 +1536,7 @@ function DiscoveryContent() {
       );
       if (missing.length === 0) return [];
       const fetched: ScoutMatchingV5Row[] = [];
+      const stillMissing: string[] = [];
       for (const id of missing) {
         let row = await fetchMatchingRowById(id);
         if (!row) {
@@ -1558,6 +1544,10 @@ function DiscoveryContent() {
           if (cand) row = scoutMatchingV5RowFromAdjacentCadastreParcel(cand);
         }
         if (row) fetched.push(row);
+        else stillMissing.push(id);
+      }
+      if (stillMissing.length > 0) {
+        fetched.push(...(await fetchMatchingV5ParcelleRowsWithCadastreFallback(stillMissing)));
       }
       if (fetched.length === 0) return [];
       setExtraMatchingV5Rows((prev) => {
@@ -1573,16 +1563,14 @@ function DiscoveryContent() {
   const refetchEditViewportParcelles = useCallback(
     async (options?: { notifyIfEmpty?: boolean }) => {
       const bounds = editSessionViewportBoundsRef.current;
-      const codeInsee = editSessionCodeInseeRef.current;
       const excludeIds = adjacentExcludeAtEditStartRef.current ?? [];
-      if (!bounds || !codeInsee?.length) {
+      if (!bounds) {
         setAdjacentParcelleCandidates([]);
         return;
       }
       const gen = ++adjacentFetchGenRef.current;
       const sp = buildParcellesAdjacentBboxSearchParams({
         bounds,
-        codeInsee,
         excludeIds,
       });
       setAdjacentParcellesLoading(true);
@@ -1680,7 +1668,6 @@ function DiscoveryContent() {
     if (!discoveryEditMode) {
       adjacentExcludeAtEditStartRef.current = null;
       editSessionViewportBoundsRef.current = null;
-      editSessionCodeInseeRef.current = null;
       adjacentFetchGenRef.current += 1;
       setAdjacentParcelleCandidates([]);
       setAdjacentParcellesLoading(false);

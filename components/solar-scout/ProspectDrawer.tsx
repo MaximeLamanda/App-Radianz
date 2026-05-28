@@ -64,6 +64,7 @@ import {
   DISCOVERY_PVGIS_ROOF_SLOPE_DEG,
   pvgisAzimuthFromFootprintGeometry,
 } from "@/lib/footprint-orientation-pvgis";
+import { discoveryPipelinePerimeterPersistFields } from "@/lib/discovery-pipeline-perimeter-persist";
 import {
   discoveryCentroidFromV5,
   footprintSumTotalFromV5,
@@ -79,6 +80,7 @@ import { DiscoveryShareReadingTabPanel } from "./DiscoveryShareReadingTabPanel";
 import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
 import { RadianzBillReductionCard, type RadianzBillReductionSegment } from "./RadianzBillReductionCard";
 import { RadianzCo2AvoidanceRadial } from "./RadianzCo2AvoidanceRadial";
+import { annualSelfConsumptionKwhTotal } from "@/lib/co2-avoidance-fr";
 import type { MonthlyProductionChartDatum, DailyProductionChartDatum } from "./MonthlyProductionChart";
 import { BatterySelectCard } from "./BatterySelectCard";
 import { EquipmentSelectCard, EquipmentThumbnail } from "./EquipmentSelectCard";
@@ -161,9 +163,12 @@ import {
   computeDiscoveryKwpEstForPipeline,
   discoveryAnnualConsumptionKwhFromProfile,
   discoveryAnnualProductionKwhFromPvgisKwp,
+  discoveryConsumptionOverrideForProspect,
+  discoveryMonthlyConsumptionKwh as buildDiscoveryMonthlyConsumptionKwh,
   pickDefaultInverterReference,
   pickDefaultPanelReference,
 } from "@/lib/discovery-pipeline-add-financials";
+import { DiscoveryConsumptionEstimateCard } from "@/components/discovery/DiscoveryConsumptionEstimateCard";
 import {
   discoveryBuildingSelectionIdFromEntry,
   isDiscoveryBuildingSelected,
@@ -604,6 +609,11 @@ function ProspectDrawerDiscoverySection({
   discoveryContacts,
   onDiscoveryContactsPersisted,
   onDeleteDiscoveryManualContact,
+  discoveryBaselineAnnualKwh,
+  discoveryEffectiveAnnualConsumptionKwh,
+  discoverySizingAnnualConsumptionKwh,
+  discoveryMonthlyConsumptionKwh,
+  onDiscoveryTargetAnnualKwhChange,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
@@ -646,6 +656,12 @@ function ProspectDrawerDiscoverySection({
   discoveryContacts: ProspectContact[];
   onDiscoveryContactsPersisted: (contacts: ProspectContact[]) => void;
   onDeleteDiscoveryManualContact: (contact: ProspectContact) => Promise<void>;
+  discoveryBaselineAnnualKwh: number;
+  discoveryEffectiveAnnualConsumptionKwh: number;
+  /** Conso pour kWp / simulation (debounced côté parent — évite boucles setState). */
+  discoverySizingAnnualConsumptionKwh: number;
+  discoveryMonthlyConsumptionKwh: number[];
+  onDiscoveryTargetAnnualKwhChange: (kwh: number) => void;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -1174,6 +1190,7 @@ function ProspectDrawerDiscoverySection({
   const [discoveryPvgisLoading, setDiscoveryPvgisLoading] = useState(false);
   const [discoveryPvgisError, setDiscoveryPvgisError] = useState<string | null>(null);
   const discoveryPvgisFetchInProgressRef = useRef(false);
+  const discoveryFinanceInputsPushKeyRef = useRef("");
 
   const discoveryChoiceCardsConfig = useMemo(() => {
     if (!discoveryPvgis || discoveryPvgis.annualProduction <= 0 || footprintSumTotal <= 0) {
@@ -1188,6 +1205,7 @@ function ProspectDrawerDiscoverySection({
       panelRef,
       inverterRef,
       placeType: discoveryPlaceType,
+      annualConsumptionKwh: discoverySizingAnnualConsumptionKwh,
     });
   }, [
     discoveryPvgis,
@@ -1196,6 +1214,7 @@ function ProspectDrawerDiscoverySection({
     inverterRef,
     discoveryPlaceType,
     kwpMaxDiscovery,
+    discoverySizingAnnualConsumptionKwh,
   ]);
 
   const kwpForCharts = useMemo(() => {
@@ -1385,6 +1404,10 @@ function ProspectDrawerDiscoverySection({
   }, [discoveryPvgisFetchKey, centroid, discoveryFootprintAzimuth]);
 
   useEffect(() => {
+    discoveryFinanceInputsPushKeyRef.current = "";
+  }, [row.id, footprintSumTotal, isOpen]);
+
+  useEffect(() => {
     if (!isOpen) {
       onPipelineFinanceInputsChange?.(null);
       return;
@@ -1393,6 +1416,9 @@ function ProspectDrawerDiscoverySection({
       onPipelineFinanceInputsChange?.(null);
       return;
     }
+    const pushKey = `${footprintSumTotal}|${kwpForCharts}|${discoveryPvgis.annualProduction}`;
+    if (discoveryFinanceInputsPushKeyRef.current === pushKey) return;
+    discoveryFinanceInputsPushKeyRef.current = pushKey;
     onPipelineFinanceInputsChange?.({
       footprintM2: footprintSumTotal,
       kwp: kwpForCharts,
@@ -1412,6 +1438,7 @@ function ProspectDrawerDiscoverySection({
       kwp: kwpForCharts,
       placeType: discoveryPlaceType,
       batteryByMonth: discoverySimulationSummary?.batteryByMonth,
+      consumptionMonthlyKwh: discoveryMonthlyConsumptionKwh,
     });
   }, [
     discoveryPvgis,
@@ -1419,6 +1446,7 @@ function ProspectDrawerDiscoverySection({
     footprintSumTotal,
     discoveryPlaceType,
     discoverySimulationSummary?.batteryByMonth,
+    discoveryMonthlyConsumptionKwh,
   ]);
 
   /** Même total que Σ barres mensuelles — aligné table pipeline. */
@@ -1435,11 +1463,15 @@ function ProspectDrawerDiscoverySection({
     if (!discoveryPvgis || footprintSumTotal <= 0 || kwpForCharts <= 0) return undefined;
     const perKwpMonthly = discoveryPvgis.monthlyProduction;
     const prodDay = buildTypicalDayForMonth(perKwpMonthly, discoveryChartMonthIndex, kwpForCharts);
+    const consScale =
+      discoveryBaselineAnnualKwh > 0
+        ? discoveryEffectiveAnnualConsumptionKwh / discoveryBaselineAnnualKwh
+        : 1;
     const consDay = buildTypicalConsumptionDayForMonth(
       discoveryPlaceType,
       discoveryChartMonthIndex,
       footprintSumTotal
-    );
+    ).map((h) => h * consScale);
     const pack =
       discoverySimulationSummary?.breakdownFromHourlySim && discoveryDailySimulationBattery
         ? discoveryDailySimulationBattery
@@ -1465,12 +1497,11 @@ function ProspectDrawerDiscoverySection({
     discoveryIncludeBattery,
     discoveryDailySimulationBattery,
     discoverySimulationSummary?.breakdownFromHourlySim,
+    discoveryBaselineAnnualKwh,
+    discoveryEffectiveAnnualConsumptionKwh,
   ]);
 
-  const discoveryAnnualConsumptionKwh = useMemo(
-    () => discoveryAnnualConsumptionKwhFromProfile(discoveryPlaceType, footprintSumTotal),
-    [footprintSumTotal, discoveryPlaceType]
-  );
+  const discoveryAnnualConsumptionKwh = discoveryEffectiveAnnualConsumptionKwh;
 
   const discoveryBillReductionCard = useMemo(() => {
     const billAnnual = estimateEnergyBillEur(discoveryAnnualConsumptionKwh);
@@ -1535,6 +1566,21 @@ function ProspectDrawerDiscoverySection({
     discoveryAnnualProductionKwh,
     discoveryAnnualConsumptionKwh,
     discoverySimulationSummary,
+  ]);
+
+  const discoveryAnnualSelfConsumptionKwh = useMemo(() => {
+    const sim = discoverySimulationSummary;
+    if (sim?.breakdownFromHourlySim) {
+      return annualSelfConsumptionKwhTotal(
+        sim.selfConsumptionDirectKwhTotal,
+        sim.selfConsumptionViaBatteryKwhTotal
+      );
+    }
+    return Math.min(discoveryAnnualProductionKwh, discoveryAnnualConsumptionKwh);
+  }, [
+    discoverySimulationSummary,
+    discoveryAnnualProductionKwh,
+    discoveryAnnualConsumptionKwh,
   ]);
 
   const discoveryDisplayedSiretRows = useMemo(
@@ -2253,6 +2299,14 @@ function ProspectDrawerDiscoverySection({
           </div>
         ) : discoveryChartMonthlyData.length > 0 ? (
           <div className="space-y-4">
+            {discoveryBaselineAnnualKwh > 0 ? (
+              <DiscoveryConsumptionEstimateCard
+                baselineAnnualKwh={discoveryBaselineAnnualKwh}
+                targetAnnualKwh={discoveryEffectiveAnnualConsumptionKwh}
+                monthlyConsumptionKwh={discoveryMonthlyConsumptionKwh}
+                onTargetAnnualKwhChange={onDiscoveryTargetAnnualKwhChange}
+              />
+            ) : null}
             <Tabs
               value={discoveryConfigurationMode}
               onValueChange={(v) =>
@@ -2291,8 +2345,8 @@ function ProspectDrawerDiscoverySection({
                 segments={discoveryBillReductionCard.segments}
               />
               <RadianzCo2AvoidanceRadial
-                annualProductionKwh={discoveryAnnualProductionKwh}
                 annualConsumptionKwh={discoveryAnnualConsumptionKwh}
+                annualSelfConsumptionKwh={discoveryAnnualSelfConsumptionKwh}
               />
             </div>
             {pipelineProject ? (
@@ -2751,6 +2805,71 @@ export function ProspectDrawer({
   /** PVGIS + kWp + surface (mode Découverte) pour fourchette prix / B-E pipeline. */
   const [discoveryPipelineFinanceInputs, setDiscoveryPipelineFinanceInputs] =
     useState<DiscoveryDrawerFinancialInputs | null>(null);
+  const [discoveryTargetAnnualKwhOverride, setDiscoveryTargetAnnualKwhOverride] = useState<
+    number | null
+  >(null);
+
+  const discoveryBaselineAnnualKwh = useMemo(() => {
+    const footprint = discoveryPipelineFinanceInputs?.footprintM2 ?? 0;
+    if (footprint <= 0) return 0;
+    return discoveryAnnualConsumptionKwhFromProfile("other", footprint);
+  }, [discoveryPipelineFinanceInputs?.footprintM2]);
+
+  useEffect(() => {
+    setDiscoveryTargetAnnualKwhOverride(null);
+  }, [discoveryRow?.id, discoveryPipelineFinanceInputs?.footprintM2]);
+
+  const discoveryEffectiveAnnualConsumptionKwh = useMemo(() => {
+    if (discoveryBaselineAnnualKwh <= 0) return 0;
+    if (discoveryTargetAnnualKwhOverride != null) return discoveryTargetAnnualKwhOverride;
+    const fromProspect = discoveryExistingPipelineProspect?.annualConsumptionKwhOverride;
+    if (fromProspect != null && fromProspect > 0) return fromProspect;
+    return discoveryBaselineAnnualKwh;
+  }, [
+    discoveryBaselineAnnualKwh,
+    discoveryTargetAnnualKwhOverride,
+    discoveryExistingPipelineProspect?.annualConsumptionKwhOverride,
+  ]);
+
+  const discoveryMonthlyConsumptionKwh = useMemo(() => {
+    const footprint = discoveryPipelineFinanceInputs?.footprintM2 ?? 0;
+    if (footprint <= 0) return Array.from({ length: 12 }, () => 0);
+    return buildDiscoveryMonthlyConsumptionKwh({
+      placeType: "other",
+      footprintM2: footprint,
+      annualConsumptionKwh: discoveryEffectiveAnnualConsumptionKwh,
+    });
+  }, [
+    discoveryPipelineFinanceInputs?.footprintM2,
+    discoveryEffectiveAnnualConsumptionKwh,
+  ]);
+
+  const DISCOVERY_CONSUMPTION_SIZING_DEBOUNCE_MS = 200;
+
+  const [discoverySizingAnnualConsumptionKwh, setDiscoverySizingAnnualConsumptionKwh] = useState(0);
+
+  useEffect(() => {
+    setDiscoverySizingAnnualConsumptionKwh(discoveryEffectiveAnnualConsumptionKwh);
+  }, [discoveryRow?.id]);
+
+  useEffect(() => {
+    const next = discoveryEffectiveAnnualConsumptionKwh;
+    if (next <= 0) {
+      setDiscoverySizingAnnualConsumptionKwh(0);
+      return;
+    }
+    const handle = window.setTimeout(
+      () => setDiscoverySizingAnnualConsumptionKwh(next),
+      DISCOVERY_CONSUMPTION_SIZING_DEBOUNCE_MS
+    );
+    return () => window.clearTimeout(handle);
+  }, [discoveryEffectiveAnnualConsumptionKwh]);
+
+  const handleDiscoveryTargetAnnualKwhChange = useCallback((kwh: number) => {
+    const rounded = Math.round(kwh);
+    setDiscoveryTargetAnnualKwhOverride((prev) => (prev === rounded ? prev : rounded));
+  }, []);
+
   const handleDiscoveryPipelineFinanceInputsChange = useCallback(
     (payload: DiscoveryDrawerFinancialInputs | null) => {
       setDiscoveryPipelineFinanceInputs((prev) => {
@@ -3044,10 +3163,7 @@ export function ProspectDrawer({
       return null;
     }
     const placeType = "other";
-    const annualConsumptionKwh = discoveryAnnualConsumptionKwhFromProfile(
-      placeType,
-      inputs.footprintM2
-    );
+    const annualConsumptionKwh = discoverySizingAnnualConsumptionKwh;
     const annualProductionKwh = discoveryAnnualProductionKwhFromPvgisKwp(
       inputs.annualPerKwp,
       inputs.monthlyPerKwp,
@@ -3061,7 +3177,11 @@ export function ProspectDrawer({
       placeType,
       surfaceM2: inputs.footprintM2,
     });
-  }, [discoveryPipelineFinanceInputs, discoveryConfigurationMode]);
+  }, [
+    discoveryPipelineFinanceInputs,
+    discoveryConfigurationMode,
+    discoverySizingAnnualConsumptionKwh,
+  ]);
 
   const discoveryRecommendedBatteryComposition = useMemo(() => {
     const visible = (batteriesData ?? []).filter((b) => b.visible !== false);
@@ -3176,8 +3296,9 @@ export function ProspectDrawer({
     }
 
     if (discoveryRecommendedBatteryComposition) {
-      setUsedBatteryRef(discoveryRecommendedBatteryComposition.model);
-      setBatteryCount(discoveryRecommendedBatteryComposition.count);
+      const { model, count } = discoveryRecommendedBatteryComposition;
+      setUsedBatteryRef((prev) => (prev?.id === model.id ? prev : model));
+      setBatteryCount((prev) => (prev === count ? prev : count));
       return;
     }
 
@@ -3188,7 +3309,7 @@ export function ProspectDrawer({
   }, [
     isOpen,
     prospect,
-    discoveryRow,
+    discoveryRow?.id,
     batteriesData,
     discoveryExistingPipelineProspect?.id,
     discoveryExistingPipelineProspect?.batteryReferenceId,
@@ -3198,8 +3319,11 @@ export function ProspectDrawer({
   ]);
 
   useEffect(() => {
-    if (!isOpen || !discoveryRow) setDiscoveryPipelineFinanceInputs(null);
-  }, [isOpen, discoveryRow]);
+    if (!isOpen || !discoveryRow?.id) {
+      setDiscoveryPipelineFinanceInputs(null);
+      return;
+    }
+  }, [isOpen, discoveryRow?.id]);
 
   // Adresse : suivre le prospect courant
   useEffect(() => {
@@ -3410,6 +3534,7 @@ export function ProspectDrawer({
           batteryRef: batteryRefForAdd,
           batteryCount: batteryCountForAdd,
           includeBattery: discoveryIncludeBattery,
+          annualConsumptionKwh: discoveryEffectiveAnnualConsumptionKwh,
         });
       }
       if (!financialSummaryForAdd) {
@@ -3422,6 +3547,7 @@ export function ProspectDrawer({
             batteryRef: batteryRefForAdd,
             batteryCount: batteryCountForAdd,
             includeBattery: discoveryIncludeBattery,
+            annualConsumptionKwh: discoveryEffectiveAnnualConsumptionKwh,
           }) ?? discoveryFinancialSummary;
       }
       const draft = matchingV5RowsToProspectDraft(discoveryRow, discoveryLinkedParcelleRows, {
@@ -3435,6 +3561,10 @@ export function ProspectDrawer({
           ? { parcelContourM2Override: parcelContourForPipeline }
           : {}),
       });
+      const discoveryConsumptionOverride = discoveryConsumptionOverrideForProspect(
+        discoveryEffectiveAnnualConsumptionKwh,
+        discoveryAnnualConsumptionKwhFromProfile("other", footprintForPipeline)
+      );
       const draftForPipeline =
         financialSummaryForAdd != null
           ? {
@@ -3445,6 +3575,9 @@ export function ProspectDrawer({
               ...(batteryRefForAdd?.id && { batteryReferenceId: batteryRefForAdd.id }),
               ...(batteryRefForAdd && { batteryCount: batteryCountForAdd }),
               includeBatteryOverride: discoveryIncludeBattery,
+              ...(discoveryConsumptionOverride != null && {
+                annualConsumptionKwhOverride: discoveryConsumptionOverride,
+              }),
               priceRangeMinEur: financialSummaryForAdd.priceRange.totalMinEur,
               priceRangeMaxEur: financialSummaryForAdd.priceRange.totalMaxEur,
               breakEvenMinYears: financialSummaryForAdd.breakEvenMin,
@@ -3458,6 +3591,9 @@ export function ProspectDrawer({
               ...(batteryRefForAdd?.id && { batteryReferenceId: batteryRefForAdd.id }),
               ...(batteryRefForAdd && { batteryCount: batteryCountForAdd }),
               includeBatteryOverride: discoveryIncludeBattery,
+              ...(discoveryConsumptionOverride != null && {
+                annualConsumptionKwhOverride: discoveryConsumptionOverride,
+              }),
             };
       const kwpFromDraft = draftForPipeline.solarPotential?.estimatedKwp ?? 0;
       const kwpForPipeline =
@@ -3469,6 +3605,7 @@ export function ProspectDrawer({
                 footprintM2: footprintForPipeline,
                 pvgisAnnualPerKwp: pvgis.annualProduction,
                 panelRef,
+                annualConsumptionKwh: discoveryEffectiveAnnualConsumptionKwh,
               })
           : kwpFromDraft);
       const basePipeline =
@@ -3668,10 +3805,31 @@ export function ProspectDrawer({
         ? Array.from(discoverySelectedBuildingIds)
         : existing.matchingV5BuildingSelectionIds;
 
+      const perimeterPersist =
+        discoveryRow && discoveryLinkedParcelleRows?.length
+          ? discoveryPipelinePerimeterPersistFields(discoveryRow, discoveryLinkedParcelleRows, {
+              fallbackComboId: discoveryComboId ?? existing.matchingV5ComboId,
+            })
+          : null;
+
+      const discoveryConsumptionOverrideSave = discoveryConsumptionOverrideForProspect(
+        discoveryEffectiveAnnualConsumptionKwh,
+        discoveryAnnualConsumptionKwhFromProfile("other", footprintForPipeline)
+      );
+
       const updatedProspect: Prospect = {
         ...existing,
         contacts: discoveryContacts,
         configurationMode: discoveryConfigurationMode,
+        ...(discoveryConsumptionOverrideSave != null
+          ? { annualConsumptionKwhOverride: discoveryConsumptionOverrideSave }
+          : {}),
+        ...(perimeterPersist?.matchingV5ParcelleIds.length
+          ? { matchingV5ParcelleIds: [...perimeterPersist.matchingV5ParcelleIds] }
+          : {}),
+        ...(perimeterPersist?.matchingV5ComboId
+          ? { matchingV5ComboId: perimeterPersist.matchingV5ComboId }
+          : {}),
         ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
         ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
         ...(batteryRefForSave?.id && { batteryReferenceId: batteryRefForSave.id }),
@@ -3720,7 +3878,17 @@ export function ProspectDrawer({
       };
 
       await updateProspectInPipeline(existing.id, updatedProspect, pipelineOptions);
-      onProspectUpdate?.(updatedProspect);
+      if (
+        discoveryConsumptionOverrideSave == null &&
+        existing.annualConsumptionKwhOverride != null
+      ) {
+        await updateProspect(existing.id, {
+          annualConsumptionKwhOverride: null,
+        } as Partial<Prospect>);
+        onProspectUpdate?.({ ...updatedProspect, annualConsumptionKwhOverride: undefined });
+      } else {
+        onProspectUpdate?.(updatedProspect);
+      }
       toast.success("Enregistré");
       onSaveSuccess?.();
       onDiscoveryPipelineAdded?.();
@@ -4050,6 +4218,7 @@ export function ProspectDrawer({
       batteryRef,
       batteryCount: batteryCountSim,
       includeBattery: discoveryIncludeBattery,
+      annualConsumptionKwh: discoverySizingAnnualConsumptionKwh,
     });
   }, [
     discoveryRow,
@@ -4058,6 +4227,7 @@ export function ProspectDrawer({
     usedInverterRef,
     discoverySimBattery,
     discoveryIncludeBattery,
+    discoverySizingAnnualConsumptionKwh,
   ]);
 
   /** Résumé financier (équipement, fourchette prix, économies, break-even) avec ou sans batterie */
@@ -4375,6 +4545,11 @@ export function ProspectDrawer({
               discoveryContacts={discoveryContacts}
               onDiscoveryContactsPersisted={handleDiscoveryContactsPersisted}
               onDeleteDiscoveryManualContact={handleDeleteDiscoveryManualContact}
+              discoveryBaselineAnnualKwh={discoveryBaselineAnnualKwh}
+              discoveryEffectiveAnnualConsumptionKwh={discoveryEffectiveAnnualConsumptionKwh}
+              discoverySizingAnnualConsumptionKwh={discoverySizingAnnualConsumptionKwh}
+              discoveryMonthlyConsumptionKwh={discoveryMonthlyConsumptionKwh}
+              onDiscoveryTargetAnnualKwhChange={handleDiscoveryTargetAnnualKwhChange}
             />
           ) : prospect ? (
             <>

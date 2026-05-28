@@ -2,45 +2,40 @@
 
 import { PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer } from "recharts";
 import { cn } from "@/lib/utils";
-import { CO2E_GRID_KG_PER_KWH_FR } from "@/lib/co2-avoidance-fr";
+import { computeCo2AvoidanceMetricsFr } from "@/lib/co2-avoidance-fr";
 
 const INK = "#0A0A0A";
 const LINE = "#E4E2DE";
 
 export interface RadianzCo2AvoidanceRadialProps {
-  /** Production annuelle du scénario (kWh). */
-  annualProductionKwh: number;
-  /** Consommation annuelle de référence (kWh). */
+  /** Consommation annuelle de référence (kWh) — émissions calculées au mix réseau FR classique. */
   annualConsumptionKwh: number;
+  /** Autoconsommation annuelle (directe + batterie, kWh) — comptée comme énergie verte. */
+  annualSelfConsumptionKwh: number;
   className?: string;
 }
 
 /**
- * Carte Radianz — RadialBar type « Green energy » du design system (Recharts),
- * avec pourcentage d’émissions électriques de consommation évitées par la production PV
- * et tonnage CO₂/an indicatif.
+ * Carte Radianz — % d’émissions « réseau » de la consommation évitées par l’autoconsommation PV
+ * et tonnage CO₂/an indicatif (hypothèse ~52 g CO₂e/kWh réseau FR).
  */
 export function RadianzCo2AvoidanceRadial({
-  annualProductionKwh,
   annualConsumptionKwh,
+  annualSelfConsumptionKwh,
   className,
 }: RadianzCo2AvoidanceRadialProps) {
-  const prod = Math.max(0, annualProductionKwh);
-  const conso = Math.max(0, annualConsumptionKwh);
-  const avoidedKgYear = prod * CO2E_GRID_KG_PER_KWH_FR;
-  const baselineKgYear = conso * CO2E_GRID_KG_PER_KWH_FR;
+  const { avoidedKgYear, pctReduction, hasData } = computeCo2AvoidanceMetricsFr(
+    annualConsumptionKwh,
+    annualSelfConsumptionKwh
+  );
 
-  const pctAvoided =
-    baselineKgYear > 0 ? Math.min(100, (avoidedKgYear / baselineKgYear) * 100) : avoidedKgYear > 0 ? 100 : 0;
-
-  const hasData = prod > 0 && (conso > 0 || avoidedKgYear > 0);
   const tonnesStr = (avoidedKgYear / 1000).toLocaleString("fr-FR", {
     minimumFractionDigits: 1,
     maximumFractionDigits: 1,
   });
 
   /** Arc à 360° exact : Recharts trace un secteur sans coins arrondis ; on laisse un léger vide pour garder les extrémités arrondies. */
-  const pctForBar = pctAvoided >= 100 ? 99.94 : pctAvoided;
+  const pctForBar = pctReduction >= 100 ? 99.94 : pctReduction;
   const chartData = [{ name: "co2", value: Math.round(pctForBar * 10) / 10, fill: INK }];
 
   return (
@@ -59,9 +54,9 @@ export function RadianzCo2AvoidanceRadial({
       <div className="mt-2 flex min-h-[200px] flex-col justify-center">
         {hasData ? (
           <div
-            className="h-[200px] w-full"
+            className="relative h-[200px] w-full"
             role="img"
-            aria-label={`Environ ${Math.round(pctAvoided)} pour cent des émissions liées à la consommation électrique annuelle évitées, soit environ ${tonnesStr} tonnes de CO₂ par an, hypothèse ~52 g CO₂ par kWh.`}
+            aria-label={`Environ ${tonnesStr} tonnes de CO₂ évitées par an grâce à l'autoconsommation, soit environ ${Math.round(pctReduction)} pour cent des émissions liées à une consommation entièrement réseau, hypothèse réseau français classique environ 52 grammes de CO₂ par kilowattheure.`}
           >
             <ResponsiveContainer width="100%" height="100%">
               <RadialBarChart
@@ -80,18 +75,16 @@ export function RadianzCo2AvoidanceRadial({
                   background={{ fill: LINE }}
                   isAnimationActive={false}
                 />
-                <text
-                  x="50%"
-                  y="50%"
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fill={INK}
-                  className="font-sans text-[clamp(1.75rem,6vw,2.25rem)] font-light tracking-[-0.02em]"
-                >
-                  {Math.round(pctAvoided)}%
-                </text>
               </RadialBarChart>
             </ResponsiveContainer>
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+              <p className="font-sans text-[clamp(1.5rem,5.5vw,2rem)] font-light leading-none tracking-[-0.02em] text-[#0A0A0A]">
+                {tonnesStr} t
+              </p>
+              <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-[#6B6B6B]">
+                CO₂ évités
+              </p>
+            </div>
           </div>
         ) : (
           <div className="flex h-full min-h-[160px] flex-col items-center justify-center text-center">
@@ -105,8 +98,8 @@ export function RadianzCo2AvoidanceRadial({
 
       {hasData ? (
         <div className="mt-auto border-t pt-3 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[#6B6B6B]">
-          <span className="text-[#0A0A0A]">{tonnesStr} t</span>
-          <span className="block normal-case">CO₂ évités / an · ~52 g/kWh</span>
+          <span className="text-[#0A0A0A]">{Math.round(pctReduction)} %</span>
+          <span className="normal-case"> d&apos;énergie verte autoconsommée</span>
         </div>
       ) : null}
     </div>

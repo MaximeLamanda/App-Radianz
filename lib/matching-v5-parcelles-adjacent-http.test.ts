@@ -3,9 +3,12 @@ import {
   approximateMapBoundsAreaM2,
   buildParcellesAdjacentBboxSearchParams,
   buildParcellesAdjacentSearchParams,
+  buildParcellesCadastreLookupSearchParams,
+  expandMapBoundsForEditParcelSearch,
   isMapBoundsAreaAllowed,
   parseParcellesAdjacentRequest,
   PARCELLES_ADJACENT_MAX_BBOX_AREA_M2,
+  PARCELLES_EDIT_SEARCH_BBOX_EXPAND_RATIO,
 } from "@/lib/matching-v5-parcelles-adjacent-http";
 
 describe("parseParcellesAdjacentRequest", () => {
@@ -64,6 +67,21 @@ describe("parseParcellesAdjacentRequest", () => {
     }
   });
 
+  it("parse mode bbox sans code_insee (toutes communes dans la bbox)", () => {
+    const r = parseParcellesAdjacentRequest(
+      new URLSearchParams({
+        swLat: "44.8000",
+        swLng: "-0.6000",
+        neLat: "44.8008",
+        neLng: "-0.5992",
+      })
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok && r.mode === "bbox") {
+      expect(r.codeInsee).toEqual([]);
+    }
+  });
+
   it("refuse bbox trop grande", () => {
     const r = parseParcellesAdjacentRequest(
       new URLSearchParams({
@@ -92,6 +110,27 @@ describe("parseParcellesAdjacentRequest", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.mode).toBe("bbox");
   });
+
+  it("parse mode lookup (cadastre par ids)", () => {
+    const r = parseParcellesAdjacentRequest(
+      new URLSearchParams({
+        mode: "lookup",
+        parcelle_ids: "parcelle:33318:AB:0001,parcelle:33318:AB:0002",
+      })
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok && r.mode === "lookup") {
+      expect(r.parcelleIds).toEqual(["parcelle:33318:AB:0001", "parcelle:33318:AB:0002"]);
+    }
+  });
+});
+
+describe("buildParcellesCadastreLookupSearchParams", () => {
+  it("sérialise mode lookup", () => {
+    const sp = buildParcellesCadastreLookupSearchParams(["parcelle:33318:AB:0001"]);
+    expect(sp.get("mode")).toBe("lookup");
+    expect(sp.get("parcelle_ids")).toBe("parcelle:33318:AB:0001");
+  });
 });
 
 describe("buildParcellesAdjacentSearchParams", () => {
@@ -119,6 +158,14 @@ describe("buildParcellesAdjacentBboxSearchParams", () => {
     expect(sp.get("code_insee")).toBe("33318,33063");
     expect(sp.get("exclude_ids")).toBe("p1");
   });
+
+  it("sérialise bbox sans code_insee", () => {
+    const sp = buildParcellesAdjacentBboxSearchParams({
+      bounds: { sw: { lat: 1, lng: 2 }, ne: { lat: 3, lng: 4 } },
+      excludeIds: ["p1"],
+    });
+    expect(sp.has("code_insee")).toBe(false);
+  });
 });
 
 describe("approximateMapBoundsAreaM2", () => {
@@ -126,5 +173,34 @@ describe("approximateMapBoundsAreaM2", () => {
     const bounds = { sw: { lat: 44.8, lng: -0.6 }, ne: { lat: 44.801, lng: -0.599 } };
     expect(approximateMapBoundsAreaM2(bounds)).toBeLessThan(PARCELLES_ADJACENT_MAX_BBOX_AREA_M2);
     expect(isMapBoundsAreaAllowed(bounds)).toBe(true);
+  });
+});
+
+describe("expandMapBoundsForEditParcelSearch", () => {
+  it("élargit la bbox autour du centre", () => {
+    const bounds = { sw: { lat: 44.8, lng: -0.6 }, ne: { lat: 44.802, lng: -0.598 } };
+    const expanded = expandMapBoundsForEditParcelSearch(bounds);
+    const latMid = (bounds.sw.lat + bounds.ne.lat) / 2;
+    const lngMid = (bounds.sw.lng + bounds.ne.lng) / 2;
+    expect((expanded.sw.lat + expanded.ne.lat) / 2).toBeCloseTo(latMid);
+    expect((expanded.sw.lng + expanded.ne.lng) / 2).toBeCloseTo(lngMid);
+    expect(expanded.ne.lat - expanded.sw.lat).toBeCloseTo(
+      (bounds.ne.lat - bounds.sw.lat) * PARCELLES_EDIT_SEARCH_BBOX_EXPAND_RATIO
+    );
+    expect(isMapBoundsAreaAllowed(expanded)).toBe(true);
+  });
+
+  it("plafonne l’élargissement si la bbox visible est déjà grande", () => {
+    const sideDeg = Math.sqrt(PARCELLES_ADJACENT_MAX_BBOX_AREA_M2) / 111_320;
+    const bounds = {
+      sw: { lat: 44.8, lng: -0.6 },
+      ne: { lat: 44.8 + sideDeg, lng: -0.6 + sideDeg },
+    };
+    expect(isMapBoundsAreaAllowed(bounds)).toBe(true);
+    const expanded = expandMapBoundsForEditParcelSearch(bounds);
+    expect(approximateMapBoundsAreaM2(expanded)).toBeLessThanOrEqual(
+      PARCELLES_ADJACENT_MAX_BBOX_AREA_M2 + 1
+    );
+    expect(approximateMapBoundsAreaM2(expanded)).toBeGreaterThan(approximateMapBoundsAreaM2(bounds));
   });
 });

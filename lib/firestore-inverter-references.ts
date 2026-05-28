@@ -16,7 +16,7 @@ import type { InverterReference } from "@/types";
 import { DEFAULT_INVERTER_REFERENCES } from "./solar-settings";
 
 /** Supprime les champs undefined pour Firestore */
-function toFirestoreData(ref: InverterReference): Record<string, unknown> {
+export function inverterReferenceToFirestore(ref: InverterReference): Record<string, unknown> {
   return {
     id: ref.id,
     name: ref.name,
@@ -34,7 +34,7 @@ function toFirestoreData(ref: InverterReference): Record<string, unknown> {
 }
 
 /** Reconstruit un InverterReference depuis les données Firestore */
-function fromFirestoreData(data: Record<string, unknown>): InverterReference {
+export function inverterReferenceFromFirestore(data: Record<string, unknown>): InverterReference {
   return {
     id: String(data.id ?? ""),
     name: String(data.name ?? ""),
@@ -61,7 +61,7 @@ export async function getInverterReferencesFromFirebase(userId: string): Promise
     const snapshot = await getDocs(colRef);
     if (snapshot.empty) return [];
     const list = snapshot.docs
-      .map((d) => fromFirestoreData(d.data()))
+      .map((d) => inverterReferenceFromFirestore(d.data()))
       .filter((r) => r.id && r.name);
     const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
     const visibleCount = sorted.filter((r) => r.visible !== false).length;
@@ -84,7 +84,7 @@ export async function saveInverterReferenceToFirebase(ref: InverterReference, us
     await setDoc(
       docRef,
       {
-        ...toFirestoreData(ref),
+        ...inverterReferenceToFirestore(ref),
         updatedAt: Timestamp.now(),
       },
       { merge: true }

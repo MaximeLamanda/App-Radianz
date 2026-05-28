@@ -85,6 +85,22 @@ export const DEFAULT_PANEL_REFERENCES: PanelReference[] = [
   },
 ];
 
+/** Huawei C&I — https://solar.huawei.com/fr/products/SUN2000-150K-MG0/ */
+export const SUN2000_150K_MG0_INVERTER_REFERENCE: InverterReference = {
+  id: "inverter-huawei-sun2000-150k-mg0",
+  name: "SUN2000-150K-MG0",
+  inverterType: "string_inverter",
+  powerW: 150_000,
+  efficiencyPercent: 98.8,
+  countryOfOrigin: "Chine",
+  countryCode: "cn",
+  costEur: 18_000,
+  imageUrl: "/images/sun2000-150k-mg0.png",
+  warrantyYears: 10,
+  recommended: false,
+  visible: true,
+};
+
 /**
  * Références d'onduleur par défaut (utilisées pour l'init Firestore si vide)
  */
@@ -125,6 +141,7 @@ export const DEFAULT_INVERTER_REFERENCES: InverterReference[] = [
     warrantyYears: 25,
     recommended: false,
   },
+  SUN2000_150K_MG0_INVERTER_REFERENCE,
 ];
 
 /**

@@ -10,6 +10,7 @@ import {
   getInverterReferencesFromFirebase,
   initializeInverterReferencesInFirebase,
 } from "@/lib/firestore-inverter-references";
+import { getInverterCatalogFromFirebase } from "@/lib/firestore-inverter-catalog";
 import {
   getBatteryReferencesFromFirebase,
   initializeBatteryReferencesInFirebase,
@@ -129,6 +130,20 @@ export function useInverterReferences(userId: string | null): {
 
 /** Alias pour charger les refs d'un utilisateur donné (ex. propriétaire du prospect sur la page partagée) */
 export const useInverterReferencesForUser = useInverterReferences;
+
+export function useInverterCatalog(): {
+  data: InverterReference[] | undefined;
+  error: Error | undefined;
+  isLoading: boolean;
+  mutate: KeyedMutator<InverterReference[]>;
+} {
+  const { data, error, isLoading, mutate } = useSWR(
+    "inverter-catalog",
+    () => getInverterCatalogFromFirebase(),
+    SWR_OPTIONS_IMMUTABLE
+  );
+  return { data, error, isLoading, mutate };
+}
 
 export function useBatteryReferences(userId: string | null): {
   data: BatteryReference[] | undefined;

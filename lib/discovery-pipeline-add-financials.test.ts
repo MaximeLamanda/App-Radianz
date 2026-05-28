@@ -10,6 +10,8 @@ import {
   resolveDiscoveryProspectPipelineFinancials,
   resolveDiscoveryPipelineEnergyDisplay,
   discoveryAnnualConsumptionKwhFromProfile,
+  discoveryConsumptionOverrideForProspect,
+  resolveDiscoveryAnnualConsumptionKwh,
 } from "@/lib/discovery-pipeline-add-financials";
 
 const panel: PanelReference = {
@@ -79,6 +81,47 @@ describe("computeDiscoveryKwpEstForPipeline", () => {
       panelRef: panel,
     });
     expect(kwp).toBeGreaterThan(0);
+  });
+
+  it("augmente le kWp perfect fit quand la conso annuelle est doublée", () => {
+    const footprintM2 = 500;
+    const baseline = discoveryAnnualConsumptionKwhFromProfile("other", footprintM2);
+    const kwpBaseline = computeDiscoveryKwpEstForPipeline({
+      footprintM2,
+      pvgisAnnualPerKwp: pvgis.annualProduction,
+      panelRef: panel,
+      placeType: "other",
+    });
+    const kwpDoubled = computeDiscoveryKwpEstForPipeline({
+      footprintM2,
+      pvgisAnnualPerKwp: pvgis.annualProduction,
+      panelRef: panel,
+      placeType: "other",
+      annualConsumptionKwh: baseline * 2,
+    });
+    expect(kwpDoubled).toBeGreaterThan(kwpBaseline);
+  });
+});
+
+describe("resolveDiscoveryAnnualConsumptionKwh", () => {
+  it("accepte un override à 0 kWh", () => {
+    const footprintM2 = 400;
+    const baseline = discoveryAnnualConsumptionKwhFromProfile("other", footprintM2);
+    expect(baseline).toBeGreaterThan(0);
+    expect(
+      resolveDiscoveryAnnualConsumptionKwh({
+        placeType: "other",
+        footprintM2,
+        annualConsumptionKwh: 0,
+      })
+    ).toBe(0);
+  });
+});
+
+describe("discoveryConsumptionOverrideForProspect", () => {
+  it("persiste 0 quand différent de la baseline", () => {
+    expect(discoveryConsumptionOverrideForProspect(0, 50_000)).toBe(0);
+    expect(discoveryConsumptionOverrideForProspect(50_000, 50_000)).toBeUndefined();
   });
 });
 

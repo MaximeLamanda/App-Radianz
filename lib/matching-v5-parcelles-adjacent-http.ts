@@ -9,8 +9,11 @@ const DEFAULT_BUFFER_M = 5;
 const MAX_BUFFER_M = 50;
 const MAX_RESULTS = 200;
 
-/** Surface bbox max ~800 m × 800 m (zone visible raisonnable en édition). */
-export const PARCELLES_ADJACENT_MAX_BBOX_AREA_M2 = 640_000;
+/** Surface bbox max ~1000 m × 1000 m (zone visible / recherche édition). */
+export const PARCELLES_ADJACENT_MAX_BBOX_AREA_M2 = 1_000_000;
+
+/** Facteur d’élargissement de la bbox visible au lancement du mode édition (par axe). */
+export const PARCELLES_EDIT_SEARCH_BBOX_EXPAND_RATIO = 1.5;
 
 export type ParcellesAdjacentAnchorRequest = {
   mode: "anchor";
@@ -26,8 +29,20 @@ export type ParcellesAdjacentBboxRequest = {
   excludeIds: string[];
 };
 
+/** Géométries cadastre exactes pour une liste de `scout_v5_id` (réhydratation pipeline). */
+export type ParcellesAdjacentLookupRequest = {
+  mode: "lookup";
+  parcelleIds: string[];
+};
+
 export type ParcellesAdjacentParseResult =
-  | { ok: true } & (ParcellesAdjacentAnchorRequest | ParcellesAdjacentBboxRequest)
+  | {
+      ok: true;
+    } & (
+      | ParcellesAdjacentAnchorRequest
+      | ParcellesAdjacentBboxRequest
+      | ParcellesAdjacentLookupRequest
+    )
   | { ok: false; status: number; error: string };
 
 function parseIdList(raw: string | null, max: number): string[] | null {
@@ -65,6 +80,12 @@ function parseCodeInseeList(raw: string | null): string[] | null {
   return [...new Set(parts)];
 }
 
+/** Mode bbox : absent ou vide = toutes les communes intersectant la bbox. */
+function parseCodeInseeListForBbox(raw: string | null): string[] | null {
+  if (raw == null || raw.trim() === "") return [];
+  return parseCodeInseeList(raw);
+}
+
 /** Approximation planaire de la surface bbox (m²) pour garde-fou client/serveur. */
 export function approximateMapBoundsAreaM2(bounds: MapBounds): number {
   const latMid = (bounds.sw.lat + bounds.ne.lat) / 2;
@@ -76,6 +97,27 @@ export function approximateMapBoundsAreaM2(bounds: MapBounds): number {
 
 export function isMapBoundsAreaAllowed(bounds: MapBounds): boolean {
   return approximateMapBoundsAreaM2(bounds) <= PARCELLES_ADJACENT_MAX_BBOX_AREA_M2;
+}
+
+/**
+ * Bbox de recherche cadastrale en mode édition : élargit la zone visible autour de son centre,
+ * plafonnée à {@link PARCELLES_ADJACENT_MAX_BBOX_AREA_M2}.
+ */
+export function expandMapBoundsForEditParcelSearch(bounds: MapBounds): MapBounds {
+  const latMid = (bounds.sw.lat + bounds.ne.lat) / 2;
+  const lngMid = (bounds.sw.lng + bounds.ne.lng) / 2;
+  const halfLat = Math.abs(bounds.ne.lat - bounds.sw.lat) / 2;
+  const halfLng = Math.abs(bounds.ne.lng - bounds.sw.lng) / 2;
+  const baseArea = approximateMapBoundsAreaM2(bounds);
+  const maxArea = PARCELLES_ADJACENT_MAX_BBOX_AREA_M2;
+  let ratio = PARCELLES_EDIT_SEARCH_BBOX_EXPAND_RATIO;
+  if (baseArea > 0 && baseArea * ratio * ratio > maxArea) {
+    ratio = Math.sqrt(maxArea / baseArea);
+  }
+  return {
+    sw: { lat: latMid - halfLat * ratio, lng: lngMid - halfLng * ratio },
+    ne: { lat: latMid + halfLat * ratio, lng: lngMid + halfLng * ratio },
+  };
 }
 
 function parseBboxMode(
@@ -96,8 +138,8 @@ function parseBboxMode(
     return { ok: false, status: 400, error: "Paramètres bbox invalides." };
   }
 
-  const codeInsee = parseCodeInseeList(searchParams.get("code_insee"));
-  if (!codeInsee) {
+  const codeInsee = parseCodeInseeListForBbox(searchParams.get("code_insee"));
+  if (codeInsee === null) {
     return { ok: false, status: 400, error: "code_insee invalide (1–3 communes)." };
   }
 
@@ -126,6 +168,19 @@ export function parseParcellesAdjacentRequest(
 
   const bboxMode = parseBboxMode(searchParams, excludeIds ?? []);
   if (bboxMode) return bboxMode;
+
+  const lookupMode =
+    searchParams.get("mode") === "lookup" || searchParams.get("lookup") === "1";
+  if (lookupMode) {
+    const parcelleIds = parseIdList(searchParams.get("parcelle_ids"), MAX_ANCHOR_IDS);
+    if (parcelleIds === null) {
+      return { ok: false, status: 400, error: "parcelle_ids invalide (max 50)" };
+    }
+    if (parcelleIds.length === 0) {
+      return { ok: false, status: 400, error: "parcelle_ids requis en mode lookup" };
+    }
+    return { ok: true, mode: "lookup", parcelleIds };
+  }
 
   const parcelleIds = parseIdList(searchParams.get("parcelle_ids"), MAX_ANCHOR_IDS);
   if (parcelleIds === null) {
@@ -162,9 +217,17 @@ export function buildParcellesAdjacentSearchParams(input: {
   return sp;
 }
 
+export function buildParcellesCadastreLookupSearchParams(parcelleIds: readonly string[]): URLSearchParams {
+  const sp = new URLSearchParams();
+  sp.set("mode", "lookup");
+  sp.set("parcelle_ids", parcelleIds.join(","));
+  return sp;
+}
+
 export function buildParcellesAdjacentBboxSearchParams(input: {
   bounds: MapBounds;
-  codeInsee: readonly string[];
+  /** Vide = toutes les communes dans la bbox (frontière intercommunale). */
+  codeInsee?: readonly string[];
   excludeIds?: readonly string[];
 }): URLSearchParams {
   const sp = new URLSearchParams();
@@ -172,7 +235,7 @@ export function buildParcellesAdjacentBboxSearchParams(input: {
   sp.set("swLng", String(input.bounds.sw.lng));
   sp.set("neLat", String(input.bounds.ne.lat));
   sp.set("neLng", String(input.bounds.ne.lng));
-  sp.set("code_insee", input.codeInsee.join(","));
+  if (input.codeInsee?.length) sp.set("code_insee", input.codeInsee.join(","));
   if (input.excludeIds?.length) sp.set("exclude_ids", input.excludeIds.join(","));
   return sp;
 }

@@ -59,6 +59,7 @@ import {
   getUsableRoofAreaM2,
 } from "@/lib/surface-to-kwp";
 import {
+  annualSelfConsumptionKwhTotal,
   avoidedCo2TonnesPerYearGridFr,
   co2AvoidanceHasDataForDisplay,
 } from "@/lib/co2-avoidance-fr";
@@ -1012,13 +1013,18 @@ export default function ProspectSharePage() {
 
   const recapAnnualMwh = effectiveConfig.effectiveAnnualProductionKwh / KWH_PER_MWH;
   const recapShowMwh = Number.isFinite(recapAnnualMwh) && recapAnnualMwh > 0;
-  const recapCo2HasData = co2AvoidanceHasDataForDisplay(
-    effectiveConfig.effectiveAnnualProductionKwh,
-    liveAnnualConsumptionKwh
+  const recapAnnualSelfConsumptionKwh = annualSelfConsumptionKwhTotal(
+    selfConsumptionDirectKwhTotal,
+    selfConsumptionViaBatteryKwhTotal
   );
-  const recapCo2TonnesStr = avoidedCo2TonnesPerYearGridFr(
-    effectiveConfig.effectiveAnnualProductionKwh
-  ).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const recapCo2HasData = co2AvoidanceHasDataForDisplay(
+    liveAnnualConsumptionKwh,
+    recapAnnualSelfConsumptionKwh
+  );
+  const recapCo2TonnesStr = avoidedCo2TonnesPerYearGridFr(recapAnnualSelfConsumptionKwh).toLocaleString(
+    "fr-FR",
+    { minimumFractionDigits: 1, maximumFractionDigits: 1 }
+  );
   const recapParcelM2 = prospect.parcelContourAreaM2;
   const recapShowParcelle = recapParcelM2 != null && recapParcelM2 > 0;
   const recapBdnbM2 = prospect.bdnbFootprintSumM2;
@@ -1505,8 +1511,8 @@ export default function ProspectSharePage() {
                   segments={billReductionCard.segments}
                 />
                 <RadianzCo2AvoidanceRadial
-                  annualProductionKwh={effectiveConfig.effectiveAnnualProductionKwh}
                   annualConsumptionKwh={liveAnnualConsumptionKwh}
+                  annualSelfConsumptionKwh={recapAnnualSelfConsumptionKwh}
                 />
               </div>
             </section>

@@ -5,6 +5,8 @@
 import {
   buildTypicalConsumptionDayForMonth,
   getEnergyConsumption,
+  getEnergyConsumptionForMonth,
+  type MonthIndex,
 } from "@/lib/building-energy-consumption";
 import { runProductionSimulation, scaleBatteryForCount } from "@/lib/battery-simulation";
 import { buildTypicalDayForMonth } from "@/lib/pvgis";
@@ -48,8 +50,18 @@ export function computeDiscoveryDrawerFinancialSummary(params: {
   batteryRef: BatteryReference | null;
   batteryCount: number;
   includeBattery: boolean;
+  annualConsumptionKwh?: number | null;
 }): DiscoveryDrawerFinancialSummary | null {
-  const { inputs, placeType, panelRef, inverterRef, batteryRef, batteryCount, includeBattery } = params;
+  const {
+    inputs,
+    placeType,
+    panelRef,
+    inverterRef,
+    batteryRef,
+    batteryCount,
+    includeBattery,
+    annualConsumptionKwh,
+  } = params;
   const { footprintM2: totalArea, kwp: effectiveKwp, annualPerKwp: productionPerKwpAnnual, monthlyPerKwp } =
     inputs;
 
@@ -61,7 +73,18 @@ export function computeDiscoveryDrawerFinancialSummary(params: {
   const panelCount = Math.min(Math.floor((effectiveKwp * 1000) / panelPowerW), maxPanelCount);
   const inverterCount = calculateInverterCount(effectiveKwp, inverterRef);
 
-  const totalConsumptionKwh = getEnergyConsumption(placeType) * totalArea;
+  const baselineConsumptionKwh =
+    totalArea > 0
+      ? Array.from({ length: 12 }, (_, m) =>
+          Math.round(getEnergyConsumptionForMonth(placeType, m as MonthIndex) * totalArea)
+        ).reduce((a, b) => a + b, 0)
+      : getEnergyConsumption(placeType) * totalArea;
+  const totalConsumptionKwh =
+    annualConsumptionKwh != null && Number.isFinite(annualConsumptionKwh) && annualConsumptionKwh >= 0
+      ? Math.round(annualConsumptionKwh)
+      : baselineConsumptionKwh;
+  const consumptionScale =
+    baselineConsumptionKwh > 0 ? totalConsumptionKwh / baselineConsumptionKwh : 1;
   const annualProductionKWh = Math.round(productionPerKwpAnnual * effectiveKwp);
 
   const canUseProfiles = monthlyPerKwp.length === 12;
@@ -80,7 +103,7 @@ export function computeDiscoveryDrawerFinancialSummary(params: {
       buildTypicalDayForMonth(monthlyPerKwp, m, kwp)
     );
     const consumptionTypicalDayByMonth = Array.from({ length: 12 }, (_, m) =>
-      buildTypicalConsumptionDayForMonth(placeType, m, totalArea)
+      buildTypicalConsumptionDayForMonth(placeType, m, totalArea).map((h) => h * consumptionScale)
     );
     const scaledBattery =
       includeBattery && batteryRef ? scaleBatteryForCount(batteryRef, batteryCount) : null;

@@ -14,6 +14,8 @@
     "playwright:install": "playwright install chromium",
     "init-energy-data": "tsx scripts/init-energy-data.ts",
     "update-hourly-consumption": "tsx scripts/update-hourly-consumption-firebase.ts",
+    "seed:inverter-reference": "tsx scripts/seed-inverter-reference.ts",
+    "seed:inverter-catalog": "tsx scripts/seed-inverter-catalog.ts",
     "test:apicarto": "node scripts/test-apicarto-cadastre.mjs",
     "enrich:dep33": "node scripts/enrich-sitadel-dep33-apicarto.mjs",
     "enrich:by-commune": "node scripts/enrich-sitadel-by-commune.mjs",

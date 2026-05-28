@@ -112,10 +112,33 @@ export async function GET(request: NextRequest) {
   try {
     await client.connect();
 
-    if (parsed.mode === "bbox") {
-      const { bounds, codeInsee, excludeIds } = parsed;
+    if (parsed.mode === "lookup") {
+      const { parcelleIds } = parsed;
       const res = await client.query<CadastreRow>(
         `
+        ${selectSql}
+        WHERE ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm) = ANY($1::text[])
+        ORDER BY c.code_insee, c.section, c.numero_norm
+        LIMIT $2
+        `,
+        [parcelleIds, PARCELLES_ADJACENT_MAX_RESULTS]
+      );
+
+      const parcelles = mapParcelleRows(res.rows);
+      return NextResponse.json({
+        parcelles,
+        source: "cadastre_france_feuilles_geom",
+        mode: "lookup",
+        truncated: parcelles.length >= PARCELLES_ADJACENT_MAX_RESULTS,
+      });
+    }
+
+    if (parsed.mode === "bbox") {
+      const { bounds, codeInsee, excludeIds } = parsed;
+      const filterByInsee = codeInsee.length > 0;
+      const res = await client.query<CadastreRow>(
+        filterByInsee
+          ? `
         ${selectSql}
         WHERE c.code_insee = ANY($1::text[])
           AND c.geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
@@ -125,16 +148,35 @@ export async function GET(request: NextRequest) {
           )
         ORDER BY c.code_insee, c.section, c.numero_norm
         LIMIT $7
+        `
+          : `
+        ${selectSql}
+        WHERE c.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+          AND ST_Intersects(c.geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
+          AND NOT (
+            ('parcelle:' || c.code_insee || ':' || c.section || ':' || c.numero_norm) = ANY($5::text[])
+          )
+        ORDER BY c.code_insee, c.section, c.numero_norm
+        LIMIT $6
         `,
-        [
-          codeInsee,
-          bounds.sw.lng,
-          bounds.sw.lat,
-          bounds.ne.lng,
-          bounds.ne.lat,
-          excludeIds,
-          PARCELLES_ADJACENT_MAX_RESULTS,
-        ]
+        filterByInsee
+          ? [
+              codeInsee,
+              bounds.sw.lng,
+              bounds.sw.lat,
+              bounds.ne.lng,
+              bounds.ne.lat,
+              excludeIds,
+              PARCELLES_ADJACENT_MAX_RESULTS,
+            ]
+          : [
+              bounds.sw.lng,
+              bounds.sw.lat,
+              bounds.ne.lng,
+              bounds.ne.lat,
+              excludeIds,
+              PARCELLES_ADJACENT_MAX_RESULTS,
+            ]
       );
 
       const parcelles = mapParcelleRows(res.rows);

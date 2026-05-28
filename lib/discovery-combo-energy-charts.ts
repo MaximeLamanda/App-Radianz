@@ -13,8 +13,10 @@ export function buildDiscoveryMonthlyChartData(params: {
   kwp: number;
   placeType: string;
   batteryByMonth?: DiscoveryDrawerFinancialSummary["batteryByMonth"];
+  /** kWh par mois (jan→déc) ; sinon profil type × empreinte. */
+  consumptionMonthlyKwh?: number[];
 }): MonthlyProductionChartDatum[] {
-  const { pvgis, footprintM2, kwp, placeType, batteryByMonth } = params;
+  const { pvgis, footprintM2, kwp, placeType, batteryByMonth, consumptionMonthlyKwh } = params;
   if (footprintM2 <= 0 || kwp <= 0 || pvgis.annualProduction <= 0) return [];
 
   const { monthlyProduction } = getProductionFromPerKwp(
@@ -24,9 +26,13 @@ export function buildDiscoveryMonthlyChartData(params: {
   );
 
   return monthlyProduction.map((m) => {
-    const consumption = Math.round(
-      getEnergyConsumptionForMonth(placeType, (m.month - 1) as MonthIndex) * footprintM2
-    );
+    const mi = m.month - 1;
+    const consumption =
+      consumptionMonthlyKwh?.length === 12
+        ? Math.round(consumptionMonthlyKwh[mi] ?? 0)
+        : Math.round(
+            getEnergyConsumptionForMonth(placeType, mi as MonthIndex) * footprintM2
+          );
     const base = { month: m.month, production: m.production, consumption };
     const b = batteryByMonth?.[m.month - 1];
     if (b) {

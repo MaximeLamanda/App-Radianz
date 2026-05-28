@@ -6,7 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Image from "next/image";
-import { Plus, X, Zap, FileCheck, ArrowLeft, User, Building2, Camera, Loader2, Sparkles } from "lucide-react";
+import { Plus, X, Zap, FileCheck, ArrowLeft, User, Building2, Camera, Loader2, Sparkles, ListPlus } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -45,6 +45,7 @@ import { getUserProfile, setUserProfile } from "@/lib/firestore-user-profile";
 import { getQuotaDisplay } from "@/lib/usage-quotas";
 import { Badge } from "@/components/ui/badge";
 import { PanelReferenceForm, InverterReferenceForm, BatteryReferenceForm } from "./Sidebar";
+import { InverterCatalogPickerDialog } from "./InverterCatalogPickerDialog";
 import type { PanelReference, InverterReference, BatteryReference, CommercialReferent } from "@/types";
 
 interface SettingsDrawerProps {
@@ -65,6 +66,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
   const [showAddPanelRef, setShowAddPanelRef] = useState(false);
   const [editingRef, setEditingRef] = useState<PanelReference | null>(null);
   const [showAddInverterRef, setShowAddInverterRef] = useState(false);
+  const [showInverterCatalogPicker, setShowInverterCatalogPicker] = useState(false);
   const [editingInverterRef, setEditingInverterRef] = useState<InverterReference | null>(null);
   const [showAddBatteryRef, setShowAddBatteryRef] = useState(false);
   const [editingBatteryRef, setEditingBatteryRef] = useState<BatteryReference | null>(null);
@@ -150,6 +152,7 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
   };
 
   return (
+    <>
     <div className="h-full w-full bg-gray-50 border-l shadow-xl flex flex-col rounded-2xl overflow-hidden">
       <div className="border-b p-4 bg-white">
         <div className="flex items-center justify-between">
@@ -474,18 +477,31 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
 
               {/* Onglet Onduleurs */}
               <TabsContent value="inverters" className="space-y-3 mt-4">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium">Références d&apos;onduleur</label>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setShowAddInverterRef(true)}
-                    className="h-8"
-                  >
-                    <Plus className="h-3.5 w-3 mr-1" />
-                    Ajouter
-                  </Button>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-sm font-medium shrink-0">Références d&apos;onduleur</label>
+                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowInverterCatalogPicker(true)}
+                      className="h-8"
+                      disabled={!userId}
+                    >
+                      <ListPlus className="h-3.5 w-3 mr-1" />
+                      Ajouter de la liste
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowAddInverterRef(true)}
+                      className="h-8"
+                    >
+                      <Plus className="h-3.5 w-3 mr-1" />
+                      Ajouter
+                    </Button>
+                  </div>
                 </div>
                 <ul className="space-y-3">
                   {inverterReferences.map((ref) => (
@@ -818,5 +834,15 @@ export function SettingsDrawer({ onClose }: SettingsDrawerProps) {
         )}
       </div>
     </div>
+    {userId ? (
+      <InverterCatalogPickerDialog
+        open={showInverterCatalogPicker}
+        onOpenChange={setShowInverterCatalogPicker}
+        userId={userId}
+        userReferences={inverterReferences}
+        onUserReferencesChange={() => mutateInverters()}
+      />
+    ) : null}
+  </>
   );
 }

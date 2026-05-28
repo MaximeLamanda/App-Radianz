@@ -6,6 +6,7 @@
 import {
   getEnergyConsumption,
   getEnergyConsumptionForMonth,
+  monthlyConsumptionKwhFromAnnualProfile,
   type MonthIndex,
 } from "@/lib/building-energy-consumption";
 import { getProductionFromPerKwp } from "@/lib/pvgis";
@@ -39,6 +40,41 @@ export function discoveryAnnualConsumptionKwhFromProfile(
   return Array.from({ length: 12 }, (_, m) =>
     Math.round(getEnergyConsumptionForMonth(placeType, m as MonthIndex) * footprintM2)
   ).reduce((a, b) => a + b, 0);
+}
+
+/** Conso annuelle effective (override commercial ou profil surface). */
+export function resolveDiscoveryAnnualConsumptionKwh(params: {
+  placeType: string;
+  footprintM2: number;
+  annualConsumptionKwh?: number | null;
+}): number {
+  const baseline = discoveryAnnualConsumptionKwhFromProfile(params.placeType, params.footprintM2);
+  const override = params.annualConsumptionKwh;
+  if (override != null && Number.isFinite(override) && override >= 0) {
+    return Math.round(override);
+  }
+  return baseline;
+}
+
+/** 12 mois (kWh) avec saisonnalité, total ≈ `resolveDiscoveryAnnualConsumptionKwh`. */
+export function discoveryMonthlyConsumptionKwh(params: {
+  placeType: string;
+  footprintM2: number;
+  annualConsumptionKwh?: number | null;
+}): number[] {
+  const target = resolveDiscoveryAnnualConsumptionKwh(params);
+  return monthlyConsumptionKwhFromAnnualProfile(params.placeType, params.footprintM2, target);
+}
+
+/** Valeur à persister sur le prospect ; `undefined` = pas d’override (baseline). */
+export function discoveryConsumptionOverrideForProspect(
+  targetKwh: number,
+  baselineKwh: number
+): number | undefined {
+  const t = Math.round(targetKwh);
+  const b = Math.round(baselineKwh);
+  if (t >= 0 && t !== b) return t;
+  return undefined;
 }
 
 /**
@@ -240,8 +276,10 @@ export function computeDiscoveryChoiceCardsConfig(params: {
   panelRef: PanelReference | null;
   inverterRef: InverterReference | null;
   placeType?: string;
+  annualConsumptionKwh?: number | null;
 }): DiscoveryChoiceCardsConfig {
-  const { footprintM2, pvgisAnnualPerKwp, panelRef, inverterRef, placeType = "other" } = params;
+  const { footprintM2, pvgisAnnualPerKwp, panelRef, inverterRef, placeType = "other", annualConsumptionKwh } =
+    params;
   const empty = { panelCount: 0, inverterCount: 0, kwp: 0 };
   if (footprintM2 <= 0 || !panelRef || !inverterRef || pvgisAnnualPerKwp <= 0) {
     return { perfectFit: empty, highestProduction: empty };
@@ -253,6 +291,7 @@ export function computeDiscoveryChoiceCardsConfig(params: {
     pvgisAnnualPerKwp,
     panelRef,
     placeType,
+    annualConsumptionKwh,
   });
   const usableArea = getUsableRoofAreaM2(footprintM2);
   const maxPanelCount = calculatePanelCount(usableArea, undefined, panelRef);
@@ -279,12 +318,17 @@ export function computeDiscoveryKwpEstForPipeline(params: {
   pvgisAnnualPerKwp: number;
   panelRef?: PanelReference | null;
   placeType?: string;
+  annualConsumptionKwh?: number | null;
 }): number {
-  const { footprintM2, pvgisAnnualPerKwp, panelRef, placeType = "other" } = params;
+  const { footprintM2, pvgisAnnualPerKwp, panelRef, placeType = "other", annualConsumptionKwh } = params;
   const kwpMax = surfaceToKwp(footprintM2, undefined, undefined, panelRef ?? null);
   if (kwpMax <= 0) return 0;
   if (pvgisAnnualPerKwp <= 0) return kwpMax;
-  const consoAnnuelleKwh = discoveryAnnualConsumptionKwhFromProfile(placeType, footprintM2);
+  const consoAnnuelleKwh = resolveDiscoveryAnnualConsumptionKwh({
+    placeType,
+    footprintM2,
+    annualConsumptionKwh,
+  });
   const targetKwp =
     (consoAnnuelleKwh * DISCOVERY_PERFECT_FIT_SELF_CONSUMPTION_TARGET) / pvgisAnnualPerKwp;
   if (!Number.isFinite(targetKwp) || targetKwp <= 0) return kwpMax;
@@ -318,6 +362,7 @@ export function computeDiscoveryPipelineFinancialSummaryAtAdd(params: {
   batteryCount?: number;
   includeBattery?: boolean;
   placeType?: string;
+  annualConsumptionKwh?: number | null;
 }): DiscoveryDrawerFinancialSummary | null {
   const {
     footprintM2,
@@ -328,6 +373,7 @@ export function computeDiscoveryPipelineFinancialSummaryAtAdd(params: {
     batteryCount = 1,
     includeBattery = true,
     placeType = "other",
+    annualConsumptionKwh,
   } = params;
 
   if (!pvgis || footprintM2 <= 0) return null;
@@ -340,6 +386,7 @@ export function computeDiscoveryPipelineFinancialSummaryAtAdd(params: {
     pvgisAnnualPerKwp: pvgis.annualProduction,
     panelRef: panel,
     placeType,
+    annualConsumptionKwh,
   });
   const inputs = buildDiscoveryPipelineFinanceInputs({ footprintM2, kwp, pvgis });
   if (!inputs) return null;
@@ -352,6 +399,7 @@ export function computeDiscoveryPipelineFinancialSummaryAtAdd(params: {
     batteryRef: includeBattery ? batteryRef : null,
     batteryCount: Math.max(1, batteryCount),
     includeBattery,
+    annualConsumptionKwh,
   });
 }
 
@@ -364,6 +412,7 @@ export function computeDiscoveryPipelineFinancialSummaryFromInputs(params: {
   batteryCount?: number;
   includeBattery?: boolean;
   placeType?: string;
+  annualConsumptionKwh?: number | null;
 }): DiscoveryDrawerFinancialSummary | null {
   return computeDiscoveryDrawerFinancialSummary({
     inputs: params.inputs,
@@ -373,5 +422,6 @@ export function computeDiscoveryPipelineFinancialSummaryFromInputs(params: {
     batteryRef: params.includeBattery ? params.batteryRef ?? null : null,
     batteryCount: Math.max(1, params.batteryCount ?? 1),
     includeBattery: params.includeBattery ?? false,
+    annualConsumptionKwh: params.annualConsumptionKwh,
   });
 }
