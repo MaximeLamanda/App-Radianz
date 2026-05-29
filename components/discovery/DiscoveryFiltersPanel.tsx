@@ -4,7 +4,9 @@ import { useMemo, type ComponentType } from "react";
 import {
   Building2,
   Factory,
+  GraduationCap,
   Home,
+  Hospital,
   Store,
   type LucideProps,
 } from "lucide-react";
@@ -58,6 +60,8 @@ const ZONE_ACTIVITY_ICONS: Record<string, ComponentType<LucideProps>> = {
   industrial: Factory,
   commercial: Building2,
   retail: Store,
+  education: GraduationCap,
+  hospital: Hospital,
   residential: Home,
 };
 

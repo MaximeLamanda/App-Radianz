@@ -271,7 +271,7 @@ const V5_ZONE_TAG_FR_LABELS: Record<string, string> = {
   commercial: "Tertiaire",
   retail: "Retail",
   residential: "Résidentiel",
-  education: "École · université · campus",
+  education: "Éducation",
   religious: "Religieux",
   military: "Militaire",
   port: "Port",
@@ -318,6 +318,7 @@ const V5_ZONE_TAG_FR_LABELS: Record<string, string> = {
 /** Libellé court FR pour la source d'un `zone_tag` (debug / tooltip). */
 const V5_ZONE_SOURCE_FR_LABELS: Record<string, string> = {
   landuse: "OSM landuse",
+  amenity: "OSM amenity",
   building_use: "OSM building:use",
   building: "OSM building",
   none: "Inconnu",
@@ -340,6 +341,25 @@ export function formatV5ZoneSourceLabel(zoneSource: string | null | undefined): 
   const s = String(zoneSource ?? "").trim().toLowerCase();
   if (!s) return "";
   return V5_ZONE_SOURCE_FR_LABELS[s] ?? s;
+}
+
+/**
+ * Périmètre institutionnel OSM (`amenity=school|college|…`) sans tag `building` importable.
+ * Ces empreintes définissent la zone d'activité, pas un bâtiment au sol.
+ */
+export function isOsmInstitutionalZoneFootprint(entry: V5BuildingsJsonEntry): boolean {
+  const src = String(entry.zoneSource ?? "").trim().toLowerCase();
+  if (src !== "amenity") return false;
+  const bld = String(entry.osmRawTags?.building ?? "").trim();
+  if (!bld) return true;
+  return bld.toLowerCase() === "no";
+}
+
+/** Entrées `buildings_json` utilisables comme bâtiments (exclut les périmètres `amenity` zone). */
+export function filterV5BuildingFootprintsOnly(
+  entries: readonly V5BuildingsJsonEntry[]
+): V5BuildingsJsonEntry[] {
+  return entries.filter((e) => !isOsmInstitutionalZoneFootprint(e));
 }
 
 /** Parse `buildings_json` (tableau JSON) pour affichage fiche découverte. */
@@ -399,7 +419,7 @@ export function footprintSumM2DedupedFromParcelleCluster(
 ): number | null {
   const byBc = new Map<string, number>();
   for (const pr of parcels) {
-    for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
+    for (const b of filterV5BuildingFootprintsOnly(parseMatchingV5BuildingsJson(pr.buildingsJson))) {
       const bc = b.batimentConstructionId.trim();
       if (!bc || byBc.has(bc)) continue;
       const fp = b.footprintM2;

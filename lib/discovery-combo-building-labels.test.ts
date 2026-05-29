@@ -70,6 +70,35 @@ describe("compareV5BuildingsJsonEntriesForDisplay", () => {
 });
 
 describe("collectSortedDiscoveryComboBuildingEntries", () => {
+  it("exclut un périmètre amenity zone du tableau bâtiments", () => {
+    const zoneJson = JSON.stringify([
+      {
+        batiment_construction_id: "w:100",
+        footprint_m2: 23190,
+        zone_source: "amenity",
+        zone_tag: "education",
+        osm_name: "Collège François Mitterrand",
+        matching_status: "mono",
+        matching_decision: "",
+        matching_siren_selected: "",
+      },
+      {
+        batiment_construction_id: "w:200",
+        footprint_m2: 5753,
+        zone_source: "building",
+        matching_status: "mono",
+        matching_decision: "",
+        matching_siren_selected: "",
+        osm_raw_tags: { building: "yes" },
+      },
+    ]);
+    const anchor = parcelleRow("p1", zoneJson);
+    const rows = collectSortedDiscoveryComboBuildingEntries([anchor], anchor);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.batimentConstructionId).toBe("w:200");
+    expect(rows[0]!.footprintM2).toBe(5753);
+  });
+
   it("déduplique et trie le cluster parcelle", () => {
     const anchor = parcelleRow("p1", buildingsJson([{ bc: "bc1", fp: 100 }]));
     const cluster = [

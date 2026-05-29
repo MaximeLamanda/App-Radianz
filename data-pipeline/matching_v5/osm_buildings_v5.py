@@ -55,6 +55,59 @@ def osm_building_tag_is_importable(tags: dict[str, Any]) -> bool:
     return b.casefold() != "no"
 
 
+# amenity=* → zone_tag (éducation regroupée sous `education`).
+_AMENITY_ZONE_TAG: dict[str, str] = {
+    "school": "education",
+    "kindergarten": "education",
+    "college": "education",
+    "university": "education",
+    "hospital": "hospital",
+}
+
+_EDUCATION_BUILDING_TAGS = frozenset({"school", "kindergarten", "college", "university"})
+
+
+def _zone_tag_from_amenity(amenity: str | None) -> str:
+    key = ("" if amenity is None else str(amenity)).strip().lower()
+    if not key:
+        return ""
+    return _AMENITY_ZONE_TAG.get(key, "")
+
+
+def osm_institutional_amenity_footprint_is_importable(tags: dict[str, Any]) -> bool:
+    """Ways fermés école / hôpital / université sans ``building=*`` (périmètre ``amenity``)."""
+    return bool(_zone_tag_from_amenity(str(tags.get("amenity") or "")))
+
+
+def osm_footprint_is_importable(tags: dict[str, Any]) -> bool:
+    """Empreinte OSM pour matching V5 : ``building=*`` ou périmètre institutionnel ``amenity``."""
+    return osm_building_tag_is_importable(tags) or osm_institutional_amenity_footprint_is_importable(
+        tags
+    )
+
+
+def osm_footprint_kind_from_tags(tags: dict[str, Any]) -> str:
+    """``building`` = emprise bâti ; ``zone`` = périmètre ``amenity`` sans tag ``building`` importable."""
+    if osm_building_tag_is_importable(tags):
+        return "building"
+    if osm_institutional_amenity_footprint_is_importable(tags):
+        return "zone"
+    return ""
+
+
+def osm_footprint_kind_from_osm_tag_fields(
+    building: str | None,
+    amenity: str | None,
+) -> str:
+    """Variante alignée sur les colonnes SQL ``osm_tag_building`` / ``osm_tag_amenity``."""
+    return osm_footprint_kind_from_tags(
+        {
+            "building": ("" if building is None else str(building)).strip(),
+            "amenity": ("" if amenity is None else str(amenity)).strip(),
+        }
+    )
+
+
 def osm_buildings_regclass() -> str:
     raw = os.environ.get("OSM_BUILDINGS_TABLE", "public.osm_building_footprints")
     schema, table = parse_qualified_table(
@@ -117,13 +170,39 @@ def _extract_contact_tags_subset(tags: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+# landuse=* qui doit primer sur amenity (campus, zones d'activité dédiées).
+_LANDUSE_ZONE_PRIORITY = frozenset(
+    {
+        "commercial",
+        "industrial",
+        "retail",
+        "education",
+        "religious",
+        "military",
+        "port",
+        "depot",
+    }
+)
+
 def derive_zone_tag(
     landuse: str | None,
     building_use: str | None,
     building: str | None,
+    amenity: str | None = None,
 ) -> tuple[str, str]:
-    """Retourne (zone_tag, zone_source) avec source dans landuse | building_use | building | none."""
-    lu = ("" if landuse is None else str(landuse)).strip()
+    """Retourne (zone_tag, zone_source).
+
+    Sources : landuse | amenity | building_use | building | none.
+    `amenity` (school, hospital, university, …) prime sur landuse « générique »
+    (ex. residential) mais pas sur landuse education / commercial / industrial.
+    """
+    lu = ("" if landuse is None else str(landuse)).strip().lower()
+    amenity_zone = _zone_tag_from_amenity(amenity)
+
+    if lu and lu in _LANDUSE_ZONE_PRIORITY:
+        return lu, "landuse"
+    if amenity_zone:
+        return amenity_zone, "amenity"
     if lu:
         return lu, "landuse"
     bu = ("" if building_use is None else str(building_use)).strip()
@@ -131,6 +210,8 @@ def derive_zone_tag(
         return bu, "building_use"
     bld = ("" if building is None else str(building)).strip()
     if bld and bld.casefold() != "yes":
+        if bld.lower() in _EDUCATION_BUILDING_TAGS:
+            return "education", "building"
         return bld, "building"
     return "", "none"
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ScoutMatchingV5Row } from "./scout-matching-v5-map";
+import type { ScoutMatchingV5Row, V5BuildingsJsonEntry } from "./scout-matching-v5-map";
 import {
   collectMatchingV5BuildingFeatures,
   collectBatimentIdsForMatchingV5BuildingsApi,
@@ -28,6 +28,8 @@ import {
   listValidOsmBuildingIdsInBuildingsJson,
   listValidOsmBuildingIdsInBuildingGeometriesJson,
   parseMatchingV5BuildingGeometriesJson,
+  filterV5BuildingFootprintsOnly,
+  isOsmInstitutionalZoneFootprint,
   parseMatchingV5BuildingsJson,
   parseOsmPoisJson,
   parseSiretsMatchJson,
@@ -36,7 +38,7 @@ import {
 describe("formatV5ZoneTagLabel", () => {
   it("retourne les libellés FR pour landuse / leisure courants", () => {
     expect(formatV5ZoneTagLabel("residential")).toBe("Résidentiel");
-    expect(formatV5ZoneTagLabel("education")).toBe("École · université · campus");
+    expect(formatV5ZoneTagLabel("education")).toBe("Éducation");
     expect(formatV5ZoneTagLabel("farmland")).toBe("Zone agricole");
     expect(formatV5ZoneTagLabel("sports_centre")).toBe("Centre sportif");
     expect(formatV5ZoneTagLabel("pitch")).toBe("Terrain de sport");
@@ -697,6 +699,67 @@ describe("parseSiretsMatchJson (champs api.gouv / alias)", () => {
     expect(rows[0]!.tranche_effectifs).toBe("03");
     expect(rows[0]!.annee_effectifs).toBe("2022");
     expect(rows[0]!.activite_principale).toBe("6201Z");
+  });
+});
+
+describe("isOsmInstitutionalZoneFootprint", () => {
+  it("identifie un périmètre amenity sans building", () => {
+    expect(
+      isOsmInstitutionalZoneFootprint({
+        batimentConstructionId: "w:1",
+        batimentGroupeId: null,
+        anneeConstruction: null,
+        footprintM2: 23190,
+        intersectionAreaM2: null,
+        matchingStatus: "mono",
+        matchingDecision: "",
+        matchingSirenSelected: "",
+        zoneSource: "amenity",
+        zoneTag: "education",
+        osmName: "Collège François Mitterrand",
+      })
+    ).toBe(true);
+  });
+
+  it("conserve un bâtiment avec building=yes même si amenity", () => {
+    expect(
+      isOsmInstitutionalZoneFootprint({
+        batimentConstructionId: "w:2",
+        batimentGroupeId: null,
+        anneeConstruction: null,
+        footprintM2: 5753,
+        intersectionAreaM2: null,
+        matchingStatus: "mono",
+        matchingDecision: "",
+        matchingSirenSelected: "",
+        zoneSource: "amenity",
+        zoneTag: "education",
+        osmRawTags: { building: "yes" },
+      })
+    ).toBe(false);
+  });
+});
+
+describe("filterV5BuildingFootprintsOnly", () => {
+  it("exclut les périmètres zone du tableau bâtiments", () => {
+    const zone: V5BuildingsJsonEntry = {
+      batimentConstructionId: "w:1",
+      batimentGroupeId: null,
+      anneeConstruction: null,
+      footprintM2: 23190,
+      intersectionAreaM2: null,
+      matchingStatus: "mono",
+      matchingDecision: "",
+      matchingSirenSelected: "",
+      zoneSource: "amenity",
+    };
+    const building: V5BuildingsJsonEntry = {
+      ...zone,
+      batimentConstructionId: "w:2",
+      footprintM2: 5753,
+      osmRawTags: { building: "yes" },
+    };
+    expect(filterV5BuildingFootprintsOnly([zone, building])).toEqual([building]);
   });
 });
 

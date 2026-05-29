@@ -1,5 +1,6 @@
 import { centroidFromGeoJsonPolygonLike } from "@/lib/matching-v5-google-poi-fallback/centroid-from-geojson";
 import {
+  filterV5BuildingFootprintsOnly,
   parseMatchingV5BuildingsJson,
   type ScoutMatchingV5Row,
   type V5BuildingsJsonEntry,
@@ -75,7 +76,7 @@ export function collectSortedDiscoveryComboBuildingEntries(
 ): V5BuildingsJsonEntry[] {
   const byBc = new Map<string, V5BuildingsJsonEntry>();
   for (const pr of parcelleCluster.length > 0 ? parcelleCluster : []) {
-    for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
+    for (const b of filterV5BuildingFootprintsOnly(parseMatchingV5BuildingsJson(pr.buildingsJson))) {
       if (!byBc.has(b.batimentConstructionId)) byBc.set(b.batimentConstructionId, b);
     }
   }
@@ -84,7 +85,7 @@ export function collectSortedDiscoveryComboBuildingEntries(
   if (byBc.size > 0) {
     raw = Array.from(byBc.values());
   } else {
-    const parsed = parseMatchingV5BuildingsJson(anchorRow.buildingsJson);
+    const parsed = filterV5BuildingFootprintsOnly(parseMatchingV5BuildingsJson(anchorRow.buildingsJson));
     if (parsed.length > 0) {
       raw = parsed;
     } else if (anchorRow.grain !== "building") {
@@ -108,7 +109,7 @@ function footprintM2ForBuildingEntry(
   const bc = entry.batimentConstructionId.trim();
   if (!bc || bc === "—") return 0;
   for (const pr of parcelleCluster) {
-    for (const b of parseMatchingV5BuildingsJson(pr.buildingsJson)) {
+    for (const b of filterV5BuildingFootprintsOnly(parseMatchingV5BuildingsJson(pr.buildingsJson))) {
       if (b.batimentConstructionId.trim() !== bc) continue;
       const fp = b.footprintM2;
       if (fp != null && Number.isFinite(fp) && fp > 0) return fp;

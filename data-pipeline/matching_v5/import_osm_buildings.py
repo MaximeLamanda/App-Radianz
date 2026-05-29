@@ -31,7 +31,7 @@ from shapely.geometry import LineString, Polygon  # noqa: E402
 from shapely.geometry import MultiPolygon as ShapelyMultiPolygon  # noqa: E402
 
 from osm_buildings_v5 import (  # noqa: E402
-    osm_building_tag_is_importable,
+    osm_footprint_is_importable,
     qualified_osm_buildings_table,
 )
 from osm_poi_v5 import tags_dict  # noqa: E402
@@ -240,7 +240,7 @@ class PbfBuildingsStreamingHandler(osmium.SimpleHandler):
 
     def way(self, w: osmium.osm.Way) -> None:
         tags = tags_dict(dict(w.tags))
-        if not osm_building_tag_is_importable(tags):
+        if not osm_footprint_is_importable(tags):
             return
         if not w.is_closed():
             return
@@ -254,7 +254,7 @@ class PbfBuildingsStreamingHandler(osmium.SimpleHandler):
 
     def area(self, a: osmium.osm.Area) -> None:
         tags = tags_dict(dict(a.tags))
-        if not osm_building_tag_is_importable(tags):
+        if not osm_footprint_is_importable(tags):
             return
         try:
             wkb = self._wkb.create_multipolygon(a)

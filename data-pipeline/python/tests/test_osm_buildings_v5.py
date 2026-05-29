@@ -63,6 +63,51 @@ def test_derive_zone_tag_empty():
     assert m.derive_zone_tag("", "  ", "") == ("", "none")
 
 
+def test_derive_zone_tag_amenity_school_over_residential_landuse():
+    m = _load_osm_buildings_v5()
+    assert m.derive_zone_tag("residential", None, "yes", "school") == ("education", "amenity")
+
+
+def test_derive_zone_tag_landuse_education_over_amenity_school():
+    m = _load_osm_buildings_v5()
+    assert m.derive_zone_tag("education", None, "yes", "school") == ("education", "landuse")
+
+
+def test_derive_zone_tag_amenity_hospital():
+    m = _load_osm_buildings_v5()
+    assert m.derive_zone_tag(None, None, "yes", "hospital") == ("hospital", "amenity")
+
+
+def test_derive_zone_tag_amenity_university():
+    m = _load_osm_buildings_v5()
+    assert m.derive_zone_tag("residential", None, "yes", "university") == (
+        "education",
+        "amenity",
+    )
+
+
+def test_derive_zone_tag_building_school_maps_to_education():
+    m = _load_osm_buildings_v5()
+    assert m.derive_zone_tag(None, None, "school") == ("education", "building")
+
+
+def test_osm_footprint_is_importable_institutional_amenity():
+    m = _load_osm_buildings_v5()
+    assert m.osm_footprint_is_importable({"amenity": "school", "name": "École"}) is True
+    assert m.osm_footprint_is_importable({"amenity": "hospital"}) is True
+    assert m.osm_footprint_is_importable({"amenity": "university"}) is True
+    assert m.osm_footprint_is_importable({"amenity": "parking"}) is False
+
+
+def test_osm_footprint_kind_zone_vs_building():
+    m = _load_osm_buildings_v5()
+    assert m.osm_footprint_kind_from_tags({"amenity": "college", "name": "Collège X"}) == "zone"
+    assert m.osm_footprint_kind_from_tags({"building": "yes", "amenity": "college"}) == "building"
+    assert m.osm_footprint_kind_from_tags({"building": "school"}) == "building"
+    assert m.osm_footprint_kind_from_osm_tag_fields(None, "school") == "zone"
+    assert m.osm_footprint_kind_from_osm_tag_fields("yes", "college") == "building"
+
+
 def test_osm_building_tag_is_importable():
     m = _load_osm_buildings_v5()
     assert m.osm_building_tag_is_importable({}) is False

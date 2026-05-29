@@ -4,30 +4,45 @@ import {
   type ScoutMatchingV5Row,
 } from "@/lib/scout-matching-v5-map";
 
+/** Tags OSM bruts regroupés sous le filtre Discovery « Éducation ». */
+export const DISCOVERY_EDUCATION_ZONE_TAGS = new Set([
+  "education",
+  "school",
+  "kindergarten",
+  "college",
+  "university",
+]);
+
 const DISCOVERY_ACTIVITY_TAG_ORDER = [
   "industrial",
   "commercial",
   "retail",
+  "education",
+  "hospital",
   "residential",
 ] as const;
 
 /** Tags affichés dans le panneau « Activité de la zone » (Discovery). */
-export const DISCOVERY_SELECTABLE_ZONE_TAGS = new Set([
-  "industrial",
-  "commercial",
-  "retail",
-  "residential",
-]);
+export const DISCOVERY_SELECTABLE_ZONE_TAGS = new Set<string>(DISCOVERY_ACTIVITY_TAG_ORDER);
 
-export function discoverySelectableZoneTag(raw: unknown): string | null {
+/** Regroupe école / collège / université / campus → `education`. */
+export function normalizeDiscoveryActivityTag(raw: unknown): string | null {
   const tag = String(raw ?? "").trim().toLowerCase();
+  if (!tag) return null;
+  if (DISCOVERY_EDUCATION_ZONE_TAGS.has(tag)) return "education";
   return DISCOVERY_SELECTABLE_ZONE_TAGS.has(tag) ? tag : null;
 }
 
-/** Tag OSM prioritaire pour un combo (industrial > commercial > retail > residential). */
+export function discoverySelectableZoneTag(raw: unknown): string | null {
+  return normalizeDiscoveryActivityTag(raw);
+}
+
+/** Tag OSM prioritaire pour un combo (industrial > commercial > retail > …). */
 export function pickPrimaryDiscoveryZoneTag(zoneTags: readonly string[]): string | null {
   const normalized = new Set(
-    zoneTags.map((t) => String(t ?? "").trim().toLowerCase()).filter(Boolean)
+    zoneTags
+      .map((t) => normalizeDiscoveryActivityTag(t))
+      .filter((t): t is string => t != null)
   );
   for (const tag of DISCOVERY_ACTIVITY_TAG_ORDER) {
     if (normalized.has(tag)) return tag;
@@ -38,7 +53,7 @@ export function pickPrimaryDiscoveryZoneTag(zoneTags: readonly string[]): string
 export function zoneTagsFromMatchingV5Row(row: ScoutMatchingV5Row): string[] {
   const out = new Set<string>();
   const push = (raw: unknown) => {
-    const tag = discoverySelectableZoneTag(raw);
+    const tag = normalizeDiscoveryActivityTag(raw);
     if (tag) out.add(tag);
   };
   push(row.properties?.zone_tag);
@@ -54,7 +69,10 @@ export function comboMeetsDiscoveryActivityTag(
   selectedTag: string | null
 ): boolean {
   if (!selectedTag) return true;
-  return zoneTags.includes(selectedTag);
+  const normalized = zoneTags
+    .map((t) => normalizeDiscoveryActivityTag(t))
+    .filter((t): t is string => t != null);
+  return normalized.includes(selectedTag);
 }
 
 /** Tags activité pour le tiroir Discovery (SQL combo ou parcelles liées). */
@@ -63,10 +81,17 @@ export function discoveryZoneTagsForDrawer(
   parcelleRows: readonly ScoutMatchingV5Row[],
   comboZoneTagsFromApi?: readonly string[] | null
 ): string[] {
-  if (comboZoneTagsFromApi && comboZoneTagsFromApi.length > 0) {
-    return [...comboZoneTagsFromApi];
-  }
   const out = new Set<string>();
+  const pushNormalized = (tags: readonly string[]) => {
+    for (const raw of tags) {
+      const tag = normalizeDiscoveryActivityTag(raw);
+      if (tag) out.add(tag);
+    }
+  };
+  if (comboZoneTagsFromApi && comboZoneTagsFromApi.length > 0) {
+    pushNormalized(comboZoneTagsFromApi);
+    return [...out].sort((a, b) => a.localeCompare(b));
+  }
   const parcelles =
     parcelleRows.length > 0 ? parcelleRows : row.grain === "parcelle" ? [row] : [];
   for (const r of parcelles) {
@@ -81,7 +106,9 @@ export function discoveryZoneTagsForDrawer(
 /** Libellé court pour badge hero / pills (ex. « Industriel · Tertiaire »). */
 export function discoveryComboActivityHeroBadgeLabel(zoneTags: readonly string[]): string {
   const normalized = new Set(
-    zoneTags.map((t) => String(t ?? "").trim().toLowerCase()).filter(Boolean)
+    zoneTags
+      .map((t) => normalizeDiscoveryActivityTag(t))
+      .filter((t): t is string => t != null)
   );
   if (normalized.size === 0) return "";
   const ordered = DISCOVERY_ACTIVITY_TAG_ORDER.filter((t) => normalized.has(t));
@@ -102,7 +129,12 @@ export function countZoneTagsFromCombos(
 ): Array<{ tag: string; count: number }> {
   const counts = new Map<string, number>();
   for (const c of combos) {
-    for (const tag of c.zoneTags) {
+    const tagsInCombo = new Set<string>();
+    for (const raw of c.zoneTags) {
+      const tag = normalizeDiscoveryActivityTag(raw);
+      if (tag) tagsInCombo.add(tag);
+    }
+    for (const tag of tagsInCombo) {
       counts.set(tag, (counts.get(tag) ?? 0) + 1);
     }
   }

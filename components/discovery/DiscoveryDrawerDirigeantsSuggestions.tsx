@@ -16,6 +16,7 @@ import {
 import { mergeProspectContacts } from "@/lib/apollo-people-search";
 import { prospectContactInitials } from "@/lib/prospect-contacts";
 import { persistDiscoveryContactList } from "@/lib/discovery-contacts-persist";
+import { cn } from "@/lib/utils";
 import type { DirigeantPhysiqueGouv } from "@/lib/recherche-entreprises";
 import type { ProspectContact } from "@/types";
 
@@ -144,9 +145,14 @@ function DirigeantCard({
       </div>
       <Button
         type="button"
-        variant={alreadyAdded ? "ghost" : "secondary"}
+        variant="ghost"
         size="icon"
-        className="h-9 w-9 min-w-0 shrink-0 rounded-lg [&_svg]:size-5"
+        className={cn(
+          "h-7 w-7 min-w-0 shrink-0 rounded-md [&_svg]:size-3.5",
+          alreadyAdded
+            ? "text-muted-foreground"
+            : "text-foreground hover:bg-muted/40 hover:text-foreground"
+        )}
         disabled={alreadyAdded || pending}
         aria-label={alreadyAdded ? `${fullName} déjà ajouté` : `Ajouter ${fullName}`}
         onClick={() => void handleAdd()}

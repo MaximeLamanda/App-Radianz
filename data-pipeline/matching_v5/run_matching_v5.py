@@ -67,8 +67,35 @@ from osm_buildings_v5 import (
     format_osm_building_id,
     osm_bdnb_match_status,
     osm_buildings_regclass,
+    osm_footprint_kind_from_osm_tag_fields,
     qualified_osm_buildings_table,
 )
+
+_ZONE_TAG_SOURCE_RANK = {
+    "landuse": 0,
+    "amenity": 1,
+    "building_use": 2,
+    "building": 3,
+    "none": 99,
+}
+
+
+def pick_best_zone_tag(candidates: list[tuple[str, str]]) -> tuple[str, str]:
+    """Choisit le meilleur (zone_tag, zone_source) parmi plusieurs empreintes / bâtiments."""
+    best_tag = ""
+    best_src = "none"
+    best_rank = 99
+    for zt, zs in candidates:
+        tag = str(zt or "").strip()
+        src = str(zs or "").strip().lower() or "none"
+        if not tag:
+            continue
+        rank = _ZONE_TAG_SOURCE_RANK.get(src, 50)
+        if rank < best_rank:
+            best_tag = tag
+            best_src = src
+            best_rank = rank
+    return best_tag, best_src
 from osm_landuse_v5 import (
     build_osm_min_footprint_filter_sql,
     footprint_sum_meets_export_threshold,
@@ -401,6 +428,7 @@ def fetch_osm_building_parcel_pairs(
         o.address_text AS osm_address_text,
         (o.osm_tags->>'building:use') AS osm_tag_building_use,
         (o.osm_tags->>'building') AS osm_tag_building,
+        (o.osm_tags->>'amenity') AS osm_tag_amenity,
         z.landuse_value,
         z.landuse_intersection_area_m2,
         ST_Area(ST_Intersection(o.g2154, p.geom_2154))::double precision AS intersection_area_m2
@@ -431,6 +459,7 @@ def fetch_osm_building_parcel_pairs(
       landuse_intersection_area_m2,
       osm_tag_building_use,
       osm_tag_building,
+      osm_tag_amenity,
       intersection_area_m2
     FROM pairs
     WHERE intersection_area_m2 >= %s
@@ -459,6 +488,7 @@ def fetch_osm_building_parcel_pairs(
             row.get("landuse_value"),
             row.get("osm_tag_building_use"),
             row.get("osm_tag_building"),
+            row.get("osm_tag_amenity"),
         )
         row["zone_tag"] = zt
         row["zone_source"] = zs
@@ -1737,10 +1767,26 @@ def main() -> int:
 
     by_building: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_parcel: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    by_parcel_zone: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in pairs:
         bid = format_osm_building_id(str(row.get("osm_type") or "w"), int(row.get("osm_id") or 0))
         gid = str(row.get("batiment_groupe_id") or "")
         key = (str(row["code_insee"]), str(row["section"] or ""), str(row["numero_norm"] or ""))
+        footprint_kind = osm_footprint_kind_from_osm_tag_fields(
+            row.get("osm_tag_building"),
+            row.get("osm_tag_amenity"),
+        )
+        if footprint_kind == "zone":
+            by_parcel_zone[key].append(
+                {
+                    "osm_building_id": bid,
+                    "footprint_m2": safe_float(row.get("footprint_m2")),
+                    "zone_tag": str(row.get("zone_tag") or ""),
+                    "zone_source": str(row.get("zone_source") or ""),
+                    "landuse_intersection_area_m2": safe_float(row.get("landuse_intersection_area_m2")),
+                }
+            )
+            continue
         by_building[bid].append(
             {
                 "code_insee": key[0],
@@ -2223,14 +2269,25 @@ def main() -> int:
         gj = ctx["gj"]
         google_row = empty_google_audit()
         parcel_display = pick_parcel_display_from_buildings(bdetails_enriched)
+        zone_candidates: list[tuple[str, str]] = [
+            (str(z.get("zone_tag") or ""), str(z.get("zone_source") or ""))
+            for z in by_parcel_zone.get(pk, [])
+        ]
+        for it in bdetails_enriched:
+            zone_candidates.append(
+                (str(it.get("zone_tag") or ""), str(it.get("zone_source") or ""))
+            )
+        parcel_zone_tag, parcel_zone_source = pick_best_zone_tag(zone_candidates)
         if parcel_display.get("display_address_confidence") != "confirmed":
-            zone_src = ""
-            zone_tag = ""
-            for it in bdetails_enriched:
-                if str(it.get("zone_source") or "") == "landuse" and str(it.get("zone_tag") or ""):
-                    zone_src = str(it.get("zone_source") or "")
-                    zone_tag = str(it.get("zone_tag") or "")
-                    break
+            zone_src = parcel_zone_source
+            zone_tag = parcel_zone_tag
+            if not zone_tag:
+                for it in bdetails_enriched:
+                    src = str(it.get("zone_source") or "")
+                    if src in ("landuse", "amenity") and str(it.get("zone_tag") or ""):
+                        zone_src = src
+                        zone_tag = str(it.get("zone_tag") or "")
+                        break
             parcel_display = resolve_parcel_centroid_fallback(
                 address_resolver,
                 code_insee=pk[0],
@@ -2325,6 +2382,8 @@ def main() -> int:
                     disabled=bool(args.no_osm_poi),
                 ),
                 **parcel_display,
+                "zone_tag": parcel_zone_tag,
+                "zone_source": parcel_zone_source,
             }
         )
 

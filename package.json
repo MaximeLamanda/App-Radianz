@@ -22,7 +22,7 @@
     "pipeline:matching-v5:reset-all": "CONFIRM_RESET_ALL=1 node scripts/reset-matching-v5-all.mjs",
     "pipeline:matching-v5:reset-commune:dry": "DRY_RUN=1 node scripts/reset-matching-v5-commune.mjs",
     "pipeline:matching-v5:reset-commune": "CONFIRM_RESET=1 node scripts/reset-matching-v5-commune.mjs",
-    "pipeline:matching-v5:pessac": "node scripts/run-matching-v5-commune-pipeline.mjs --code-insee=33318",
+    "pipeline:matching-v5:pessac": "node scripts/run-matching-v5-commune-pipeline.mjs --code-insee=33318 --skip-neon",
     "test:apicarto": "node scripts/test-apicarto-cadastre.mjs",
     "enrich:dep33": "node scripts/enrich-sitadel-dep33-apicarto.mjs",
     "enrich:by-commune": "node scripts/enrich-sitadel-by-commune.mjs",

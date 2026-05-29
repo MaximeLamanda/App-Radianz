@@ -14,7 +14,28 @@ R_EARTH_M = 6_371_000
 OSM_BUILDING_ID_RE = re.compile(r"^[wnr]:\d{1,20}$")
 SIREN_RE = re.compile(r"^\d{9}$")
 LANDUSE_WAIVES_MIN_FOOTPRINT_M2 = frozenset({"commercial", "industrial", "retail"})
-SELECTABLE_ZONE_TAGS = frozenset({"industrial", "commercial", "retail", "residential"})
+SELECTABLE_ZONE_TAGS = frozenset(
+    {
+        "industrial",
+        "commercial",
+        "retail",
+        "education",
+        "hospital",
+        "residential",
+    }
+)
+_EDUCATION_ZONE_TAGS = frozenset({"education", "school", "kindergarten", "college", "university"})
+
+
+def normalize_discovery_zone_tag(raw: Any) -> str | None:
+    tag = str(raw or "").strip().lower()
+    if not tag:
+        return None
+    if tag in _EDUCATION_ZONE_TAGS:
+        return "education"
+    if tag in SELECTABLE_ZONE_TAGS:
+        return tag
+    return None
 
 
 def building_has_pro_landuse_waiver(bdetail: dict[str, Any]) -> bool:
@@ -52,6 +73,20 @@ def _buildings_json_raw(row: dict[str, Any]) -> str:
     if isinstance(raw, (list, dict)):
         return json.dumps(raw, ensure_ascii=False)
     return str(raw).strip()
+
+
+def is_osm_institutional_zone_footprint(bdetail: dict[str, Any]) -> bool:
+    """Périmètre ``amenity`` sans ``building`` importable — zone, pas bâtiment."""
+    if str(bdetail.get("zone_source") or "").strip().lower() != "amenity":
+        return False
+    raw_tags = bdetail.get("osm_raw_tags")
+    if isinstance(raw_tags, dict):
+        bld = str(raw_tags.get("building") or "").strip()
+    else:
+        bld = ""
+    if not bld:
+        return True
+    return bld.casefold() == "no"
 
 
 def parse_buildings_json(raw: Any) -> list[dict[str, Any]]:
@@ -224,6 +259,8 @@ def combo_footprint_sum_m2(parcelle_rows: list[dict[str, Any]]) -> float:
     by_bc: dict[str, float] = {}
     for pr in parcelle_rows:
         for b in parse_buildings_json(pr):
+            if is_osm_institutional_zone_footprint(b):
+                continue
             bc = str(b.get("batiment_construction_id") or "").strip()
             if not bc or bc in by_bc:
                 continue
@@ -289,8 +326,8 @@ def list_valid_osm_building_ids_in_geometries_json(row: dict[str, Any]) -> list[
 
 
 def _push_selectable_zone_tag(tags: set[str], raw: Any) -> None:
-    tag = str(raw or "").strip().lower()
-    if tag in SELECTABLE_ZONE_TAGS:
+    tag = normalize_discovery_zone_tag(raw)
+    if tag:
         tags.add(tag)
 
 

@@ -2,6 +2,7 @@ import type { DiscoveryBuildingPoint } from "@/lib/discovery-buildings-mv";
 import { isValidOsmBuildingId } from "@/lib/discovery-buildings-mv";
 import { DISCOVERY_SURFACE_SLIDER_MAX_M2 } from "@/lib/discovery-surface-defaults";
 import {
+  filterV5BuildingFootprintsOnly,
   parseMatchingV5BuildingsJson,
   type ScoutMatchingV5Row,
   type V5BuildingsJsonEntry,
@@ -31,7 +32,7 @@ export function buildingHasProLanduseWaiver(entry: V5BuildingsJsonEntry): boolea
  */
 export function rowDiscoveryFootprintSumM2(row: ScoutMatchingV5Row): number {
   if (row.footprintSumM2 > 0) return row.footprintSumM2;
-  const buildings = parseMatchingV5BuildingsJson(row.buildingsJson);
+  const buildings = filterV5BuildingFootprintsOnly(parseMatchingV5BuildingsJson(row.buildingsJson));
   if (buildings.length === 0) return 0;
   const byBc = new Map<string, number>();
   for (const b of buildings) {
@@ -109,7 +110,7 @@ export function buildDiscoveryOsmBuildingSurfaceIndex(
   const index = new Map<string, DiscoveryOsmBuildingSurfaceInfo>();
   for (const row of rows) {
     if (row.grain !== "parcelle" && row.grain !== "building") continue;
-    for (const b of parseMatchingV5BuildingsJson(row.buildingsJson)) {
+    for (const b of filterV5BuildingFootprintsOnly(parseMatchingV5BuildingsJson(row.buildingsJson))) {
       const osmId = String(b.osmBuildingId ?? "").trim();
       if (!osmId || !isValidOsmBuildingId(osmId)) continue;
       const fp =
