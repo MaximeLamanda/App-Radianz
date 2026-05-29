@@ -236,6 +236,7 @@ export async function GET(request: NextRequest) {
       const res = await client.query<{
         combo_id: string;
         footprint_sum_m2: number | null;
+        parcel_contour_sum_m2: number | null;
         parking_sum_m2: number | null;
         has_landuse_waiver: boolean | null;
         anchor_parcelle_id: string | null;
