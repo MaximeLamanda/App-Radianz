@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
+import { useDrawer, type DiscoveryDrawerMainTab } from "@/lib/drawer-context";
 import { GoogleMapsLoader } from "@/components/solar-scout/GoogleMapsLoader";
 import {
   filterGoogleNearbyEntriesInParcel,
@@ -585,6 +586,8 @@ function DiscoveryComboEditFooterButtons({
 }
 
 
+export type { DiscoveryDrawerMainTab } from "@/lib/drawer-context";
+
 /** Contenu du drawer en mode découverte PostgreSQL (matching V5), même tiroir que Solar Scout. */
 function ProspectDrawerDiscoverySection({
   row,
@@ -677,6 +680,7 @@ function ProspectDrawerDiscoverySection({
   onDiscoveryDisplayNameChange: (value: string) => void;
   discoveryGeneratedNameHint?: string;
 }) {
+  const { discoveryDrawerTab, setDiscoveryDrawerTab } = useDrawer();
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
     if (filtered.length > 0) return filtered;
@@ -834,7 +838,6 @@ function ProspectDrawerDiscoverySection({
   const [matchingV5ApiNomBySiren, setMatchingV5ApiNomBySiren] = useState<
     Record<string, DiscoveryApiNomEntry>
   >({});
-  const [discoveryMainTab, setDiscoveryMainTab] = useState("batiments");
   const [showAllEstablishments, setShowAllEstablishments] = useState(false);
   const [showAllDirigeantEtablissements, setShowAllDirigeantEtablissements] = useState(false);
   const initialDiscoveryEstablishmentsVisible = 5;
@@ -947,7 +950,7 @@ function ProspectDrawerDiscoverySection({
 
   useEffect(() => {
     if (!isOpen) return;
-    if (discoveryMainTab !== "batiments") return;
+    if (discoveryDrawerTab !== "batiments") return;
     const sirens = sirensForApiNom.slice(0, initialDiscoveryEstablishmentsVisible);
     for (const siren of sirens) {
       if (matchingV5ApiNomFetchedRef.current.has(siren)) continue;
@@ -975,7 +978,7 @@ function ProspectDrawerDiscoverySection({
         }
       })();
     }
-  }, [isOpen, discoveryMainTab, sirensForApiNom]);
+  }, [isOpen, discoveryDrawerTab, sirensForApiNom]);
 
   const passerelleFlat = useMemo(() => {
     type Entry = { parcelleLabel: string; ppm: V5PasserellePpmEntry };
@@ -1040,7 +1043,7 @@ function ProspectDrawerDiscoverySection({
   );
 
   useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "batiments" || !passerelleSirensEnrichKey) return;
+    if (!isOpen || discoveryDrawerTab !== "batiments" || !passerelleSirensEnrichKey) return;
     let cancelled = false;
     for (const siren of passerelleSirensEnrichKey.split("\u0001")) {
       if (!siren || discoveryGouvUlFetchedRef.current.has(siren)) continue;
@@ -1094,7 +1097,7 @@ function ProspectDrawerDiscoverySection({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, discoveryMainTab, passerelleSirensEnrichKey]);
+  }, [isOpen, discoveryDrawerTab, passerelleSirensEnrichKey]);
 
   const multiEntreprises = useMemo(() => {
     const anyShared =
@@ -1297,7 +1300,7 @@ function ProspectDrawerDiscoverySection({
   }, [discoverySiretRowsToEnrich]);
 
   useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "batiments" || !discoverySiretEnrichKey) return;
+    if (!isOpen || discoveryDrawerTab !== "batiments" || !discoverySiretEnrichKey) return;
     let cancelled = false;
     for (const siret of discoverySiretEnrichKey.split("\u0001")) {
       if (!siret || discoveryGouvEtabFetchedRef.current.has(siret)) continue;
@@ -1365,7 +1368,7 @@ function ProspectDrawerDiscoverySection({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, discoveryMainTab, discoverySiretEnrichKey]);
+  }, [isOpen, discoveryDrawerTab, discoverySiretEnrichKey]);
 
   const discoveryPvgisFetchKey = useMemo(() => {
     if (!isOpen || !discoveryCentroidKey) return "";
@@ -1922,7 +1925,7 @@ function ProspectDrawerDiscoverySection({
   ]);
 
   useEffect(() => {
-    if (!isOpen || discoveryMainTab !== "terrain" || !discoveryDirigeantSirensKey) return;
+    if (!isOpen || discoveryDrawerTab !== "terrain" || !discoveryDirigeantSirensKey) return;
     let cancelled = false;
     for (const siren of discoveryDirigeantSirensKey.split("\u0001")) {
       if (!siren || discoveryGouvDirigeantsFetchedRef.current.has(siren)) continue;
@@ -2000,7 +2003,7 @@ function ProspectDrawerDiscoverySection({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, discoveryMainTab, discoveryDirigeantSirensKey]);
+  }, [isOpen, discoveryDrawerTab, discoveryDirigeantSirensKey]);
 
   const parcellePasserelleLabels = useMemo(
     () => new Set(informationParcellesRows.map(cadastreParcellePasserelleKey)),
@@ -2084,8 +2087,8 @@ function ProspectDrawerDiscoverySection({
   return (
     <GoogleMapsLoader blockingLoad={false}>
     <Tabs
-      value={discoveryMainTab}
-      onValueChange={setDiscoveryMainTab}
+      value={discoveryDrawerTab}
+      onValueChange={(value) => setDiscoveryDrawerTab(value as DiscoveryDrawerMainTab)}
       variant="line"
       className="drawer-discovery"
     >
@@ -2730,7 +2733,7 @@ function ProspectDrawerDiscoverySection({
           pipelineProspectId={pipelineProspectForShareKpis?.id ?? null}
           shareTokenHint={pipelineProspectForShareKpis?.shareToken}
           drawerOpen={isOpen}
-          tabActive={discoveryMainTab === "lectures"}
+          tabActive={discoveryDrawerTab === "lectures"}
         />
       </TabsContent>
 
