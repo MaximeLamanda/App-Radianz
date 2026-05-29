@@ -8,12 +8,23 @@ services:
   postgres-bdnb:
     image: postgis/postgis:16-3.4
     container_name: solar-view-postgres-bdnb
+    shm_size: 512mb
     ports:
       - "5433:5432"
     environment:
       POSTGRES_USER: bdnb
       POSTGRES_PASSWORD: bdnb
       POSTGRES_DB: bdnb_local
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=64MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - effective_cache_size=2GB
     volumes:
       - pgdata_bdnb_local:/var/lib/postgresql/data
     healthcheck:

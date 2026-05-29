@@ -25,6 +25,17 @@ describe("evaluateProspectShareSessionStartDecision", () => {
       })
     ).toEqual({ action: "skip", skipped: "terminal" });
   });
+
+  it("record_session si viewerIp = creatorIp avec bypass test activé", () => {
+    expect(
+      evaluateProspectShareSessionStartDecision({
+        viewerIp: "203.0.113.2",
+        shareLinkCreatorIp: "203.0.113.2",
+        pipelineStatus: "envoye",
+        allowSameIpForTesting: true,
+      })
+    ).toEqual({ action: "record_session" });
+  });
 });
 
 describe("evaluateProspectShareRegisterViewDecision", () => {
@@ -53,6 +64,16 @@ describe("evaluateProspectShareRegisterViewDecision", () => {
       pipelineStatus: "envoye",
     });
     expect(r).toEqual({ action: "skip", skipped: "same_ip" });
+  });
+
+  it("update_pipeline_to_open si same_ip avec bypass test activé", () => {
+    const r = evaluateProspectShareRegisterViewDecision({
+      viewerIp: "192.0.2.10",
+      shareLinkCreatorIp: "192.0.2.10",
+      pipelineStatus: "envoye",
+      allowSameIpForTesting: true,
+    });
+    expect(r).toEqual({ action: "update_pipeline_to_open" });
   });
 
   it("skip terminal pour converti", () => {

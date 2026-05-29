@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Solar View - Documentation logique Matching V5</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #111831;
+        --panel-2: #172140;
+        --txt: #e8ecf8;
+        --muted: #a8b2d4;
+        --accent: #6ea8fe;
+        --ok: #66d19e;
+        --warn: #ffd166;
+        --border: #2a3766;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #090e1c 0%, #0b1020 100%);
+        color: var(--txt);
+        line-height: 1.55;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 32px 20px 64px;
+      }
+      h1, h2, h3 { line-height: 1.2; margin: 0 0 10px; }
+      h1 { font-size: 1.9rem; }
+      h2 {
+        margin-top: 30px;
+        font-size: 1.35rem;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+      }
+      h3 { margin-top: 20px; font-size: 1.05rem; color: #d8e2ff; }
+      p, li { color: var(--txt); }
+      .muted { color: var(--muted); }
+      .card {
+        background: linear-gradient(180deg, var(--panel) 0%, #0f1730 100%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px 18px;
+        margin: 12px 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 12px;
+      }
+      code {
+        background: #0a132a;
+        border: 1px solid #1f2d57;
+        border-radius: 6px;
+        padding: 1px 6px;
+        color: #dbe7ff;
+      }
+      pre {
+        margin: 10px 0 0;
+        background: #091126;
+        border: 1px solid #24376e;
+        border-radius: 10px;
+        padding: 12px;
+        overflow: auto;
+        font-size: 0.9rem;
+      }
+      a { color: var(--accent); }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+        font-size: 0.95rem;
+      }
+      th, td {
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        vertical-align: top;
+      }
+      th {
+        background: var(--panel-2);
+        text-align: left;
+      }
+      .badge {
+        display: inline-block;
+        border: 1px solid #3b528f;
+        background: #15234a;
+        border-radius: 999px;
+        padding: 2px 10px;
+        font-size: 0.82rem;
+        margin-right: 6px;
+        color: #d8e3ff;
+      }
+      .ok { color: var(--ok); }
+      .warn { color: var(--warn); }
+      .small { font-size: 0.9rem; }
+      .toc li { margin: 4px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Documentation détaillée - Logique Matching V5</h1>
+      <p class="muted">
+        Document de compréhension technique du pipeline Discovery V5 (cadastre, empreintes OSM, enrichissement BDNB, PPM, matching SIRENE)
+        et de son extension <code>cadastre_only</code>.
+      </p>
+
+      <div class="card">
+        <h3>Sommaire</h3>
+        <ol class="toc">
+          <li><a href="#objectif">Objectif et périmètre</a></li>
+          <li><a href="#data">Sources de données</a></li>
+          <li><a href="#pipeline">Pipeline logique pas à pas</a></li>
+          <li><a href="#rules">Règles métier clés</a></li>
+          <li><a href="#status">Statuts techniques et métier</a></li>
+          <li><a href="#cadastre-only">Extension cadastre_only</a></li>
+          <li><a href="#api">APIs et consommation front</a></li>
+          <li><a href="#outputs">Sorties et persistance</a></li>
+          <li><a href="#edge-cases">Cas limites et garde-fous</a></li>
+        </ol>
+      </div>
+
+      <h2 id="objectif">1) Objectif et périmètre</h2>
+      <div class="card">
+        <p>
+          Le Matching V5 part du <b>cadastre</b> pour produire des entités exploitées en prospection (principalement des
+          lignes de grain <code>parcelle</code>), enrichies avec bâtiment(s), SIREN/SIRET, adresses et signaux métier.
+        </p>
+        <p>
+          Finalité produit: identifier des parcelles à potentiel solaire et qualifier les opportunités via les données
+          cadastrales, bâtiments, entreprises et points d’intérêt.
+        </p>
+        <p class="small muted">
+          Références code principales: <code>data-pipeline/matching_v5/run_matching_v5.py</code>,
+          <code>lib/scout-matching-v5-map.ts</code>, <code>app/api/matching-v5/features/route.ts</code>.
+        </p>
+      </div>
+
+      <h2 id="data">2) Sources de données</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Cadastre</h3>
+          <p><code>cadastre_france_feuilles_geom</code></p>
+          <ul>
+            <li>Clés: <code>code_insee</code>, <code>section</code>, <code>numero_norm</code></li>
+            <li>Géométrie parcelle en EPSG:4326</li>
+            <li>Base de référence pour le <code>scout_v5_id</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Passerelle PPM</h3>
+          <p><code>parcelles_personnes_morales</code></p>
+          <ul>
+            <li>Lien parcelle ↔ SIREN</li>
+            <li>Adresse passerelle (numéro/voie/commune)</li>
+            <li>Source du <code>siren_status</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Bâtiments</h3>
+          <p><code>Empreintes OSM + enrichissement BDNB</code></p>
+          <ul>
+            <li>Empreinte géométrique prioritaire: <code>osm_building_footprints</code></li>
+            <li>Building ID unitaire: <code>batiment_construction_id</code></li>
+            <li>Enrichissement BDNB/FFO (intersection, année, attributs)</li>
+            <li>Jointure spatiale avec parcelles</li>
+            <li>Agrégats <code>footprint_sum_m2</code>, règles partage</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Établissements / POI</h3>
+          <p><code>scout_etablissements</code>, <code>osm_poi</code>, fallback Google optionnel</p>
+          <ul>
+            <li>Matching d’adresse vers SIRET/SIREN</li>
+            <li>Qualification activité / contexte</li>
+            <li>Signal business complémentaire</li>
+          </ul>
+        </div>
+      </div>
+
+      <h2 id="pipeline">3) Pipeline logique pas à pas</h2>
+      <div class="card">
+        <pre>1. Charger les parcelles cadastrales (code_insee ciblé)
+2. Associer les bâtiments (empreintes OSM, puis enrichissement BDNB)
+3. Calculer intersections parcelle ↔ bâtiment (aire en m²)
+4. Résoudre les cas multi-parcelles (matching_status=partage)
+5. Appliquer les filtres de surface (et éventuelles dérogations landuse)
+6. Construire l’adresse passerelle (PPM) + adresses candidates
+7. Matcher vers établissements (score voie/numéro/indice/fuzzy)
+8. Déterminer les statuts (technique + métier + confiance)
+9. Enrichir avec POI OSM / fallback Google (optionnel)
+10. Exporter en CSV/GeoJSON puis upsert Postgres (scout_matching_v5_features)</pre>
+      </div>
+
+      <h2 id="rules">4) Règles métier clés</h2>
+      <div class="card">
+        <h3>4.1 Résolution des bâtiments partagés</h3>
+        <ul>
+          <li>
+            Si un <code>batiment_construction_id</code> intersecte plusieurs parcelles: <code>matching_status=partage</code>.
+          </li>
+          <li>
+            Si des SIREN communs existent entre parcelles concernées, sélection d’un SIREN gagnant
+            (majorité de lignes PPM), puis parcelle gagnante par plus grande aire d’intersection.
+          </li>
+          <li>
+            Sans SIREN commun: affectation directe à la parcelle avec l’aire d’intersection maximale.
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>4.2 Filtrage surface</h3>
+        <ul>
+          <li>Seuil principal parcelle: <code>footprint_sum_m2 &gt;= min-parcelle-footprint-sum-m2</code> (souvent 400 m²).</li>
+          <li>Seuil bâtiment d’entrée: <code>min-batiment-footprint-m2</code>.</li>
+          <li>
+            Dérogation possible pour certains <code>landuse</code> économiques (commercial/industrial/retail), selon pipeline.
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>4.3 Cascade d’adresse d’affichage (display_address)</h3>
+        <ol>
+          <li>Adresse OSM footprint (<code>addr:*</code>)</li>
+          <li>Adresse PPM corroborée</li>
+          <li>Reverse geocoding Géoplateforme (seuils stricts)</li>
+          <li>Adresse établissement SIRENE proche</li>
+        </ol>
+        <p>Si non confirmée, la confiance vaut <code>none</code> (adresse non affichée comme fiable).</p>
+      </div>
+
+      <h2 id="status">5) Statuts techniques et métier</h2>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Champ</th>
+              <th>Valeurs principales</th>
+              <th>Sens</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>siren_status</code></td>
+              <td><span class="badge">none</span><span class="badge">single</span><span class="badge">multiple</span></td>
+              <td>Disponibilité SIREN via passerelle PPM</td>
+            </tr>
+            <tr>
+              <td><code>status_metier</code></td>
+              <td><span class="badge">none</span><span class="badge">single</span><span class="badge">shared</span></td>
+              <td>Résultat du matching adresse vers établissements</td>
+            </tr>
+            <tr>
+              <td><code>status_technique</code></td>
+              <td><span class="badge">matched</span><span class="badge">no_candidate</span><span class="badge">low_confidence</span>...</td>
+              <td>Diagnostic du moteur de rapprochement</td>
+            </tr>
+            <tr>
+              <td><code>matching_status</code></td>
+              <td><span class="badge">mono</span><span class="badge">partage</span></td>
+              <td>Relation géométrique bâtiment-parcelle</td>
+            </tr>
+            <tr>
+              <td><code>match_status</code></td>
+              <td><span class="badge">matched</span><span class="badge">cadastre_only</span></td>
+              <td>Présence d’un vrai matching V5 ou parcelle cadastre seule</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="cadastre-only">6) Extension cadastre_only</h2>
+      <div class="card">
+        <h3>6.1 Pourquoi</h3>
+        <p>
+          Permettre d’afficher et manipuler des parcelles présentes au cadastre mais absentes du flux “matched”
+          (utile en mode édition/élargissement de périmètre).
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>6.2 Implémentation SQL</h3>
+        <p>Migration dédiée:</p>
+        <pre>ALTER TABLE public.scout_matching_v5_features
+ADD COLUMN IF NOT EXISTS match_status TEXT NOT NULL DEFAULT 'matched';
+
+CHECK (match_status IN ('matched', 'cadastre_only'));
+INDEX match_status;</pre>
+      </div>
+
+      <div class="card">
+        <h3>6.3 Règle de non-régression</h3>
+        <p>
+          Lors d’un upsert <code>cadastre_only</code>, une ligne déjà <code>matched</code> ne doit jamais être rétrogradée.
+        </p>
+        <pre>CASE
+  WHEN existing.match_status = 'matched' THEN 'matched'
+  ELSE 'cadastre_only'
+END</pre>
+      </div>
+
+      <div class="card">
+        <h3>6.4 Scope de déploiement actuel</h3>
+        <p>
+          Activation limitée au code INSEE <code>33318</code> (Pessac) via garde-fou applicatif
+          <code>isCadastreOnlyUpsertEnabledForCodeInsee</code>.
+        </p>
+      </div>
+
+      <h2 id="api">7) APIs et consommation front</h2>
+      <div class="card">
+        <h3><code>GET /api/matching-v5/features</code></h3>
+        <ul>
+          <li>Filtres: <code>scout_v5_id</code>, <code>code_insee</code>, ou bbox (<code>minLat/maxLat/minLng/maxLng</code>).</li>
+          <li><code>mode=overview</code>: renvoie des géométries en <code>PointOnSurface</code> pour performance carte.</li>
+          <li>Mode détail: géométrie polygonale + <code>building_geometries_json</code>.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3><code>GET /api/matching-v5/parcelles-adjacent</code></h3>
+        <ul>
+          <li>Modes: <code>anchor</code>, <code>bbox</code>, <code>lookup</code>.</li>
+          <li>Source cadastre directe, puis upsert éventuel en <code>cadastre_only</code>.</li>
+          <li>Retourne aussi <code>in_matching_v5</code> et <code>match_status</code>.</li>
+        </ul>
+      </div>
+
+      <h2 id="outputs">8) Sorties et persistance</h2>
+      <div class="card">
+        <ul>
+          <li>CSV pipeline: <code>data-pipeline/out/matching/v5/matching_v5.csv</code>.</li>
+          <li>GeoJSON statique: <code>public/geo/matching-v5-33318.geojson</code>.</li>
+          <li>Table applicative: <code>public.scout_matching_v5_features</code> (source API + UI Discovery).</li>
+          <li>Combos overview: <code>public.scout_matching_v5_combos</code> pour agrégats multi-parcelles.</li>
+        </ul>
+      </div>
+
+      <h2 id="edge-cases">9) Cas limites et garde-fous</h2>
+      <div class="card">
+        <ul>
+          <li><span class="warn">Parcelles sans PPM:</span> pas d’adresse passerelle exploitable, matching entreprise limité.</li>
+          <li><span class="warn">Adresse ambiguë:</span> maintien d’un <code>status_technique</code> conservateur.</li>
+          <li><span class="ok">Idempotence SQL:</span> migration et upserts pensés pour rejouabilité.</li>
+          <li><span class="ok">Protection métier:</span> <code>matched</code> prioritaire sur <code>cadastre_only</code>.</li>
+          <li><span class="warn">Performance carte:</span> bbox capée, mode overview en points, limite de résultats.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="small muted">
+          Dernière mise à jour: 2026-05-28. Document de lecture produit+technique, orienté compréhension de la logique
+          et des décisions de matching V5.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

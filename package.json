@@ -16,6 +16,13 @@
     "update-hourly-consumption": "tsx scripts/update-hourly-consumption-firebase.ts",
     "seed:inverter-reference": "tsx scripts/seed-inverter-reference.ts",
     "seed:inverter-catalog": "tsx scripts/seed-inverter-catalog.ts",
+    "firebase:purge-prospects:dry": "DRY_RUN=1 tsx scripts/purge-firestore-prospects.ts",
+    "firebase:purge-prospects": "CONFIRM_PURGE=1 tsx scripts/purge-firestore-prospects.ts",
+    "pipeline:matching-v5:reset-all:dry": "DRY_RUN=1 node scripts/reset-matching-v5-all.mjs",
+    "pipeline:matching-v5:reset-all": "CONFIRM_RESET_ALL=1 node scripts/reset-matching-v5-all.mjs",
+    "pipeline:matching-v5:reset-commune:dry": "DRY_RUN=1 node scripts/reset-matching-v5-commune.mjs",
+    "pipeline:matching-v5:reset-commune": "CONFIRM_RESET=1 node scripts/reset-matching-v5-commune.mjs",
+    "pipeline:matching-v5:pessac": "node scripts/run-matching-v5-commune-pipeline.mjs --code-insee=33318",
     "test:apicarto": "node scripts/test-apicarto-cadastre.mjs",
     "enrich:dep33": "node scripts/enrich-sitadel-dep33-apicarto.mjs",
     "enrich:by-commune": "node scripts/enrich-sitadel-by-commune.mjs",
@@ -60,7 +67,7 @@
     "pipeline:matching-v5:run-dep-33": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; node scripts/run-matching-v5-by-dep.mjs --dep 33'",
     "pipeline:matching-v5:pipeline-dep-33": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; node scripts/run-matching-v5-pipeline-by-dep.mjs --dep 33'",
     "pipeline:matching-v5:pipeline-dep-31": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; node scripts/run-matching-v5-pipeline-by-dep.mjs --dep 31'",
-    "pipeline:matching-v5:backfill-building-geometries": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/backfill_building_geometries_v5.py'",
+    "pipeline:matching-v5:backfill-building-geometries": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; exec ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/backfill_building_geometries_v5.py \"$@\"' _",
     "scout:matching-v5:buildings-mv:apply": "node scripts/apply-matching-v5-buildings-mv.mjs",
     "scout:matching-v5:buildings-mv:refresh": "node scripts/refresh-matching-v5-buildings-mv.mjs",
     "scout:matching-v5:combos:apply": "node scripts/apply-matching-v5-combos.mjs",
@@ -82,7 +89,9 @@
     "pipeline:enedis:import-dep-31": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_enedis_consumption.py --ensure-schema --dep 31 --annee 2024 --geocode'",
     "pipeline:enedis:geocode-failed": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_enedis_consumption.py --geocode-only-failed --dep 33'",
     "pipeline:enedis:sync-neon-dep-33": "node scripts/sync-enedis-consumption-to-neon.mjs --dep 33",
-    "import:bdnb-constructions:local": "node scripts/import-bdnb-constructions-local.mjs --data-dir=datasource/bdnb/dep33_extract"
+    "import:bdnb-constructions:local": "node scripts/import-bdnb-constructions-local.mjs --data-dir=datasource/bdnb/dep33_extract",
+    "import:ban-france:download": "bash -lc './data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_ban_adresses.py --download'",
+    "import:ban-france": "bash -lc 'set -a; [ -f .env.local ] && . ./.env.local; set +a; ./data-pipeline/python/.venv-v311/bin/python data-pipeline/matching_v5/import_ban_adresses.py --download --apply-schema --truncate'"
   },
   "dependencies": {
     "@googlemaps/markerclusterer": "^2.6.2",

@@ -18,6 +18,7 @@ export function evaluateProspectShareSessionStartDecision(input: {
   viewerIp: string | null | undefined;
   shareLinkCreatorIp?: string | null;
   pipelineStatus?: string | null;
+  allowSameIpForTesting?: boolean;
 }): ProspectShareSessionStartDecision {
   const viewer =
     typeof input.viewerIp === "string" ? input.viewerIp.trim() : String(input.viewerIp ?? "").trim();
@@ -33,7 +34,7 @@ export function evaluateProspectShareSessionStartDecision(input: {
     return { action: "skip", skipped: "no_creator_ip" };
   }
 
-  if (viewer === creator) {
+  if (viewer === creator && !input.allowSameIpForTesting) {
     return { action: "skip", skipped: "same_ip" };
   }
 
@@ -62,6 +63,7 @@ export function evaluateProspectShareRegisterViewDecision(input: {
   viewerIp: string | null | undefined;
   shareLinkCreatorIp?: string | null;
   pipelineStatus?: string | null;
+  allowSameIpForTesting?: boolean;
 }): ProspectShareRegisterViewDecision {
   const session = evaluateProspectShareSessionStartDecision(input);
   if (session.action === "skip") {

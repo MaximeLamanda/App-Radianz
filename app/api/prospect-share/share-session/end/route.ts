@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase-admin";
 import {
+  clampShareSessionCounter,
   clampShareSessionDurationMs,
   clampShareSessionMaxScrollDepth01,
 } from "@/lib/share-session-metrics";
@@ -17,6 +18,8 @@ export async function POST(request: NextRequest) {
 
     const durationMs = clampShareSessionDurationMs(body.durationMs);
     const maxScrollDepth01 = clampShareSessionMaxScrollDepth01(body.maxScrollDepth01);
+    const interactionCount = clampShareSessionCounter(body.interactionCount);
+    const ctaClicks = clampShareSessionCounter(body.ctaClicks);
 
     const db = getAdminDb();
     const q = await db.collection("prospects").where("shareToken", "==", shareToken).limit(1).get();
@@ -43,6 +46,8 @@ export async function POST(request: NextRequest) {
         endedAt: FieldValue.serverTimestamp(),
         durationMs,
         maxScrollDepth01,
+        interactionCount,
+        ctaClicks,
         status: "closed",
       });
 

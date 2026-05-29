@@ -28,7 +28,7 @@ import {
 import { fetchWithAuth } from "@/lib/api-client";
 import { mergeProspectContacts } from "@/lib/apollo-people-search";
 import type { ProspectContact } from "@/types";
-import { updateProspect } from "@/lib/firestore";
+import { persistDiscoveryContactList } from "@/lib/discovery-contacts-persist";
 
 /** Forme minimale du POI pour l'appel Apollo. */
 export type DiscoveryPoiContactsSheetPoi = {
@@ -137,12 +137,12 @@ function DiscoveryDrawerPoiContactsPanel({
   }, [open, poi]);
 
   const canPersist = useMemo(
-    () => Boolean(prospectId) && contacts.length > 0 && status === "ok",
-    [prospectId, contacts.length, status]
+    () => contacts.length > 0 && status === "ok",
+    [contacts.length, status]
   );
 
   const handlePersist = async () => {
-    if (!prospectId || contacts.length === 0) return;
+    if (contacts.length === 0) return;
     setPersistPending(true);
     try {
       const withPoi = contacts.map((c) => ({
@@ -153,11 +153,11 @@ function DiscoveryDrawerPoiContactsPanel({
         originLabel: poi.name.trim() || poi.key,
       }));
       const merged = mergeProspectContacts(existingContacts, hydrateContactDates(withPoi));
-      await updateProspect(prospectId, { contacts: merged });
+      await persistDiscoveryContactList(prospectId, merged);
       toast.success(
-        `${contacts.length} contact${contacts.length > 1 ? "s" : ""} enregistré${
+        `${contacts.length} contact${contacts.length > 1 ? "s" : ""} ajouté${
           contacts.length > 1 ? "s" : ""
-        } sur le prospect.`
+        }.`
       );
       onContactsPersisted?.(merged);
       onOpenChange(false);
@@ -285,9 +285,8 @@ function DiscoveryDrawerPoiContactsPanel({
 
       <div className="shrink-0 border-t bg-muted/30 px-4 py-3">
         <p className="mb-3 text-[11px] leading-snug text-muted-foreground">
-          {prospectId
-            ? "Les contacts seront fusionnés avec ceux déjà enregistrés sur le prospect."
-            : "Ajoutez le prospect au pipeline pour persister les contacts."}
+          Les contacts seront fusionnés avec ceux déjà listés pour ce projet
+          {prospectId ? " et enregistrés sur le prospect." : "."}
         </p>
         <div className="flex items-center justify-end gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>

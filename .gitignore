@@ -85,3 +85,4 @@ datasource/**/*.json.gz
 datasource/**/*.parquet
 datasource/**/*.csv
 datasource/bdnb/dep33_extract/
+datasource/ban/

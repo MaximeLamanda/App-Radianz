@@ -126,7 +126,15 @@ class GeoplateformeGeocoder:
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             return None
 
-    def reverse(self, lon: float, lat: float, *, limit: int = 1) -> GeoplateformeAddressHit | None:
+    def reverse(
+        self,
+        lon: float,
+        lat: float,
+        *,
+        limit: int = 1,
+        code_insee: str | None = None,
+    ) -> GeoplateformeAddressHit | None:
+        _ = code_insee
         payload = self._get("/reverse", {"lon": lon, "lat": lat, "limit": limit})
         if not payload:
             return None

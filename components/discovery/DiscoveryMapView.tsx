@@ -46,6 +46,8 @@ const PANE_CADASTRE_HL = "discoveryCadastreHl";
 const PANE_PARKING_HL = "discoveryParkingHl";
 const PANE_SELECTED_PARCELLE = "discoverySelectedParcelle";
 const PANE_FP_BUILDING = "discoveryFpBuilding";
+/** Surbrillance combo (GeoJSON) au-dessus du canvas MVT — évite que les tuiles masquent lime/gris au zoom ≥ 16. */
+const PANE_BUILDING_HIGHLIGHT = "discoveryBuildingHighlight";
 /** Au-dessus des empreintes MVT pour recevoir les clics en mode édition combo. */
 const PANE_ADDABLE_PARCELLE = "discoveryAddableParcelle";
 
@@ -131,6 +133,7 @@ function DiscoveryMapVectorPanes() {
       [PANE_PARKING_HL, 360],
       [PANE_SELECTED_PARCELLE, 370],
       [PANE_FP_BUILDING, 430],
+      [PANE_BUILDING_HIGHLIGHT, 435],
       [PANE_ADDABLE_PARCELLE, 500],
     ];
     for (const [name, z] of defs) {
@@ -205,7 +208,7 @@ const selectedBuildingPath: L.PathOptions = {
   opacity: 1,
   fillColor: "#b8c469",
   fillOpacity: 0.55,
-  pane: PANE_FP_BUILDING,
+  pane: PANE_BUILDING_HIGHLIGHT,
   interactive: false,
 };
 
@@ -245,7 +248,7 @@ const deselectedBuildingPath: L.PathOptions = {
   opacity: 0.55,
   fillColor: "#71717a",
   fillOpacity: 0.12,
-  pane: PANE_FP_BUILDING,
+  pane: PANE_BUILDING_HIGHLIGHT,
   interactive: false,
 };
 

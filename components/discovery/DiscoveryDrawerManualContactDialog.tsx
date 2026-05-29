@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { createManualProspectContact, updateManualProspectContact } from "@/lib/prospect-contacts";
 import { mergeProspectContacts } from "@/lib/apollo-people-search";
-import { updateProspect } from "@/lib/firestore";
+import { persistDiscoveryContactList } from "@/lib/discovery-contacts-persist";
 import type { ProspectContact, ProspectContactOriginKind } from "@/types";
 import type { DiscoveryContactOriginOptions } from "@/components/discovery/DiscoveryDrawerContactsOverview";
 
@@ -136,10 +136,6 @@ export function DiscoveryDrawerManualContactDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prospectId) {
-      toast.info("Ajoutez ce combo au pipeline pour enregistrer un contact.");
-      return;
-    }
     if (originKind !== "autre" && refOptions.length > 0 && !originRef) {
       toast.error("Choisissez une origine dans la liste.");
       return;
@@ -164,7 +160,7 @@ export function DiscoveryDrawerManualContactDialog({
           originLabel: selected?.label,
         });
         merged = (existingContacts ?? []).map((c) => (c.id === updated.id ? updated : c));
-        await updateProspect(prospectId, { contacts: merged });
+        await persistDiscoveryContactList(prospectId, merged);
         toast.success("Contact mis à jour.");
       } else {
         const created = createManualProspectContact({
@@ -178,8 +174,8 @@ export function DiscoveryDrawerManualContactDialog({
           originLabel: selected?.label,
         });
         merged = mergeProspectContacts(existingContacts, [created]);
-        await updateProspect(prospectId, { contacts: merged });
-        toast.success("Contact enregistré.");
+        await persistDiscoveryContactList(prospectId, merged);
+        toast.success("Contact ajouté.");
       }
       onContactsPersisted?.(merged);
       reset();

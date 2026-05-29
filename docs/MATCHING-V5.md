@@ -50,8 +50,9 @@ Toutes les tables listées ci-dessous servent à **produire** l’export V5 sur 
 - **Footprints bâtiments OpenStreetMap (optionnel, source géométrique V5)** : `public.osm_building_footprints` (schéma [`data-pipeline/sql/005_osm_building_footprints.sql`](../data-pipeline/sql/005_osm_building_footprints.sql))
   - remplissage : script [`data-pipeline/matching_v5/import_osm_buildings.py`](../data-pipeline/matching_v5/import_osm_buildings.py) à partir d’un extrait `.osm.pbf`.
   - activation dans V5 : `--building-source osm`.
-  - matching OSM→BNDB : sélection du `batiment_construction` avec **plus grande aire d’intersection** (Approche A), auditée via `osm_match_status` (`matched` | `low_overlap` | `unmatched`) et `osm_bdnb_intersection_area_m2`.
-  - seuils : `--osm-parcel-intersection-min-m2` (jointure OSM↔parcelle) et `--osm-bdnb-match-min-m2` (validation enrichissement BNDB).
+  - logique métier à retenir : **empreinte bâtiment = OSM**, puis **enrichissement = BDNB** (ID construction, année via FFO, etc.).
+  - matching OSM→BDNB : sélection du `batiment_construction` avec **plus grande aire d’intersection** (Approche A), auditée via `osm_match_status` (`matched` | `low_overlap` | `unmatched`) et `osm_bdnb_intersection_area_m2`.
+  - seuils : `--osm-parcel-intersection-min-m2` (jointure OSM↔parcelle) et `--osm-bdnb-match-min-m2` (validation enrichissement BDNB).
 
 - **Polygones landuse OpenStreetMap (recommandé avec `--building-source osm`)** : `public.osm_landuse_areas` (schéma [`data-pipeline/sql/006_osm_landuse_areas.sql`](../data-pipeline/sql/006_osm_landuse_areas.sql))
   - remplissage : [`data-pipeline/matching_v5/import_osm_landuse.py`](../data-pipeline/matching_v5/import_osm_landuse.py) sur le même `.osm.pbf` que les footprints ; scripts npm `pipeline:osm-landuse:schema` et `pipeline:osm-landuse:import`.
@@ -139,7 +140,7 @@ JSON listant les candidats “par SIREN” (quand les SIREN sont valides), avec 
 - **`street_number_match_set`** : plages du type `12-14` → ensemble `{12, 14}` ; bonus **match / zéros à gauche** (`008` vs `8`) ou **ratio** sur le numéro (`numero_fuzzy`) ; un écart fort applique une **pénalité** `numero_mismatch` (le SIRET n’est plus exclu).
 - **Indice** : BIS / TER / QUATER — accord = bonus ; désaccord = **pénalité** `indice_mismatch` (plus d’exclusion systématique).
 - **Seuil** : score minimal **52** pour retenir un SIRET (la passerelle a toujours un numéro si le matching tourne).
-- **Numéro passerelle obligatoire** : sans `numero_voirie` exploitable côté PPM, la passerelle PPM **n’est pas** utilisée pour le matching SIRENE. Repli avant `match_etablissements` : adresse OSM du footprint (si numéro extractible), puis **géocodage inverse Géoplateforme** au centroïde bâtiment (numéro + `citycode` + seuils distance/score). Sinon `status_technique = no_passerelle_numero`.
+- **Numéro passerelle obligatoire** : sans `numero_voirie` exploitable côté PPM, la passerelle PPM **n’est pas** utilisée pour le matching SIRENE. Repli avant `match_etablissements` : adresse OSM du footprint (si numéro extractible), puis **géocodage inverse BAN locale** (table `scout_ban_adresses`, import `adresses-france.csv.gz`) au centroïde bâtiment (numéro + `code_insee` + seuils distance/score). Sinon `status_technique = no_passerelle_numero`.
 - **Établissements sans numéro** : les lignes `scout_etablissements` avec `numero_norm` vide **ne sont pas** candidates (non comparées).
 
 Champs d’export utiles pour le contrôle : `passerelle_indice_norm`, `passerelle_numero_match` (liste triée, séparée par des virgules).
@@ -150,7 +151,7 @@ Cascade conservative au **centroïde bâtiment** (repli centroïde parcelle si a
 
 1. OSM `addr:full` ou (`addr:street` + `addr:housenumber`) sur l’empreinte
 2. PPM `passerelle_address` si numéro présent **et** corroboration géocodage inverse Géoplateforme
-3. Géocodage inverse Géoplateforme (`https://data.geopf.fr/geocodage/reverse`) — points d’essai le long du **contour parcelle** (pas le seul centroïde bâtiment : échantillon ~1 % du périmètre, retrait intérieur ~1 % de √surface) ; seuils stricts (0,85 / 25 m ; 0,88 / 20 m en zone `landuse` commercial / industrial / retail)
+3. Géocodage inverse BAN locale (`scout_ban_adresses`, KNN PostGIS) — points d’essai le long du **contour parcelle** (pas le seul centroïde bâtiment : échantillon ~1 % du périmètre, retrait intérieur ~1 % de √surface) ; seuils stricts (0,85 / 25 m ; 0,88 / 20 m en zone `landuse` commercial / industrial / retail). Import : `npm run import:ban-france` (Postgres local uniquement).
 4. Adresse SIRENE du match si géocodage direct à ≤ 50 m du bâtiment
 
 `display_address_confidence` vaut `confirmed` ou `none` (pas d’adresse affichée si non confirmée). Désactivation : `--no-address-resolve` sur `run_matching_v5.py`. Détail : [`docs/plans/2026-05-18-matching-v5-address-resolver-design.md`](plans/2026-05-18-matching-v5-address-resolver-design.md).

@@ -67,6 +67,7 @@ export function scoutMatchingV5RowFromAdjacentCadastreParcel(
     sirensJson: "",
     matchingConfidence: 0,
     matchingReason: "",
+    matchStatus: p.match_status ?? "cadastre_only",
     passerelleAddress: "",
     passerelleAddressesJson: "",
     parcellesJson: "",

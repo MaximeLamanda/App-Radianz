@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
+import { createHash } from "crypto";
 import { getAdminDb } from "@/lib/firebase-admin";
 import { getClientIpFromRequest } from "@/lib/client-ip";
 import { evaluateProspectShareSessionStartDecision } from "@/lib/prospect-share-view-eligibility";
+
+function isSameIpBypassEnabledForTests(): boolean {
+  return process.env.PROSPECT_SHARE_ALLOW_SAME_IP_FOR_TESTS === "1";
+}
+
+function buildOpenerIdFromIp(ip: string): string {
+  return createHash("sha256").update(ip.trim().toLowerCase()).digest("hex").slice(0, 12);
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -34,6 +43,7 @@ export async function POST(request: NextRequest) {
       viewerIp,
       shareLinkCreatorIp: data.shareLinkCreatorIp,
       pipelineStatus: data.pipelineStatus,
+      allowSameIpForTesting: isSameIpBypassEnabledForTests(),
     });
     if (decision.action === "skip") {
       return NextResponse.json({ ok: true, skipped: decision.skipped });
@@ -48,6 +58,7 @@ export async function POST(request: NextRequest) {
     await sessionRef.set({
       startedAt: FieldValue.serverTimestamp(),
       status: "open",
+      openerId: buildOpenerIdFromIp(viewerIp),
     });
 
     return NextResponse.json({ ok: true, created: true });

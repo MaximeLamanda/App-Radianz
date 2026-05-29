@@ -82,6 +82,10 @@ import {
   projectedAnnualGridBillEur,
 } from "@/lib/solar-settings";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
+import {
+  MAX_RECOMMENDED_INVERTER_COUNT,
+  pickRecommendedInverterReference,
+} from "@/lib/recommended-inverter-sizing";
 import { ProspectEnergyChartsPanel } from "@/components/solar-scout/ProspectEnergyChartsPanel";
 import { MonthlyConsumptionOnlyChart } from "@/components/solar-scout/MonthlyConsumptionOnlyChart";
 import { EquipmentSelectCard, EquipmentThumbnail } from "@/components/solar-scout/EquipmentSelectCard";
@@ -95,16 +99,18 @@ import type {
 } from "@/types";
 import { toast } from "sonner";
 import {
-  endProspectShareSession,
   registerProspectSharePageView,
   startProspectShareSession,
 } from "@/lib/prospect-share-client";
+import { computeElementScrollDepth01, computeShareSessionScrollDepth01 } from "@/lib/share-session-metrics";
+import { dispatchShareSessionEnd } from "@/lib/share-session-end-dispatch";
 import { RoiComboChart, getRoiCumulativeNetEurAfterHorizon } from "@/components/solar-scout/RoiChart";
 import { ElectricityTariffEscalationChart } from "@/components/solar-scout/ElectricityTariffEscalationChart";
 import { RadianzBillReductionCard } from "@/components/solar-scout/RadianzBillReductionCard";
 import { RadianzCo2AvoidanceRadial } from "@/components/solar-scout/RadianzCo2AvoidanceRadial";
 
 type FinancingMode = "capex" | "lease" | "ppa";
+type InteractionKind = "bill_input" | "project_tab" | "financing_tab" | "contact_cta";
 
 const BILL_MONTH_LABELS_FR = [
   "Janvier",
@@ -210,44 +216,113 @@ export default function ProspectSharePage() {
   const params = useParams();
   const { user } = useAuth();
   const shareToken = (params?.shareToken as string) ?? null;
+  const currentScrollDepthRef = useRef(0);
+  const maxScrollDepthRef = useRef(0);
+  const interactionCountRef = useRef(0);
+  const ctaClicksRef = useRef(0);
+  const billInputInteractionsRef = useRef(0);
+  const projectTabInteractionsRef = useRef(0);
+  const financingTabInteractionsRef = useRef(0);
+  const registerInteraction = useCallback((kind: InteractionKind) => {
+    interactionCountRef.current += 1;
+    if (kind === "contact_cta") ctaClicksRef.current += 1;
+    if (kind === "bill_input") billInputInteractionsRef.current += 1;
+    if (kind === "project_tab") projectTabInteractionsRef.current += 1;
+    if (kind === "financing_tab") financingTabInteractionsRef.current += 1;
+  }, []);
   useEffect(() => {
     if (!shareToken) return;
     void registerProspectSharePageView(shareToken);
 
-    let sessionId: string;
+    const storageKey = `radianzShareSession:${shareToken}`;
+    const now = Date.now();
+    let sessionId = crypto.randomUUID();
     try {
-      const storageKey = `radianzShareSession:${shareToken}`;
-      sessionId = sessionStorage.getItem(storageKey) ?? "";
-      if (!sessionId) {
-        sessionId = crypto.randomUUID();
-        sessionStorage.setItem(storageKey, sessionId);
+      const raw = sessionStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { id?: string; active?: boolean; startedAt?: number };
+        const keepExisting =
+          typeof parsed.id === "string" &&
+          parsed.id.trim().length > 0 &&
+          parsed.active === true &&
+          typeof parsed.startedAt === "number" &&
+          now - parsed.startedAt < 30_000;
+        if (keepExisting) {
+          sessionId = parsed.id;
+        }
       }
+      sessionStorage.setItem(storageKey, JSON.stringify({ id: sessionId, active: true, startedAt: now }));
     } catch {
-      sessionId = crypto.randomUUID();
+      // Ignore sessionStorage errors (private mode / quotas).
     }
 
     void startProspectShareSession(shareToken, sessionId);
+    currentScrollDepthRef.current = 0;
+    maxScrollDepthRef.current = 0;
+    interactionCountRef.current = 0;
+    ctaClicksRef.current = 0;
+    billInputInteractionsRef.current = 0;
+    projectTabInteractionsRef.current = 0;
+    financingTabInteractionsRef.current = 0;
 
     const openedAt = Date.now();
-    let maxScrollDepth01 = 0;
     const endedSentRef = { current: false };
 
-    const updateMaxScroll = () => {
-      const sh = document.documentElement.scrollHeight;
-      if (sh <= 0) return;
-      const visibleBottom = window.scrollY + window.innerHeight;
-      const depth = Math.min(1, Math.max(0, visibleBottom / sh));
-      maxScrollDepth01 = Math.max(maxScrollDepth01, depth);
+    const updateMaxScroll = (target?: EventTarget | null) => {
+      const doc = document.documentElement;
+      const body = document.body;
+      const pageDepth = computeShareSessionScrollDepth01({
+        scrollY: window.scrollY,
+        pageYOffset: window.pageYOffset,
+        docScrollTop: doc.scrollTop,
+        bodyScrollTop: body?.scrollTop,
+        innerHeight: window.innerHeight,
+        docClientHeight: doc.clientHeight,
+        docScrollHeight: doc.scrollHeight,
+        bodyScrollHeight: body?.scrollHeight,
+      });
+      let containerDepth = 0;
+      if (target instanceof HTMLElement) {
+        containerDepth = computeElementScrollDepth01({
+          scrollTop: target.scrollTop,
+          clientHeight: target.clientHeight,
+          scrollHeight: target.scrollHeight,
+        });
+      }
+      const depth = Math.max(pageDepth, containerDepth);
+      currentScrollDepthRef.current = depth;
+      maxScrollDepthRef.current = Math.max(maxScrollDepthRef.current, depth);
+    };
+    const onDocumentScroll = (event: Event) => {
+      updateMaxScroll(event.target);
     };
 
     updateMaxScroll();
     window.addEventListener("scroll", updateMaxScroll, { passive: true });
+    document.addEventListener("scroll", onDocumentScroll, { passive: true, capture: true });
+    window.addEventListener("resize", updateMaxScroll);
 
     const sendEnd = () => {
       if (endedSentRef.current) return;
       endedSentRef.current = true;
+      updateMaxScroll();
+      try {
+        sessionStorage.setItem(
+          storageKey,
+          JSON.stringify({ id: sessionId, active: false, startedAt: openedAt, endedAt: Date.now() })
+        );
+      } catch {
+        // Ignore sessionStorage errors.
+      }
       const durationMs = Math.max(0, Date.now() - openedAt);
-      void endProspectShareSession(shareToken, sessionId, durationMs, maxScrollDepth01);
+      void dispatchShareSessionEnd({
+        shareToken,
+        sessionId,
+        durationMs,
+        maxScrollDepth01: maxScrollDepthRef.current,
+        interactionCount: interactionCountRef.current,
+        ctaClicks: ctaClicksRef.current,
+      });
     };
 
     const onVisibility = () => {
@@ -258,9 +333,10 @@ export default function ProspectSharePage() {
 
     return () => {
       window.removeEventListener("scroll", updateMaxScroll);
+      document.removeEventListener("scroll", onDocumentScroll, true);
+      window.removeEventListener("resize", updateMaxScroll);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", sendEnd);
-      sendEnd();
     };
   }, [shareToken]);
   const { data: prospectData } = useProspectByShareToken(shareToken);
@@ -282,6 +358,13 @@ export default function ProspectSharePage() {
   const configurationMode: ProspectConfigurationMode = configurationModeUserOverride ?? "perfect_fit";
   const [annualConsumptionOverride, setAnnualConsumptionOverride] = useState<number | undefined>(undefined);
   const [chartViewMode, setChartViewMode] = useState<"monthly" | "daily">("monthly");
+  const handleChartViewModeChange = useCallback(
+    (mode: "monthly" | "daily") => {
+      if (chartViewMode !== mode) registerInteraction("project_tab");
+      setChartViewMode(mode);
+    },
+    [chartViewMode, registerInteraction]
+  );
   const [chartSelectedMonthIndex, setChartSelectedMonthIndex] = useState(6);
   const [includeBatteryLocal, setIncludeBatteryLocal] = useState<boolean>(true);
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
@@ -293,8 +376,11 @@ export default function ProspectSharePage() {
   const [financeChartView, setFinanceChartView] = useState<"roi" | "tariff">("roi");
 
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
+  const pendingInverterResyncAfterModeChangeRef = useRef(false);
   /** Après application de recommendedBatteryComposition au chargement (même règle que changement d'onglet). */
   const initialBatteryAppliedForProspectRef = useRef<string | null>(null);
+  const initialInverterAppliedForProspectRef = useRef<string | null>(null);
+  const inverterManualRef = useRef(false);
 
   const visiblePanels = useMemo(() => {
     const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
@@ -364,6 +450,13 @@ export default function ProspectSharePage() {
     Array.from({ length: 12 }, () => false)
   );
   const [billValueMode, setBillValueMode] = useState<"mwh" | "eur">("mwh");
+  const handleBillValueModeChange = useCallback(
+    (mode: "mwh" | "eur") => {
+      if (billValueMode !== mode) registerInteraction("bill_input");
+      setBillValueMode(mode);
+    },
+    [billValueMode, registerInteraction]
+  );
   /** Saisie contrôlée : un seul mois focalisé à la fois (brouillon vs placeholder valeur de base). */
   const [billFocusedMonthIndex, setBillFocusedMonthIndex] = useState<number | null>(null);
   const [billFocusedDraft, setBillFocusedDraft] = useState("");
@@ -563,10 +656,19 @@ export default function ProspectSharePage() {
     return best ? { model: best.model, count: best.count } : null;
   }, [batteriesData, recommendedBatteryKwh]);
 
+  const recommendedInverterRef = useMemo(() => {
+    const kwp = effectiveConfig.effectiveKwp;
+    if (!visibleInverters.length || kwp <= 0) return null;
+    return pickRecommendedInverterReference(kwp, visibleInverters);
+  }, [visibleInverters, effectiveConfig.effectiveKwp]);
+
   useEffect(() => {
     pendingBatteryResyncAfterModeChangeRef.current = false;
+    pendingInverterResyncAfterModeChangeRef.current = false;
     initialBatteryAppliedForProspectRef.current = null;
-  }, [prospect?.id]);
+    initialInverterAppliedForProspectRef.current = null;
+    inverterManualRef.current = Boolean(prospect?.inverterReferenceId);
+  }, [prospect?.id, prospect?.inverterReferenceId]);
 
   /** Tant que la cible kWh n'est pas calculable, conserver les champs batterie du prospect (PVGIS / catalogue en attente). */
   useEffect(() => {
@@ -598,6 +700,33 @@ export default function ProspectSharePage() {
     setSelectedBatteryCount(count);
     pendingBatteryResyncAfterModeChangeRef.current = false;
   }, [prospect, configurationMode, recommendedBatteryComposition]);
+
+  useEffect(() => {
+    if (!prospect?.id || recommendedInverterRef == null) return;
+
+    if (inverterManualRef.current) {
+      if (prospect.inverterReferenceId) setSelectedInverterId(prospect.inverterReferenceId);
+      return;
+    }
+
+    if (
+      pendingInverterResyncAfterModeChangeRef.current ||
+      initialInverterAppliedForProspectRef.current !== prospect.id
+    ) {
+      setSelectedInverterId(recommendedInverterRef.id);
+      pendingInverterResyncAfterModeChangeRef.current = false;
+      initialInverterAppliedForProspectRef.current = prospect.id;
+      return;
+    }
+
+    setSelectedInverterId(recommendedInverterRef.id);
+  }, [
+    prospect?.id,
+    prospect?.inverterReferenceId,
+    configurationMode,
+    recommendedInverterRef,
+    effectiveConfig.effectiveKwp,
+  ]);
 
   /** production = productionPerKwp × kWp. */
   const choiceCardsConfig = useMemo(() => {
@@ -642,6 +771,8 @@ export default function ProspectSharePage() {
   const effectiveInverterCount = configurationMode === "perfect_fit"
     ? choiceCardsConfig.perfectFit.inverterCount
     : choiceCardsConfig.highestProduction.inverterCount;
+
+  const inverterCountExceedsLimit = effectiveInverterCount > MAX_RECOMMENDED_INVERTER_COUNT;
 
   const consoAnnuelleKwh = liveAnnualConsumptionKwh;
   const energyBillEur = estimateEnergyBillEur(consoAnnuelleKwh);
@@ -1306,7 +1437,7 @@ export default function ProspectSharePage() {
                     fillVertical
                     monthlyKwh={editedBillMonthlyKwh}
                     unitMode={billValueMode}
-                    onUnitModeChange={setBillValueMode}
+                    onUnitModeChange={handleBillValueModeChange}
                     retailPriceEurPerKwh={effectiveRetailPricePerKwh}
                     highlightedMonthIndex={billChartHighlightedMonth}
                     contentBelowTotal={(
@@ -1368,6 +1499,7 @@ export default function ProspectSharePage() {
                                 }}
                                 onBlur={(e) => {
                                   const blurred = e.target.value;
+                                  const focusValue = billMonthFocusValueRef.current[i] ?? "";
                                   const normalized = normalizeBillInputRaw(blurred);
                                   const parsed = parseFloat(normalized);
                                   const vKwh = Number.isFinite(parsed)
@@ -1444,6 +1576,9 @@ export default function ProspectSharePage() {
                                   if (!billInputsGridRef.current?.contains(rel)) {
                                     setBillChartHighlightedMonth(null);
                                   }
+                                  if (normalizeBillInputRaw(focusValue) !== normalized) {
+                                    registerInteraction("bill_input");
+                                  }
                                 }}
                                 aria-label={
                                   billValueMode === "eur"
@@ -1472,7 +1607,11 @@ export default function ProspectSharePage() {
                   <Tabs
                     value={configurationMode}
                     onValueChange={(v) => {
+                      registerInteraction("project_tab");
                       pendingBatteryResyncAfterModeChangeRef.current = true;
+                      if (!inverterManualRef.current) {
+                        pendingInverterResyncAfterModeChangeRef.current = true;
+                      }
                       setConfigurationModeUserOverride(v as ProspectConfigurationMode);
                     }}
                     variant="line"
@@ -1492,7 +1631,7 @@ export default function ProspectSharePage() {
                     configurationModeKey={configurationMode}
                     annualProductionKwh={effectiveConfig.effectiveAnnualProductionKwh}
                     chartViewMode={chartViewMode}
-                    onChartViewModeChange={setChartViewMode}
+                    onChartViewModeChange={handleChartViewModeChange}
                     chartSelectedMonthIndex={chartSelectedMonthIndex}
                     onChartSelectedMonthIndexChange={setChartSelectedMonthIndex}
                     data={chartData}
@@ -1614,7 +1753,10 @@ export default function ProspectSharePage() {
                   <>
                     <Tabs
                       value={financingMode}
-                      onValueChange={(v) => setFinancingMode(v as FinancingMode)}
+                      onValueChange={(v) => {
+                        registerInteraction("financing_tab");
+                        setFinancingMode(v as FinancingMode);
+                      }}
                       variant="line"
                       className="w-full min-w-0"
                     >
@@ -1645,7 +1787,10 @@ export default function ProspectSharePage() {
                               type="button"
                               role="tab"
                               aria-selected={financeChartView === "roi"}
-                              onClick={() => setFinanceChartView("roi")}
+                              onClick={() => {
+                                registerInteraction("financing_tab");
+                                setFinanceChartView("roi");
+                              }}
                               className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
                                 financeChartView === "roi"
                                   ? "bg-background text-foreground shadow-xs"
@@ -1658,7 +1803,10 @@ export default function ProspectSharePage() {
                               type="button"
                               role="tab"
                               aria-selected={financeChartView === "tariff"}
-                              onClick={() => setFinanceChartView("tariff")}
+                              onClick={() => {
+                                registerInteraction("financing_tab");
+                                setFinanceChartView("tariff");
+                              }}
                               className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
                                 financeChartView === "tariff"
                                   ? "bg-background text-foreground shadow-xs"
@@ -1847,9 +1995,26 @@ export default function ProspectSharePage() {
                                   <EquipmentSelectCard<InverterReference>
                                     value={usedInverterRef ?? undefined}
                                     options={visibleInverters}
-                                    onChange={(i) => setSelectedInverterId(i ? i.id : null)}
+                                    onChange={(i) => {
+                                      inverterManualRef.current = true;
+                                      setSelectedInverterId(i ? i.id : null);
+                                    }}
                                     getItemId={(i) => i.id}
-                                    showRecommendedBadge={!!usedInverterRef?.recommended}
+                                    showRecommendedBadge={
+                                      !!recommendedInverterRef &&
+                                      usedInverterRef?.id === recommendedInverterRef.id &&
+                                      !inverterCountExceedsLimit
+                                    }
+                                    warningBadge={
+                                      inverterCountExceedsLimit ? (
+                                        <span
+                                          className="inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                                          title="Plus de 8 onduleurs : choisir un modèle plus puissant"
+                                        >
+                                          Changer de modèle
+                                        </span>
+                                      ) : undefined
+                                    }
                                     rightBadge={usedInverterRef ? String(effectiveInverterCount) : undefined}
                                     placeholder={
                                       <span className="flex items-center gap-2">
@@ -1908,7 +2073,8 @@ export default function ProspectSharePage() {
                                             <span>€{i.costEur}</span>
                                             <span>·</span>
                                             <span>{formatPower(i.powerW)}</span>
-                                            {i.recommended && (
+                                            {recommendedInverterRef != null &&
+                                              i.id === recommendedInverterRef.id && (
                                               <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
                                             )}
                                           </div>
@@ -2096,7 +2262,7 @@ export default function ProspectSharePage() {
                         className="h-11 w-full justify-center rounded-xl border-0 text-white hover:opacity-90 lg:w-[200px] [&_svg]:size-3.5"
                         style={{ backgroundColor: BRAND_INK }}
                       >
-                        <a href={`mailto:${commercialReferent.email}`}>
+                        <a href={`mailto:${commercialReferent.email}`} onClick={() => registerInteraction("contact_cta")}>
                           <Mail className="size-3.5" aria-hidden />
                           Envoyer un email
                         </a>
@@ -2109,7 +2275,10 @@ export default function ProspectSharePage() {
                         className="h-11 w-full justify-center rounded-xl bg-transparent lg:w-[200px] [&_svg]:size-3.5"
                         style={{ borderColor: BRAND_INK, color: BRAND_INK }}
                       >
-                        <a href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}>
+                        <a
+                          href={`tel:${commercialReferent.phone.replace(/\s/g, "")}`}
+                          onClick={() => registerInteraction("contact_cta")}
+                        >
                           <Phone className="size-3.5" aria-hidden />
                           Appeler
                         </a>
@@ -2122,7 +2291,12 @@ export default function ProspectSharePage() {
                         className="h-11 w-full justify-center rounded-xl bg-transparent lg:w-[200px] [&_svg]:size-3.5"
                         style={{ borderColor: BRAND_INK, color: BRAND_INK }}
                       >
-                        <a href={commercialReferent.calendlyUrl} target="_blank" rel="noopener noreferrer">
+                        <a
+                          href={commercialReferent.calendlyUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => registerInteraction("contact_cta")}
+                        >
                           <Calendar className="size-3.5" aria-hidden />
                           Prendre rendez-vous
                         </a>
@@ -2156,13 +2330,19 @@ export default function ProspectSharePage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   const v = parseFloat((e.target as HTMLInputElement).value);
-                  if (!Number.isNaN(v) && v >= 0) setEnergyBillEurOverride(v);
+                  if (!Number.isNaN(v) && v >= 0) {
+                    registerInteraction("bill_input");
+                    setEnergyBillEurOverride(v);
+                  }
                   setEnergyBillDialogOpen(false);
                 }
               }}
               onBlur={(e) => {
                 const v = parseFloat(e.target.value);
-                if (!Number.isNaN(v) && v >= 0) setEnergyBillEurOverride(v);
+                if (!Number.isNaN(v) && v >= 0) {
+                  registerInteraction("bill_input");
+                  setEnergyBillEurOverride(v);
+                }
               }}
             />
             <p className="text-xs text-gray-500">Estimation : {energyBillEur.toLocaleString("fr-FR")} €</p>

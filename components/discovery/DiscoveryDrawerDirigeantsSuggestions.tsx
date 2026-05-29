@@ -15,7 +15,7 @@ import {
 } from "@/lib/discovery-dirigeants-suggestions";
 import { mergeProspectContacts } from "@/lib/apollo-people-search";
 import { prospectContactInitials } from "@/lib/prospect-contacts";
-import { updateProspect } from "@/lib/firestore";
+import { persistDiscoveryContactList } from "@/lib/discovery-contacts-persist";
 import type { DirigeantPhysiqueGouv } from "@/lib/recherche-entreprises";
 import type { ProspectContact } from "@/types";
 
@@ -86,7 +86,7 @@ function DirigeantCard({
   });
 
   const handleAdd = useCallback(async () => {
-    if (!prospectId || alreadyAdded || !fullName) return;
+    if (alreadyAdded || !fullName) return;
     setPending(true);
     try {
       const incoming = contactFromDirigeant({
@@ -96,7 +96,7 @@ function DirigeantCard({
         originLabel,
       });
       const merged = mergeProspectContacts(existingContacts, [incoming]);
-      await updateProspect(prospectId, { contacts: merged });
+      await persistDiscoveryContactList(prospectId, merged);
       onContactsPersisted(merged);
       toast.success("Contact ajouté.");
     } catch (err) {
@@ -147,15 +147,8 @@ function DirigeantCard({
         variant={alreadyAdded ? "ghost" : "secondary"}
         size="icon"
         className="h-9 w-9 min-w-0 shrink-0 rounded-lg [&_svg]:size-5"
-        disabled={!prospectId || alreadyAdded || pending}
-        aria-label={
-          alreadyAdded
-            ? `${fullName} déjà ajouté`
-            : !prospectId
-              ? "Ajoutez ce combo au pipeline pour enregistrer un contact"
-              : `Ajouter ${fullName}`
-        }
-        title={!prospectId ? "Ajoutez ce combo au pipeline pour enregistrer un contact" : undefined}
+        disabled={alreadyAdded || pending}
+        aria-label={alreadyAdded ? `${fullName} déjà ajouté` : `Ajouter ${fullName}`}
         onClick={() => void handleAdd()}
       >
         {pending ? (

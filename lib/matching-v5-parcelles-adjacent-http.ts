@@ -253,6 +253,7 @@ export type DiscoveryAdjacentParcelle = {
   combo_parcelle_scout_v5_ids: string[];
   cadastre_label: string;
   in_matching_v5: boolean;
+  match_status?: "matched" | "cadastre_only";
 };
 
 export function cadastreLabelFromPropertiesJson(

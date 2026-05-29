@@ -6,12 +6,8 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from run_matching_v5 import (
-    qualified_bdnb_constructions_table,
-    qualified_scout_matching_v5_table,
-    resolve_database_url,
-    fetch_construction_payloads,
-)
+from osm_buildings_v5 import fetch_osm_geometry_payloads, qualified_osm_buildings_table
+from run_matching_v5 import qualified_scout_matching_v5_table, resolve_database_url
 
 
 def _chunked(items: list[str], size: int) -> Iterable[list[str]]:
@@ -30,31 +26,78 @@ def _buildings_json_raw_for_parse(v: Any) -> str:
     return str(v).strip()
 
 
-def _extract_construction_ids(buildings_json_raw: str) -> list[str]:
-    s = str(buildings_json_raw or "").strip()
-    if not s:
+def _parse_buildings_json_items(v: Any) -> list[dict[str, Any]]:
+    raw = _buildings_json_raw_for_parse(v)
+    if not raw:
         return []
     try:
-        arr = json.loads(s)
+        arr = json.loads(raw)
     except json.JSONDecodeError:
         return []
     if not isinstance(arr, list):
         return []
+    return [item for item in arr if isinstance(item, dict)]
+
+
+def _osm_building_id_from_item(item: dict[str, Any]) -> str:
+    return str(item.get("osm_building_id") or item.get("batiment_construction_id") or "").strip()
+
+
+def _extract_osm_building_ids(items: list[dict[str, Any]]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for item in arr:
-        if not isinstance(item, dict):
+    for item in items:
+        oid = _osm_building_id_from_item(item)
+        if not oid or oid in seen:
             continue
-        bid = str(item.get("batiment_construction_id") or "").strip()
-        if not bid or bid in seen:
-            continue
-        seen.add(bid)
-        out.append(bid)
+        seen.add(oid)
+        out.append(oid)
     return out
 
 
+def _building_geometry_entry(
+    item: dict[str, Any],
+    osm_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    osm_building_id = _osm_building_id_from_item(item)
+    if not osm_building_id:
+        return None
+    try:
+        geometry = json.loads(str(osm_payload["geometry"]))
+    except (KeyError, json.JSONDecodeError, TypeError):
+        return None
+    return {
+        "batiment_construction_id": str(item.get("batiment_construction_id") or osm_building_id).strip(),
+        "bdnb_batiment_construction_id": item.get("bdnb_batiment_construction_id"),
+        "batiment_groupe_id": item.get("batiment_groupe_id"),
+        "osm_building_id": osm_building_id,
+        "osm_match_status": item.get("osm_match_status") or "",
+        "osm_bdnb_intersection_area_m2": item.get("osm_bdnb_intersection_area_m2"),
+        "osm_address_text": item.get("osm_address_text") or osm_payload.get("address_text") or "",
+        "osm_name": item.get("osm_name") or osm_payload.get("name") or "",
+        "osm_website": item.get("osm_website") or osm_payload.get("website") or "",
+        "osm_phone": item.get("osm_phone") or osm_payload.get("phone") or "",
+        "osm_poi_primary_key": item.get("osm_poi_primary_key") or osm_payload.get("poi_primary_key") or "",
+        "osm_poi_primary_value": item.get("osm_poi_primary_value") or osm_payload.get("poi_primary_value") or "",
+        "osm_poi_type_label": item.get("osm_poi_type_label") or osm_payload.get("poi_type_label") or "",
+        "osm_raw_tags": item.get("osm_raw_tags") or osm_payload.get("raw_tags") or {},
+        "zone_tag": item.get("zone_tag") or "",
+        "zone_source": item.get("zone_source") or "",
+        "landuse_intersection_area_m2": item.get("landuse_intersection_area_m2"),
+        "annee_construction": item.get("annee_construction"),
+        "footprint_m2": item.get("footprint_m2") or osm_payload.get("footprint_m2"),
+        "matching_status": item.get("matching_status") or "",
+        "geometry": geometry,
+    }
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backfill des building_geometries_json pour scout_matching_v5_features")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Backfill building_geometries_json depuis osm_building_footprints "
+            "(même source que run_matching_v5.py, pas BDNB)."
+        )
+    )
     ap.add_argument("--code-insee", default="", help="Filtrer une commune INSEE (optionnel)")
     ap.add_argument("--limit", type=int, default=0, help="Limiter le nombre de lignes lues (0 = toutes)")
     ap.add_argument("--batch-size", type=int, default=250, help="Taille des lots de lecture/mise à jour")
@@ -72,7 +115,7 @@ def main() -> int:
         raise RuntimeError("psycopg2-binary requis") from exc
 
     scout_q = qualified_scout_matching_v5_table()
-    constructions_q, _ = qualified_bdnb_constructions_table()
+    osm_q = qualified_osm_buildings_table()
 
     conn = psycopg2.connect(url)
     updated = 0
@@ -111,46 +154,50 @@ def main() -> int:
             )
             rows = cur.fetchall()
             scanned = len(rows)
+            batch_size = max(1, int(args.batch_size))
+            batch_ids = list(_chunked([r["scout_v5_id"] for r in rows], batch_size))
+            n_batches = len(batch_ids)
+            print(
+                f"[v5-backfill] {scanned} parcelle(s), {n_batches} lot(s) de {batch_size} — source OSM {osm_q}",
+                flush=True,
+            )
 
-            for batch in _chunked([r["scout_v5_id"] for r in rows], max(1, int(args.batch_size))):
+            for batch_idx, batch in enumerate(batch_ids, 1):
                 batch_rows = [r for r in rows if r["scout_v5_id"] in set(batch)]
-                all_ids: list[str] = []
+                all_osm_ids: list[str] = []
                 for row in batch_rows:
                     props = row.get("properties_json") or {}
                     if not isinstance(props, dict):
                         continue
-                    all_ids.extend(_extract_construction_ids(_buildings_json_raw_for_parse(props.get("buildings_json"))))
-                uniq_ids = sorted(set(all_ids))
-                payload_by_id: dict[str, dict[str, Any]] = {}
-                if uniq_ids:
-                    payload_by_id = fetch_construction_payloads(cur, uniq_ids, constructions_q)
+                    all_osm_ids.extend(
+                        _extract_osm_building_ids(_parse_buildings_json_items(props.get("buildings_json")))
+                    )
+                uniq_osm_ids = sorted(set(all_osm_ids))
+                payload_by_osm: dict[str, dict[str, Any]] = {}
+                if uniq_osm_ids:
+                    payload_by_osm = fetch_osm_geometry_payloads(cur, uniq_osm_ids, osm_q)
 
                 for row in batch_rows:
                     props = row.get("properties_json") or {}
                     if not isinstance(props, dict):
                         continue
-                    buildings_json_raw = _buildings_json_raw_for_parse(props.get("buildings_json"))
-                    ids = _extract_construction_ids(buildings_json_raw)
+                    items = _parse_buildings_json_items(props.get("buildings_json"))
                     payload = []
-                    for bid in ids:
-                        item = payload_by_id.get(bid)
-                        if not item:
+                    for item in items:
+                        osm_id = _osm_building_id_from_item(item)
+                        if not osm_id:
                             continue
-                        try:
-                            geometry = json.loads(str(item["geometry"]))
-                        except json.JSONDecodeError:
+                        osm_item = payload_by_osm.get(osm_id)
+                        if not osm_item:
                             continue
-                        payload.append(
-                            {
-                                "batiment_construction_id": item["batiment_construction_id"],
-                                "batiment_groupe_id": item.get("batiment_groupe_id"),
-                                "footprint_m2": item.get("footprint_m2"),
-                                "geometry": geometry,
-                            }
-                        )
+                        entry = _building_geometry_entry(item, osm_item)
+                        if entry:
+                            payload.append(entry)
                     if args.dry_run:
                         if payload:
                             updated += 1
+                        continue
+                    if not payload:
                         continue
                     cur.execute(
                         f"""
@@ -173,6 +220,10 @@ def main() -> int:
                     updated += 1
                 if not args.dry_run:
                     conn.commit()
+                print(
+                    f"[v5-backfill] lot {batch_idx}/{n_batches} — {updated} ligne(s) mises à jour",
+                    flush=True,
+                )
     finally:
         conn.close()
 

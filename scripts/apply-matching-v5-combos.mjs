@@ -23,6 +23,7 @@ const sqlPaths = [
     "../data-pipeline/sql/015_scout_matching_v5_combos_siren_naf.sql",
     import.meta.url
   ),
+  new URL("../data-pipeline/sql/018_scout_matching_v5_match_status.sql", import.meta.url),
 ];
 
 const url = resolveDatabaseUrl(process.cwd());

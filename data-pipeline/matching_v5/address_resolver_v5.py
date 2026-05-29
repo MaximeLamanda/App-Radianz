@@ -9,7 +9,7 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from rapidfuzz import fuzz
 from shapely.geometry import LineString, MultiPolygon, Polygon, shape
@@ -21,7 +21,7 @@ from scout_pipeline.address_normalization import (
     street_number_match_set,
 )
 
-from geoplateforme_geocode import GeoplateformeAddressHit, GeoplateformeGeocoder
+from geoplateforme_geocode import GeoplateformeAddressHit
 from import_osm_buildings import _format_osm_address
 
 _PRO_LANDUSE_TAGS = frozenset({"commercial", "industrial", "retail"})
@@ -30,12 +30,25 @@ _ACCEPTED_BAN_TYPES = frozenset({"housenumber", "street"})
 PARCEL_SHAPE_STEP_FRACTION = 0.01
 PARCEL_SHAPE_INSET_FRACTION = 0.01
 _MAX_PARCEL_BAN_QUERY_POINTS = 64
+# Passerelle SIRENE : moins de points, centroïde d'abord, arrêt dès qu'un hit est accepté.
+_MAX_PARCEL_BAN_QUERY_POINTS_ETAB = 16
 _EMPTY_DISPLAY: dict[str, str] = {
     "display_address": "",
     "display_address_source": "none",
     "display_address_confidence": "none",
     "display_address_meta_json": "{}",
 }
+
+
+class ReverseGeocoder(Protocol):
+    def reverse(
+        self,
+        lon: float,
+        lat: float,
+        *,
+        limit: int = 1,
+        code_insee: str | None = None,
+    ) -> GeoplateformeAddressHit | None: ...
 
 
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -318,23 +331,66 @@ def _best_sirene_address(etab_match: dict[str, Any]) -> str | None:
 
 @dataclass
 class DisplayAddressResolver:
-    geocoder: GeoplateformeGeocoder
+    geocoder: ReverseGeocoder | None
     enabled: bool = True
-    _reverse_cache: dict[tuple[float, float], GeoplateformeAddressHit | None] | None = None
+    code_insee: str = ""
+    _reverse_cache: dict[tuple[float, float, str], GeoplateformeAddressHit | None] | None = None
 
     def __post_init__(self) -> None:
         if self._reverse_cache is None:
             object.__setattr__(self, "_reverse_cache", {})
 
-    def reverse_cached(self, lon: float, lat: float) -> GeoplateformeAddressHit | None:
-        key = (round(lon, 5), round(lat, 5))
+    def reverse_cached(
+        self,
+        lon: float,
+        lat: float,
+        *,
+        code_insee: str | None = None,
+    ) -> GeoplateformeAddressHit | None:
+        insee = str(code_insee or self.code_insee or "").strip()
+        key = (round(lon, 5), round(lat, 5), insee)
         if key in self._reverse_cache:
             return self._reverse_cache[key]
         hit = None
-        if self.enabled:
-            hit = self.geocoder.reverse(lon, lat)
+        if self.enabled and self.geocoder is not None:
+            hit = self.geocoder.reverse(lon, lat, code_insee=insee or None)
         self._reverse_cache[key] = hit
         return hit
+
+    def _ordered_ban_query_points(
+        self,
+        parcel_geom_geojson: str | dict[str, Any] | None,
+        *,
+        fallback_lat: float | None,
+        fallback_lon: float | None,
+        max_points: int,
+        prefer_fallback_first: bool,
+    ) -> list[tuple[float, float]]:
+        perimeter = parcel_ban_query_points(parcel_geom_geojson, max_points=max_points)
+        ordered: list[tuple[float, float]] = []
+        seen: set[tuple[float, float]] = set()
+
+        def _push(lat: float | None, lon: float | None) -> None:
+            if lat is None or lon is None:
+                return
+            key = (round(lat, 5), round(lon, 5))
+            if key in seen:
+                return
+            seen.add(key)
+            ordered.append(key)
+
+        if prefer_fallback_first:
+            _push(fallback_lat, fallback_lon)
+            cent = centroid_from_geojson(parcel_geom_geojson)
+            if cent:
+                _push(cent[0], cent[1])
+        for lat, lon in perimeter:
+            _push(lat, lon)
+        if not prefer_fallback_first:
+            _push(fallback_lat, fallback_lon)
+        if not ordered and fallback_lat is not None and fallback_lon is not None:
+            ordered.append((fallback_lat, fallback_lon))
+        return ordered[:max_points]
 
     def reverse_best_for_parcel_shape(
         self,
@@ -346,20 +402,28 @@ class DisplayAddressResolver:
         fallback_lat: float | None = None,
         fallback_lon: float | None = None,
         require_housenumber: bool = False,
+        max_points: int = _MAX_PARCEL_BAN_QUERY_POINTS,
+        prefer_fallback_first: bool = False,
+        stop_when_accepted: bool = False,
     ) -> tuple[GeoplateformeAddressHit | None, float | None, float | None]:
         """
         Essaie le géocodage inverse sur le contour parcelle (1 % / 1 %).
         Retourne le meilleur hit accepté (distance BAN minimale) et le point de requête utilisé.
         """
-        points = parcel_ban_query_points(parcel_geom_geojson)
-        if not points and fallback_lat is not None and fallback_lon is not None:
-            points = [(fallback_lat, fallback_lon)]
+        points = self._ordered_ban_query_points(
+            parcel_geom_geojson,
+            fallback_lat=fallback_lat,
+            fallback_lon=fallback_lon,
+            max_points=max_points,
+            prefer_fallback_first=prefer_fallback_first,
+        )
         best_hit: GeoplateformeAddressHit | None = None
         best_lat: float | None = None
         best_lon: float | None = None
         best_dist = float("inf")
+        _, dist_max = _ban_thresholds(is_pro=is_pro, parcel_fallback=parcel_fallback)
         for lat, lon in points:
-            hit = self.reverse_cached(lon, lat)
+            hit = self.reverse_cached(lon, lat, code_insee=code_insee)
             if hit is None:
                 continue
             if require_housenumber and not normalize_text(hit.housenumber):
@@ -380,6 +444,8 @@ class DisplayAddressResolver:
                 best_hit = hit
                 best_lat = lat
                 best_lon = lon
+            if stop_when_accepted and best_hit is not None and dist_m <= dist_max:
+                break
         return best_hit, best_lat, best_lon
 
     def resolve_for_building(
@@ -410,6 +476,19 @@ class DisplayAddressResolver:
                 {"step": 1, "source": "osm_structured_tags"},
             )
 
+        passerelle = str(ppm_info.get("passerelle_address") or "").strip()
+        # Pas de géocodage BAN si le matching SIRENE a déjà validé la passerelle.
+        if passerelle and str(etab_match.get("status_technique") or "").strip() == "matched":
+            return _confirmed_result(
+                passerelle,
+                "ppm",
+                {
+                    "step": "2b",
+                    "corroboration": "sirene_matched_passerelle",
+                    "matching_reason": str(etab_match.get("matching_reason") or "").strip() or None,
+                },
+            )
+
         query_lat = centroid_lat
         query_lon = centroid_lon
         ban_hit: GeoplateformeAddressHit | None = None
@@ -423,18 +502,19 @@ class DisplayAddressResolver:
                 parcel_fallback=parcel_fallback,
                 fallback_lat=centroid_lat,
                 fallback_lon=centroid_lon,
+                prefer_fallback_first=True,
+                stop_when_accepted=True,
             )
             if ban_hit is not None:
                 ban_query_mode = "parcel_shape"
         elif query_lat is not None and query_lon is not None:
-            ban_hit = self.reverse_cached(query_lon, query_lat)
+            ban_hit = self.reverse_cached(query_lon, query_lat, code_insee=code_insee)
         else:
             return dict(_EMPTY_DISPLAY)
 
         if query_lat is None or query_lon is None:
             return dict(_EMPTY_DISPLAY)
 
-        passerelle = str(ppm_info.get("passerelle_address") or "").strip()
         if passerelle and ban_hit is not None:
             ok, ppm_meta = corroborate_ppm_with_ban(
                 ppm_info,
@@ -449,19 +529,6 @@ class DisplayAddressResolver:
                     "ppm",
                     {"step": 2, "ban_query_mode": ban_query_mode, **ppm_meta},
                 )
-
-        # Adresse qui a servi au matching SIRENE (passerelle) — pas le libellé BAN reverse ni
-        # adresse_etablissement géocodée (ancienne étape 4).
-        if passerelle and str(etab_match.get("status_technique") or "").strip() == "matched":
-            return _confirmed_result(
-                passerelle,
-                "ppm",
-                {
-                    "step": "2b",
-                    "corroboration": "sirene_matched_passerelle",
-                    "matching_reason": str(etab_match.get("matching_reason") or "").strip() or None,
-                },
-            )
 
         if ban_hit is not None:
             ok, ban_meta = _accept_ban_reverse(
@@ -482,6 +549,35 @@ class DisplayAddressResolver:
         return dict(_EMPTY_DISPLAY)
 
 
+def matched_passerelle_display_fields(
+    ppm_info: dict[str, Any],
+    etab_match: dict[str, Any],
+) -> dict[str, str] | None:
+    """Champs display_address si le matching SIRENE a validé la passerelle (sans appel BAN)."""
+    passerelle = str(ppm_info.get("passerelle_address") or "").strip()
+    if not passerelle or str(etab_match.get("status_technique") or "").strip() != "matched":
+        return None
+    return _confirmed_result(
+        passerelle,
+        "ppm",
+        {
+            "step": "2b",
+            "corroboration": "sirene_matched_passerelle",
+            "matching_reason": str(etab_match.get("matching_reason") or "").strip() or None,
+        },
+    )
+
+
+def osm_building_display_fields(
+    osm_raw_tags: dict[str, Any] | None,
+    osm_address_text: str | None,
+) -> dict[str, str] | None:
+    label = osm_structured_address_label(osm_raw_tags, osm_address_text)
+    if not label:
+        return None
+    return _confirmed_result(label, "osm", {"step": 1, "source": "osm_structured_tags"})
+
+
 def enrich_building_detail_with_display(
     item: dict[str, Any],
     *,
@@ -491,13 +587,27 @@ def enrich_building_detail_with_display(
     code_insee: str,
     resolver: DisplayAddressResolver,
     parcel_geom_geojson: str | dict[str, Any] | None = None,
+    parcel_matched_display: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    geom = payload.get("geometry") or ""
-    lat_lon = centroid_from_geojson(str(geom) if geom else None)
-    lat, lon = lat_lon if lat_lon else (None, None)
     raw_tags = item.get("osm_raw_tags")
     if not isinstance(raw_tags, dict):
         raw_tags = payload.get("raw_tags") if isinstance(payload.get("raw_tags"), dict) else {}
+    osm_display = osm_building_display_fields(
+        raw_tags,
+        str(item.get("osm_address_text") or payload.get("address_text") or ""),
+    )
+    if osm_display is not None:
+        out = dict(item)
+        out.update(osm_display)
+        return out
+    if parcel_matched_display is not None:
+        out = dict(item)
+        out.update(parcel_matched_display)
+        return out
+
+    geom = payload.get("geometry") or ""
+    lat_lon = centroid_from_geojson(str(geom) if geom else None)
+    lat, lon = lat_lon if lat_lon else (None, None)
     display = resolver.resolve_for_building(
         code_insee=code_insee,
         osm_raw_tags=raw_tags,
@@ -631,9 +741,10 @@ def augment_ppm_passerelle_for_etab(
     code_insee: str,
     parcel_geom: dict[tuple[str, str, str], str],
     payload_by_bat: dict[str, dict[str, Any]],
-    geocoder: GeoplateformeGeocoder | None,
+    geocoder: ReverseGeocoder | None,
     build_synthetic_from_text: Callable[[str], dict[str, Any]],
     log: Callable[[str], None],
+    reverse_cache: dict[tuple[float, float], GeoplateformeAddressHit | None] | None = None,
 ) -> tuple[int, int]:
     """
     PPM sans numéro (ou sans adresse) : OSM footprint puis géocodage inverse pour la passerelle SIRENE.
@@ -641,9 +752,16 @@ def augment_ppm_passerelle_for_etab(
     """
     osm_added = 0
     ban_added = 0
-    reverse_cache: dict[tuple[float, float], GeoplateformeAddressHit | None] = {}
+    if reverse_cache is None:
+        reverse_cache = {}
+    parcel_keys = sorted(by_parcel.keys())
+    n_parcels = len(parcel_keys)
+    ban_attempts = 0
+    ban_resolver: DisplayAddressResolver | None = None
+    if geocoder is not None:
+        ban_resolver = DisplayAddressResolver(geocoder=geocoder, enabled=True, _reverse_cache=reverse_cache)
 
-    for pk in sorted(by_parcel.keys()):
+    for i, pk in enumerate(parcel_keys, 1):
         info = ppm.get(pk) or {}
         if not ppm_needs_passerelle_fallback_for_etab(info):
             continue
@@ -678,8 +796,15 @@ def augment_ppm_passerelle_for_etab(
 
         if not ppm_needs_passerelle_fallback_for_etab(info):
             continue
-        if geocoder is None:
+        if ban_resolver is None:
             continue
+
+        ban_attempts += 1
+        if ban_attempts == 1 or ban_attempts % 10 == 0:
+            log(
+                f"[v5]   passerelle BAN (géocodage inverse) : {ban_attempts} parcelle(s) "
+                f"({i}/{n_parcels} parcours, {ban_added} enrichie(s))…"
+            )
 
         is_pro = _parcel_is_pro_zone(
             pk,
@@ -696,8 +821,7 @@ def augment_ppm_passerelle_for_etab(
         )
         fallback_lat = fallback[0] if fallback else None
         fallback_lon = fallback[1] if fallback else None
-        resolver = DisplayAddressResolver(geocoder=geocoder, enabled=True, _reverse_cache=reverse_cache)
-        hit, lat, lon = resolver.reverse_best_for_parcel_shape(
+        hit, lat, lon = ban_resolver.reverse_best_for_parcel_shape(
             parcel_gj,
             code_insee=code_insee,
             is_pro=is_pro,
@@ -705,6 +829,9 @@ def augment_ppm_passerelle_for_etab(
             fallback_lat=fallback_lat,
             fallback_lon=fallback_lon,
             require_housenumber=True,
+            max_points=_MAX_PARCEL_BAN_QUERY_POINTS_ETAB,
+            prefer_fallback_first=True,
+            stop_when_accepted=False,
         )
         if hit is None or lat is None or lon is None:
             continue

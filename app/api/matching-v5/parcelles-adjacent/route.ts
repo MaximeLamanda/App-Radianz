@@ -5,6 +5,7 @@ import {
   cadastreLabelFromKeys,
   scoutV5IdFromCadastreKeys,
 } from "@/lib/discovery-cadastre-parcel";
+import { upsertCadastreOnlyParcelles } from "@/lib/matching-v5-cadastre-only-upsert";
 import {
   PARCELLES_ADJACENT_MAX_RESULTS,
   parseParcellesAdjacentRequest,
@@ -28,6 +29,7 @@ type CadastreRow = {
   combo_id: string | null;
   combo_parcelle_scout_v5_ids: string[] | null;
   matching_scout_v5_id: string | null;
+  match_status: string | null;
 };
 
 function mapParcelleRows(rows: CadastreRow[]) {
@@ -56,6 +58,7 @@ function mapParcelleRows(rows: CadastreRow[]) {
         combo_parcelle_scout_v5_ids: comboIds,
         cadastre_label: cadastreLabelFromKeys(r.code_insee, r.section, r.numero_norm),
         in_matching_v5: Boolean(r.matching_scout_v5_id),
+        match_status: r.match_status ?? (r.matching_scout_v5_id ? "matched" : "cadastre_only"),
       };
     });
 }
@@ -70,7 +73,8 @@ function cadastreParcelleSelectSql(matchingQualified: string): string {
       c.numero_norm,
       combo.combo_id,
       combo.parcelle_scout_v5_ids AS combo_parcelle_scout_v5_ids,
-      m.scout_v5_id AS matching_scout_v5_id
+      m.scout_v5_id AS matching_scout_v5_id,
+      m.match_status
     FROM ${CADASTRE_QUALIFIED} c
     LEFT JOIN ${matchingQualified} m
       ON m.grain = 'parcelle'
@@ -125,6 +129,17 @@ export async function GET(request: NextRequest) {
       );
 
       const parcelles = mapParcelleRows(res.rows);
+      await upsertCadastreOnlyParcelles({
+        client,
+        matchingTable: { schema: matchingRef.schema, table: matchingRef.table },
+        parcelles: parcelles.map((p) => ({
+          scoutV5Id: p.scout_v5_id,
+          geometry: p.geometry,
+          codeInsee: p.code_insee,
+          section: p.section,
+          numeroNorm: p.numero_norm,
+        })),
+      });
       return NextResponse.json({
         parcelles,
         source: "cadastre_france_feuilles_geom",
@@ -180,6 +195,17 @@ export async function GET(request: NextRequest) {
       );
 
       const parcelles = mapParcelleRows(res.rows);
+      await upsertCadastreOnlyParcelles({
+        client,
+        matchingTable: { schema: matchingRef.schema, table: matchingRef.table },
+        parcelles: parcelles.map((p) => ({
+          scoutV5Id: p.scout_v5_id,
+          geometry: p.geometry,
+          codeInsee: p.code_insee,
+          section: p.section,
+          numeroNorm: p.numero_norm,
+        })),
+      });
       return NextResponse.json({
         parcelles,
         source: "cadastre_france_feuilles_geom",
@@ -223,6 +249,17 @@ export async function GET(request: NextRequest) {
     );
 
     const parcelles = mapParcelleRows(res.rows);
+    await upsertCadastreOnlyParcelles({
+      client,
+      matchingTable: { schema: matchingRef.schema, table: matchingRef.table },
+      parcelles: parcelles.map((p) => ({
+        scoutV5Id: p.scout_v5_id,
+        geometry: p.geometry,
+        codeInsee: p.code_insee,
+        section: p.section,
+        numeroNorm: p.numero_norm,
+      })),
+    });
     return NextResponse.json({
       parcelles,
       source: "cadastre_france_feuilles_geom",

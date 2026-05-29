@@ -24,6 +24,17 @@ export function discoverySelectableZoneTag(raw: unknown): string | null {
   return DISCOVERY_SELECTABLE_ZONE_TAGS.has(tag) ? tag : null;
 }
 
+/** Tag OSM prioritaire pour un combo (industrial > commercial > retail > residential). */
+export function pickPrimaryDiscoveryZoneTag(zoneTags: readonly string[]): string | null {
+  const normalized = new Set(
+    zoneTags.map((t) => String(t ?? "").trim().toLowerCase()).filter(Boolean)
+  );
+  for (const tag of DISCOVERY_ACTIVITY_TAG_ORDER) {
+    if (normalized.has(tag)) return tag;
+  }
+  return null;
+}
+
 export function zoneTagsFromMatchingV5Row(row: ScoutMatchingV5Row): string[] {
   const out = new Set<string>();
   const push = (raw: unknown) => {

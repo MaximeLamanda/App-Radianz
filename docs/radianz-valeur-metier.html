@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Radianz — La plateforme qui accélère vos projets solaires</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Sans+3:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #0a0a0a;
+        --ink-soft: #1a1a1a;
+        --canvas: #f0efed;
+        --white: #ffffff;
+        --lime: #eff9ba;
+        --lime-deep: #e5f09e;
+        --muted: #6b6b6b;
+        --line: #e4e2de;
+        --shadow: 0 24px 60px rgb(10 10 10 / 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+        font-size: 1.0625rem;
+        line-height: 1.65;
+        color: var(--ink);
+        background: var(--canvas);
+      }
+
+      h1,
+      h2,
+      h3 {
+        font-family: Fraunces, Georgia, serif;
+        font-weight: 700;
+        line-height: 1.15;
+        margin: 0 0 0.6em;
+        letter-spacing: -0.02em;
+      }
+
+      h1 {
+        font-size: clamp(2.4rem, 5vw, 3.6rem);
+        max-width: 14ch;
+      }
+
+      h2 {
+        font-size: clamp(1.65rem, 3vw, 2.2rem);
+      }
+
+      h3 {
+        font-size: 1.2rem;
+        font-weight: 600;
+      }
+
+      p {
+        margin: 0 0 1em;
+      }
+
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 0 1.5rem;
+      }
+
+      /* —— Header —— */
+      .site-header {
+        padding: 1.25rem 0;
+        border-bottom: 1px solid var(--line);
+        background: rgb(240 239 237 / 0.85);
+        backdrop-filter: blur(10px);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      .site-header .wrap {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .logo {
+        font-family: Fraunces, Georgia, serif;
+        font-size: 1.5rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: var(--ink);
+        text-decoration: none;
+      }
+
+      .logo span {
+        display: inline-block;
+        width: 0.45em;
+        height: 0.45em;
+        background: var(--lime);
+        border-radius: 50%;
+        margin-left: 0.15em;
+        vertical-align: 0.05em;
+      }
+
+      .nav-anchors {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.25rem;
+        font-size: 0.9rem;
+      }
+
+      .nav-anchors a {
+        color: var(--muted);
+        text-decoration: none;
+        font-weight: 500;
+      }
+
+      .nav-anchors a:hover {
+        color: var(--ink);
+      }
+
+      /* —— Hero —— */
+      .hero {
+        padding: 4.5rem 0 5rem;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero::before {
+        content: "";
+        position: absolute;
+        top: -20%;
+        right: -10%;
+        width: min(520px, 70vw);
+        height: min(520px, 70vw);
+        background: radial-gradient(circle at 30% 30%, var(--lime) 0%, transparent 65%);
+        opacity: 0.55;
+        pointer-events: none;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 2.5rem;
+        position: relative;
+      }
+
+      @media (min-width: 880px) {
+        .hero-grid {
+          grid-template-columns: 1.1fr 0.9fr;
+          align-items: end;
+        }
+      }
+
+      .lead {
+        font-size: 1.2rem;
+        color: var(--ink-soft);
+        max-width: 38ch;
+      }
+
+      .badge {
+        display: inline-block;
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 0.35rem 0.75rem;
+        background: var(--lime);
+        border-radius: 999px;
+        margin-bottom: 1.25rem;
+      }
+
+      .hero-card {
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        padding: 1.75rem;
+        box-shadow: var(--shadow);
+      }
+
+      .hero-card ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .hero-card li {
+        padding: 0.65rem 0;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 0.75rem;
+        align-items: flex-start;
+      }
+
+      .hero-card li:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+
+      .hero-card li::before {
+        content: "";
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        margin-top: 0.55em;
+        background: var(--ink);
+        border-radius: 2px;
+      }
+
+      /* —— Sections —— */
+      section {
+        padding: 3.5rem 0;
+      }
+
+      section.alt {
+        background: var(--white);
+        border-block: 1px solid var(--line);
+      }
+
+      .section-intro {
+        max-width: 52ch;
+        margin-bottom: 2.5rem;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      /* —— Pain / promise —— */
+      .two-col {
+        display: grid;
+        gap: 1.5rem;
+      }
+
+      @media (min-width: 720px) {
+        .two-col {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      .panel {
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        padding: 1.75rem;
+      }
+
+      .panel.dark {
+        background: var(--ink);
+        color: var(--canvas);
+        border-color: var(--ink);
+      }
+
+      .panel.dark .muted {
+        color: rgb(240 239 237 / 0.72);
+      }
+
+      /* —— Journey —— */
+      .journey {
+        display: grid;
+        gap: 1rem;
+      }
+
+      @media (min-width: 800px) {
+        .journey {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      .step {
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        padding: 1.5rem;
+        position: relative;
+      }
+
+      .step-num {
+        font-family: Fraunces, Georgia, serif;
+        font-size: 2rem;
+        color: var(--lime-deep);
+        line-height: 1;
+        margin-bottom: 0.5rem;
+      }
+
+      /* —— Benefits grid —— */
+      .benefits {
+        display: grid;
+        gap: 1rem;
+      }
+
+      @media (min-width: 640px) {
+        .benefits {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (min-width: 960px) {
+        .benefits {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
+
+      .benefit {
+        background: var(--canvas);
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        padding: 1.5rem;
+      }
+
+      .benefit strong {
+        display: block;
+        font-family: Fraunces, Georgia, serif;
+        font-size: 1.1rem;
+        margin-bottom: 0.35rem;
+      }
+
+      /* —— Quote band —— */
+      .quote-band {
+        background: var(--lime);
+        border-radius: 1.25rem;
+        padding: 2.5rem 2rem;
+        text-align: center;
+      }
+
+      .quote-band blockquote {
+        margin: 0;
+        font-family: Fraunces, Georgia, serif;
+        font-size: clamp(1.35rem, 2.5vw, 1.75rem);
+        line-height: 1.35;
+        max-width: 28ch;
+        margin-inline: auto;
+      }
+
+      /* —— Audience —— */
+      .audience-list {
+        display: grid;
+        gap: 0.75rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .audience-list li {
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-radius: 0.75rem;
+        padding: 1rem 1.25rem;
+        font-weight: 500;
+      }
+
+      /* —— Footer —— */
+      .site-footer {
+        padding: 2.5rem 0 3rem;
+        border-top: 1px solid var(--line);
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+
+      .site-footer p {
+        margin: 0;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .hero-card,
+        .step,
+        .benefit {
+          animation: rise 0.7s ease both;
+        }
+
+        .step:nth-child(2) {
+          animation-delay: 0.08s;
+        }
+        .step:nth-child(3) {
+          animation-delay: 0.16s;
+        }
+        .step:nth-child(4) {
+          animation-delay: 0.24s;
+        }
+
+        @keyframes rise {
+          from {
+            opacity: 0;
+            transform: translateY(12px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <a class="logo" href="#top">Radianz<span aria-hidden="true"></span></a>
+        <nav class="nav-anchors" aria-label="Sections">
+          <a href="#promesse">Promesse</a>
+          <a href="#parcours">Parcours</a>
+          <a href="#benefices">Bénéfices</a>
+          <a href="#public">Pour qui</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="wrap hero-grid">
+          <div>
+            <p class="badge">Photovoltaïque B2B</p>
+            <h1>Trouvez les bons toits. Convainquez avec des chiffres.</h1>
+            <p class="lead">
+              Radianz aide les équipes commerciales du solaire à repérer des sites à fort potentiel,
+              chiffrer une installation crédible et présenter une proposition qui parle au décideur —
+              sans perdre des semaines sur chaque opportunité.
+            </p>
+          </div>
+          <aside class="hero-card" aria-label="En une phrase">
+            <ul>
+              <li>Cartographie et exploration de territoires à l’échelle</li>
+              <li>Simulation alignée sur la consommation réelle du site</li>
+              <li>Argumentaire économique et environnemental prêt à partager</li>
+              <li>Suivi des prospects jusqu’à la signature</li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <section id="promesse" class="alt">
+        <div class="wrap">
+          <div class="section-intro">
+            <h2>Moins de temps perdu, plus de rendez-vous utiles</h2>
+            <p class="muted">
+              Le métier du solaire en toiture tertiaire et industrielle, c’est d’abord du volume :
+              beaucoup de sites à filtrer, peu de temps pour chaque dossier. Radianz concentre
+              l’effort là où la probabilité de projet est la plus forte.
+            </p>
+          </div>
+
+          <div class="two-col">
+            <div class="panel">
+              <h3>Ce qui freine aujourd’hui</h3>
+              <p class="muted">
+                Prospection dispersée, données bâtiment éparpillées, simulations refaites à la main,
+                propositions peu lisibles pour le propriétaire. Résultat : des opportunités
+                abandonnées trop tôt ou des devis lancés sur des sites peu adaptés.
+              </p>
+            </div>
+            <div class="panel dark">
+              <h3>Ce que Radianz change</h3>
+              <p class="muted">
+                Une seule plateforme pour voir le territoire, qualifier un site, dimensionner
+                l’installation et transmettre une histoire claire — production, facture, impact
+                carbone, retour sur investissement — avant même la première visite terrain.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="parcours">
+        <div class="wrap">
+          <div class="section-intro">
+            <h2>Un parcours commercial bout en bout</h2>
+            <p class="muted">
+              De la première piste sur la carte jusqu’au lien envoyé au décideur, chaque étape
+              renforce la suivante. Vous gardez la main sur les hypothèses ; l’outil accélère
+              le travail répétitif.
+            </p>
+          </div>
+
+          <div class="journey">
+            <article class="step">
+              <div class="step-num" aria-hidden="true">1</div>
+              <h3>Découvrir</h3>
+              <p class="muted">
+                Explorez une zone, ciblez les bâtiments qui correspondent à votre stratégie
+                (entrepôts, retail, tertiaire…) et visualisez-les sur une carte claire.
+              </p>
+            </article>
+            <article class="step">
+              <div class="step-num" aria-hidden="true">2</div>
+              <h3>Qualifier</h3>
+              <p class="muted">
+                Estimez surface utile, consommation et score de priorité. Identifiez
+                l’occupant quand les données le permettent pour préparer votre approche.
+              </p>
+            </article>
+            <article class="step">
+              <div class="step-num" aria-hidden="true">3</div>
+              <h3>Simuler</h3>
+              <p class="muted">
+                Ajustez puissance, équipements et scénarios (production maximale ou adéquation
+                à la consommation). Les graphiques traduisent le projet en langage business.
+              </p>
+            </article>
+            <article class="step">
+              <div class="step-num" aria-hidden="true">4</div>
+              <h3>Convaincre</h3>
+              <p class="muted">
+                Partagez une page de proposition lisible : économies sur la facture, ordre de
+                grandeur carbone, synthèse technique. Le prospect comprend sans être expert.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="alt">
+        <div class="wrap">
+          <div class="quote-band">
+            <blockquote>
+              « Passer de “il y a peut-être du potentiel” à “voici ce que ça vaut pour vous”
+              en une session de travail. »
+            </blockquote>
+          </div>
+        </div>
+      </section>
+
+      <section id="benefices">
+        <div class="wrap">
+          <div class="section-intro">
+            <h2>Valeur métier, concrètement</h2>
+            <p class="muted">
+              Radianz n’est pas un gadget cartographique : c’est un levier de productivité
+              commerciale et de crédibilité face aux directions générales, asset managers et
+              responsables énergie.
+            </p>
+          </div>
+
+          <div class="benefits">
+            <article class="benefit">
+              <strong>Pipeline plus dense</strong>
+              <span class="muted">
+                Concentrez-vous sur les sites où surface, consommation et profil d’activité
+                convergent. Moins de tours inutiles, plus de dossiers matures.
+              </span>
+            </article>
+            <article class="benefit">
+              <strong>Chiffrage défendable</strong>
+              <span class="muted">
+                Production, autoconsommation, dimensionnement onduleur : les hypothèses sont
+                visibles et cohérentes entre votre équipe et le client.
+              </span>
+            </article>
+            <article class="benefit">
+              <strong>Argument financier immédiat</strong>
+              <span class="muted">
+                Réduction de facture, horizon de retour, scénarios tarifaires : vous parlez le
+                langage du CFO, pas seulement celui du technique.
+              </span>
+            </article>
+            <article class="benefit">
+              <strong>Engagement RSE crédible</strong>
+              <span class="muted">
+                Mettez en avant l’énergie produite localement et l’écart carbone évité — un
+                complément décisif dans les appels d’offres et comités RSE.
+              </span>
+            </article>
+            <article class="benefit">
+              <strong>Expérience prospect soignée</strong>
+              <span class="muted">
+                Le lien partagé raconte le projet sans surcharge : le décideur avance sa
+                réflexion avant votre rendez-vous.
+              </span>
+            </article>
+            <article class="benefit">
+              <strong>Équipe alignée</strong>
+              <span class="muted">
+                Tableau de bord, statuts de pipeline, historique des sites : commercial,
+                étude et direction suivent les mêmes priorités.
+              </span>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="public" class="alt">
+        <div class="wrap">
+          <div class="section-intro">
+            <h2>Pensé pour les acteurs du solaire en B2B</h2>
+            <p class="muted">
+              Installateurs, développeurs, intégrateurs et réseaux commerciaux qui cherchent
+              à industrialiser la prospection sur le parc bâti tertiaire et logistique.
+            </p>
+          </div>
+
+          <ul class="audience-list">
+            <li>Directeurs commerciaux qui veulent structurer le pipe par territoire</li>
+            <li>Business developers en chasse de toitures XXL à fort taux d’autoconsommation</li>
+            <li>Ingénieurs d’affaires qui veulent des bases de simulation homogènes</li>
+            <li>Équipes marketing / avant-vente qui préparent des campagnes ciblées par typologie</li>
+          </ul>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="panel" style="text-align: center; padding: 2.5rem">
+            <h2 style="margin-bottom: 0.5rem">Radianz, en résumé</h2>
+            <p class="muted" style="max-width: 48ch; margin-inline: auto">
+              La plateforme qui transforme la donnée bâtiment et énergie en opportunités
+              commerciales actionnables — de la carte au lien partagé, avec un discours
+              chiffré qui tient la route.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <p>
+          Document de présentation — valeur métier Radianz. Usage interne ou commercial ;
+          ne constitue pas un engagement contractuel.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

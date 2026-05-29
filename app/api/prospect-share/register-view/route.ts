@@ -5,6 +5,10 @@ import { getClientIpFromRequest } from "@/lib/client-ip";
 import { evaluateProspectShareRegisterViewDecision } from "@/lib/prospect-share-view-eligibility";
 import type { ProspectPipelineStatus } from "@/types";
 
+function isSameIpBypassEnabledForTests(): boolean {
+  return process.env.PROSPECT_SHARE_ALLOW_SAME_IP_FOR_TESTS === "1";
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
@@ -34,6 +38,7 @@ export async function POST(request: NextRequest) {
       viewerIp,
       shareLinkCreatorIp: data.shareLinkCreatorIp,
       pipelineStatus: data.pipelineStatus,
+      allowSameIpForTesting: isSameIpBypassEnabledForTests(),
     });
     if (decision.action === "skip") {
       return NextResponse.json({ ok: true, skipped: decision.skipped });

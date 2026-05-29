@@ -38,6 +38,8 @@ type Props = {
   inverterCountExceedsLimit: boolean;
   includeBattery: boolean;
   recommendedBatteryComposition: DiscoveryDrawerEquipmentComposition;
+  /** Onduleur dimensionné au kWp du combo (badge « recommandé » prospect). */
+  recommendedInverterRef?: InverterReference | null;
 };
 
 /**
@@ -60,6 +62,7 @@ export function DiscoveryDrawerEquipmentPanel({
   inverterCountExceedsLimit,
   includeBattery,
   recommendedBatteryComposition,
+  recommendedInverterRef = null,
 }: Props) {
   const visiblePanels = useMemo(() => {
     const withVisible = panelsData?.filter((p) => p.visible === true) ?? [];
@@ -185,7 +188,11 @@ export function DiscoveryDrawerEquipmentPanel({
               options={visibleInverters}
               onChange={(i) => onInverterChange(i)}
               getItemId={(i) => i.id}
-              showRecommendedBadge={!!usedInverterRef?.recommended && !inverterCountExceedsLimit}
+              showRecommendedBadge={
+                !!recommendedInverterRef &&
+                usedInverterRef?.id === recommendedInverterRef.id &&
+                !inverterCountExceedsLimit
+              }
               warningBadge={
                 inverterCountExceedsLimit ? (
                   <span
@@ -253,7 +260,7 @@ export function DiscoveryDrawerEquipmentPanel({
                       <span>€{i.costEur}</span>
                       <span>·</span>
                       <span>{formatPower(i.powerW)}</span>
-                      {i.recommended && (
+                      {recommendedInverterRef != null && i.id === recommendedInverterRef.id && (
                         <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
                       )}
                     </div>

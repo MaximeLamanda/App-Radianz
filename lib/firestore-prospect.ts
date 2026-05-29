@@ -208,6 +208,8 @@ export interface ProspectDocument {
   parcelContourAreaM2?: number;
   /** Empreinte BDNB Σ (m²), Discovery. */
   bdnbFootprintSumM2?: number;
+  /** Tag OSM activité principal (Discovery). */
+  discoveryActivityZoneTag?: string;
   /** Contacts décisionnaires (Apollo + manuels), Discovery. */
   contacts?: ProspectContactFirestore[];
 }
@@ -409,6 +411,8 @@ export function prepareProspectForFirestore(
   if (prospect.bdnbFootprintSumM2 != null && prospect.bdnbFootprintSumM2 > 0) {
     doc.bdnbFootprintSumM2 = Math.round(prospect.bdnbFootprintSumM2);
   }
+  const discoveryActivityZoneTag = String(prospect.discoveryActivityZoneTag ?? "").trim().toLowerCase();
+  if (discoveryActivityZoneTag) doc.discoveryActivityZoneTag = discoveryActivityZoneTag;
   const contacts = prospectContactsForFirestore(prospect.contacts);
   if (contacts?.length) doc.contacts = contacts;
 
@@ -527,6 +531,9 @@ export function prospectFromFirestore(
   }
   if (data.bdnbFootprintSumM2 != null && data.bdnbFootprintSumM2 > 0) {
     result.bdnbFootprintSumM2 = data.bdnbFootprintSumM2;
+  }
+  if (data.discoveryActivityZoneTag) {
+    result.discoveryActivityZoneTag = String(data.discoveryActivityZoneTag).trim().toLowerCase();
   }
   const contacts = prospectContactsFromFirestore(data.contacts);
   if (contacts !== undefined) result.contacts = contacts;

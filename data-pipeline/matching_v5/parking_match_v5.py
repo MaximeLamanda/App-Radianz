@@ -232,46 +232,80 @@ def build_parking_index_from_rows(rows: list[dict[str, Any]]) -> dict[tuple[str,
     return index
 
 
-def _first_geom_and_area(rows: list[dict[str, Any]]) -> tuple[Any | None, float]:
+_TRANSFORMER_4326_2154: Any | None = None
+
+
+def _transformer_4326_2154() -> Any:
+    global _TRANSFORMER_4326_2154
+    if _TRANSFORMER_4326_2154 is None:
+        from pyproj import Transformer
+
+        _TRANSFORMER_4326_2154 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
+    return _TRANSFORMER_4326_2154
+
+
+def _shape_from_geojson(geom_raw: Any) -> Any | None:
     from shapely.geometry import shape
 
+    if geom_raw is None:
+        return None
+    try:
+        geom = shape(geom_raw) if isinstance(geom_raw, dict) else geom_raw
+    except Exception:
+        return None
+    if geom is None or geom.is_empty:
+        return None
+    return geom
+
+
+def _to_2154(geom: Any) -> Any:
+    from shapely.ops import transform
+
+    return transform(_transformer_4326_2154().transform, geom)
+
+
+def _first_geom_and_area(rows: list[dict[str, Any]]) -> tuple[Any | None, float]:
     for r in rows:
-        g = r.get("geometry")
-        if g is None:
-            continue
-        try:
-            geom = shape(g) if isinstance(g, dict) else g
-        except Exception:
-            continue
-        if geom is None or geom.is_empty:
+        geom = _shape_from_geojson(r.get("geometry"))
+        if geom is None:
             continue
         area_m2 = float(r.get("parking_area_m2") or 0)
         return geom, area_m2
     return None, 0.0
 
 
-def _to_2154(geom: Any) -> Any:
-    from pyproj import Transformer
-    from shapely.ops import transform
-
-    transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
-    return transform(transformer.transform, geom)
+def _overlap_ratio_m2_2154(geom_a_2154: Any, area_a: float, geom_b_2154: Any, area_b: float) -> float:
+    if geom_a_2154 is None or geom_b_2154 is None or geom_a_2154.is_empty or geom_b_2154.is_empty:
+        return 0.0
+    inter = geom_a_2154.intersection(geom_b_2154).area
+    a = area_a if area_a > 0 else geom_a_2154.area
+    b = area_b if area_b > 0 else geom_b_2154.area
+    denom = min(a, b)
+    if denom <= 0:
+        return 0.0
+    return float(inter) / float(denom)
 
 
 def _overlap_ratio_m2(geom_a: Any, area_a: float, geom_b: Any, area_b: float) -> float:
     if geom_a is None or geom_b is None:
         return 0.0
-    ga = _to_2154(geom_a)
-    gb = _to_2154(geom_b)
-    if ga.is_empty or gb.is_empty:
-        return 0.0
-    inter = ga.intersection(gb).area
-    a = area_a if area_a > 0 else ga.area
-    b = area_b if area_b > 0 else gb.area
-    denom = min(a, b)
-    if denom <= 0:
-        return 0.0
-    return float(inter) / float(denom)
+    return _overlap_ratio_m2_2154(_to_2154(geom_a), area_a, _to_2154(geom_b), area_b)
+
+
+def _parking_shapes_by_key(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, int], tuple[Any, Any, float]]:
+    """(osm_type, osm_id) -> (geom4326, geom2154, area_m2) — une géométrie par parking."""
+    grouped: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        grouped[(str(r["osm_type"]), int(r["osm_id"]))].append(r)
+    out: dict[tuple[str, int], tuple[Any, Any, float]] = {}
+    for key, group in grouped.items():
+        geom4326, area = _first_geom_and_area(group)
+        if geom4326 is None:
+            continue
+        out[key] = (geom4326, _to_2154(geom4326), area)
+    return out
 
 
 def merge_parking_rows_with_enr_priority(
@@ -288,33 +322,49 @@ def merge_parking_rows_with_enr_priority(
     if not enr_rows:
         return list(osm_rows)
 
-    enr_by_key: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     osm_by_key: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-    for r in enr_rows:
-        enr_by_key[(str(r["osm_type"]), int(r["osm_id"]))].append(r)
     for r in osm_rows:
         osm_by_key[(str(r["osm_type"]), int(r["osm_id"]))].append(r)
 
-    enr_shapes: list[tuple[Any, float]] = []
-    for rows in enr_by_key.values():
-        geom, area = _first_geom_and_area(rows)
-        if geom is not None:
-            enr_shapes.append((geom, area))
+    enr_shapes = _parking_shapes_by_key(enr_rows)
+    if not enr_shapes:
+        return list(enr_rows) + list(osm_rows)
 
+    enr_geoms_2154 = [t[1] for t in enr_shapes.values()]
+    enr_meta = list(enr_shapes.values())
+    try:
+        from shapely.strtree import STRtree
+
+        enr_tree: STRtree | None = STRtree(enr_geoms_2154)
+    except Exception:
+        enr_tree = None
+
+    osm_shapes = _parking_shapes_by_key(osm_rows)
     filtered_osm: list[dict[str, Any]] = []
-    dropped = 0
     for key, rows in osm_by_key.items():
-        geom_o, area_o = _first_geom_and_area(rows)
+        shape_pack = osm_shapes.get(key)
+        if shape_pack is None:
+            filtered_osm.extend(rows)
+            continue
+        _g4326, geom_o_2154, area_o = shape_pack
         drop = False
-        if geom_o is not None and enr_shapes:
-            for geom_e, area_e in enr_shapes:
-                if _overlap_ratio_m2(geom_o, area_o, geom_e, area_e) >= overlap_ratio:
+        if enr_tree is not None:
+            try:
+                candidate_idx = enr_tree.query(geom_o_2154, predicate="intersects")
+            except TypeError:
+                candidate_idx = enr_tree.query(geom_o_2154)
+            for idx in candidate_idx:
+                _eg4326, geom_e_2154, area_e = enr_meta[int(idx)]
+                if _overlap_ratio_m2_2154(geom_o_2154, area_o, geom_e_2154, area_e) >= overlap_ratio:
                     drop = True
                     break
-        if drop:
-            dropped += 1
-            continue
-        filtered_osm.extend(rows)
+        else:
+            for _eg4326, geom_e_2154, area_e in enr_meta:
+                if _overlap_ratio_m2_2154(geom_o_2154, area_o, geom_e_2154, area_e) >= overlap_ratio:
+                    drop = True
+                    break
+        if not drop:
+            filtered_osm.extend(rows)
 
     return list(enr_rows) + filtered_osm
 
@@ -352,11 +402,22 @@ def _fetch_parking_parcel_intersections_from_table(
         p.parking_value,
         p.tags,
         p.geom,
-        ST_Transform(p.geom, 2154) AS g2154,
-        ST_Area(ST_Transform(p.geom, 2154))::double precision AS parking_area_m2
+        ST_Transform(p.geom, 2154) AS g2154
       FROM {qualified} p
       WHERE p.geom IS NOT NULL
         AND p.geom && (SELECT bbox FROM parcels_extent)
+    ),
+    parking_ready AS (
+      SELECT
+        osm_type,
+        osm_id,
+        parking_tag,
+        parking_value,
+        tags,
+        geom,
+        g2154,
+        ST_Area(g2154)::double precision AS parking_area_m2
+      FROM parking_src
     )
     SELECT
       pk.osm_type,
@@ -370,7 +431,7 @@ def _fetch_parking_parcel_intersections_from_table(
       par.numero_norm,
       ST_Area(ST_Intersection(pk.g2154, par.geom_2154))::double precision AS intersection_area_m2,
       ST_AsGeoJSON(pk.geom)::json AS geometry
-    FROM parking_src pk
+    FROM parking_ready pk
     INNER JOIN parcels par
       ON pk.geom && par.geom
      AND ST_Intersects(pk.geom, par.geom)

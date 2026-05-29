@@ -71,7 +71,10 @@ export type ProspectShareSessionRow = {
   endedAt: string | null;
   durationMs: number | null;
   maxScrollDepth01: number | null;
+  interactionCount: number;
+  ctaClicks: number;
   status: string | null;
+  openerId: string | null;
 };
 
 export type ProspectShareSessionsPayload = {

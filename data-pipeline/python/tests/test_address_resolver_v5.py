@@ -129,7 +129,7 @@ def test_ppm_accepted_when_corroborated():
     ban = _hit(label="10 Rue Foch 33600 Pessac", street="Rue Foch", housenumber="10")
 
     class FakeGeo(GeoplateformeGeocoder):
-        def reverse(self, lon: float, lat: float, *, limit: int = 1):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
             return ban
 
         def search(self, query: str, *, limit: int = 1):
@@ -160,7 +160,7 @@ def test_ban_reverse_rejected_in_pro_zone_if_score_low():
     ban = _hit(score=0.86, distance_m=15.0)
 
     class FakeGeo(GeoplateformeGeocoder):
-        def reverse(self, lon: float, lat: float, *, limit: int = 1):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
             return ban
 
     resolver = _resolver.DisplayAddressResolver(geocoder=FakeGeo(), enabled=True)
@@ -192,7 +192,7 @@ def test_augment_ppm_ban_when_ppm_without_numero():
     ban = _hit(label="12 Rue Foch 33600 Pessac", street="Rue Foch", housenumber="12", citycode="33318")
 
     class FakeGeo(GeoplateformeGeocoder):
-        def reverse(self, lon: float, lat: float, *, limit: int = 1):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
             return ban
 
     pk = ("33318", "AB", "0001")
@@ -243,7 +243,7 @@ def test_matched_passerelle_kept_when_ban_reverse_would_win():
     ban = _hit(label="99 Autre Rue 33600 Pessac", street="Autre Rue", housenumber="99", score=0.95)
 
     class FakeGeo(GeoplateformeGeocoder):
-        def reverse(self, lon: float, lat: float, *, limit: int = 1):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
             return ban
 
         def search(self, query: str, *, limit: int = 1):
@@ -326,7 +326,7 @@ def test_ban_reverse_accepts_via_parcel_shape_not_centroid():
     north_lat = 44.7835089
     north_lon = -0.65438385
 
-    def fake_reverse(lon: float, lat: float, *, limit: int = 1):
+    def fake_reverse(lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
         if abs(lat - north_lat) < 1e-4 and abs(lon - north_lon) < 1e-4:
             return _hit(label="3 Avenue Léonard de Vinci 33600 Pessac", distance_m=15.0)
         if abs(lat - cent_lat) < 1e-4 and abs(lon - cent_lon) < 1e-4:
@@ -335,7 +335,7 @@ def test_ban_reverse_accepts_via_parcel_shape_not_centroid():
         return _hit(label="3 Avenue Léonard de Vinci 33600 Pessac", distance_m=dist)
 
     class FakeGeo(GeoplateformeGeocoder):
-        def reverse(self, lon: float, lat: float, *, limit: int = 1):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
             return fake_reverse(lon, lat)
 
     resolver = _resolver.DisplayAddressResolver(geocoder=FakeGeo(), enabled=True)
@@ -369,6 +369,82 @@ def test_ban_reverse_accepts_via_parcel_shape_not_centroid():
     assert out_shape["display_address_source"] == "ban_reverse"
     meta = json.loads(out_shape["display_address_meta_json"])
     assert meta.get("ban_query_mode") == "parcel_shape"
+
+
+def test_augment_ppm_ban_prefers_closest_hit_on_parcel_shape():
+    """Passerelle SIRENE : ne pas s'arrêter au premier hit centroïde (voie voisine)."""
+    geom = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [-0.65446494, 44.78321655],
+                [-0.65438385, 44.7835089],
+                [-0.6535632, 44.7834763],
+                [-0.6536093, 44.78309732],
+                [-0.65446494, 44.78321655],
+            ]
+        ],
+    }
+    centroid = _resolver.centroid_from_geojson(geom)
+    assert centroid is not None
+    cent_lat, cent_lon = centroid
+    north_lat = 44.7835089
+    north_lon = -0.65438385
+    wrong = _hit(
+        label="99 Rue Foch 33600 Pessac",
+        street="Rue Foch",
+        housenumber="99",
+        distance_m=12.0,
+        score=0.95,
+    )
+    right = _hit(
+        label="14 Avenue Léonard de Vinci 33600 Pessac",
+        street="Avenue Léonard de Vinci",
+        housenumber="14",
+        distance_m=8.0,
+        score=0.95,
+    )
+
+    def fake_reverse(lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
+        if abs(lat - north_lat) < 1e-4 and abs(lon - north_lon) < 1e-4:
+            return right
+        if abs(lat - cent_lat) < 1e-4 and abs(lon - cent_lon) < 1e-4:
+            return wrong
+        return wrong
+
+    class FakeGeo(GeoplateformeGeocoder):
+        def reverse(self, lon: float, lat: float, *, limit: int = 1, code_insee: str | None = None):
+            return fake_reverse(lon, lat)
+
+    pk = ("33318", "HH", "0005")
+    ppm: dict = {pk: {"passerelle_address": "", "passerelle_numero_match_set": tuple(), "sirens": []}}
+    by_parcel = {pk: {"w:1"}}
+    by_building = {
+        "w:1": [
+            {
+                "code_insee": "33318",
+                "section": "HH",
+                "numero_norm": "0005",
+                "footprint_m2": 787.0,
+                "zone_source": "landuse",
+                "zone_tag": "commercial",
+            }
+        ]
+    }
+    payload_by_bat = {"w:1": {"geometry": json.dumps(geom)}}
+    _resolver.augment_ppm_passerelle_for_etab(
+        ppm,
+        by_parcel,
+        by_building,
+        code_insee="33318",
+        parcel_geom={pk: json.dumps(geom)},
+        payload_by_bat=payload_by_bat,
+        geocoder=FakeGeo(),
+        build_synthetic_from_text=lambda t: _resolver.build_synthetic_ppm_from_geoplateforme_hit(right),
+        log=lambda _m: None,
+    )
+    assert ppm[pk]["passerelle_numero_match_set"] == ("14",)
+    assert "Léonard" in ppm[pk]["passerelle_address"] or "LEONARD" in ppm[pk]["passerelle_address"].upper()
 
 
 def test_pick_parcel_display_from_largest_footprint():

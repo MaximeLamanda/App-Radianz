@@ -55,10 +55,12 @@ def main() -> int:
     scout_q = qualified_scout_matching_v5_table()
     imported_at = datetime.now(timezone.utc)
 
+    print(f"[build_discovery_combos] Début commune {code_insee}", flush=True)
     conn = psycopg2.connect(url)
     try:
         conn.autocommit = False
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            print(f"[build_discovery_combos] Lecture parcelles grain=parcelle…", flush=True)
             cur.execute(
                 f"""
                 SELECT
@@ -76,6 +78,7 @@ def main() -> int:
                 (code_insee,),
             )
             raw_rows = cur.fetchall()
+        print(f"[build_discovery_combos] {len(raw_rows)} parcelle(s) lue(s)", flush=True)
 
         parcelle_rows: list[dict[str, Any]] = []
         for r in raw_rows:
@@ -125,8 +128,12 @@ def main() -> int:
                 }
             )
 
+        print(
+            f"[build_discovery_combos] Agrégation combos ({len(parcelle_rows)} parcelles)…",
+            flush=True,
+        )
         records = build_combo_records_for_commune(parcelle_rows)
-        print(f"[build_discovery_combos] {code_insee}: {len(records)} combo(s)")
+        print(f"[build_discovery_combos] {code_insee}: {len(records)} combo(s) à insérer", flush=True)
 
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM {COMBOS_TABLE} WHERE code_insee = %s", (code_insee,))
@@ -140,7 +147,7 @@ def main() -> int:
               geom, imported_at
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
+              ST_SetSRID(ST_Centroid(ST_GeomFromGeoJSON(%s)), 4326),
               %s
             )
             """

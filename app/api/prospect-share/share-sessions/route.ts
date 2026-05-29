@@ -22,7 +22,16 @@ function serializeSession(id: string, data: DocumentData) {
       typeof data.maxScrollDepth01 === "number" && Number.isFinite(data.maxScrollDepth01)
         ? data.maxScrollDepth01
         : null,
+    interactionCount:
+      typeof data.interactionCount === "number" && Number.isFinite(data.interactionCount)
+        ? Math.max(0, Math.floor(data.interactionCount))
+        : 0,
+    ctaClicks:
+      typeof data.ctaClicks === "number" && Number.isFinite(data.ctaClicks)
+        ? Math.max(0, Math.floor(data.ctaClicks))
+        : 0,
     status: typeof data.status === "string" ? data.status : null,
+    openerId: typeof data.openerId === "string" && data.openerId.trim().length > 0 ? data.openerId.trim() : null,
   };
 }
 

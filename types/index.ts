@@ -212,6 +212,8 @@ export interface Prospect {
   parcelContourAreaM2?: number;
   /** Empreinte au sol bâtiments BDNB Σ (m²), source Discovery — aligné tiroir. */
   bdnbFootprintSumM2?: number;
+  /** Tag OSM activité principal (industrial | commercial | retail | residential) — filtre home. */
+  discoveryActivityZoneTag?: string;
 }
 
 export interface Lead {

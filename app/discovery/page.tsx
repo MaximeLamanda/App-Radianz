@@ -1109,6 +1109,11 @@ function DiscoveryContent() {
     if (selectedOsmBuildingId && isValidOsmBuildingId(selectedOsmBuildingId)) {
       ids.add(selectedOsmBuildingId);
     }
+    if (ids.size === 0) {
+      const next: DiscoveryOsmBuildingDisplayFilter = { mode: "all" };
+      committedOsmBuildingDisplayFilterRef.current = next;
+      return next;
+    }
     const next: DiscoveryOsmBuildingDisplayFilter = { mode: "whitelist", ids };
     if (ids.size === 0 && hasActiveDiscoveryFilters) {
       discoveryDebug(

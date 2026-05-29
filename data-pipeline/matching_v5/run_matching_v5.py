@@ -54,10 +54,12 @@ from address_resolver_v5 import (
     DisplayAddressResolver,
     augment_ppm_passerelle_for_etab,
     enrich_building_detail_with_display,
+    matched_passerelle_display_fields,
     pick_parcel_display_from_buildings,
+    ppm_needs_passerelle_fallback_for_etab,
     resolve_parcel_centroid_fallback,
 )
-from geoplateforme_geocode import GeoplateformeGeocoder
+from ban_geocode import LocalBanGeocoder
 from google_poi_fallback_v5 import build_synthetic_ppm_from_google_anchor, empty_google_audit
 from osm_buildings_v5 import (
     derive_zone_tag,
@@ -1561,7 +1563,7 @@ def main() -> int:
     ap.add_argument(
         "--no-address-resolve",
         action="store_true",
-        help="Désactive display_address et le géocodage inverse passerelle SIRENE (OSM / Géoplateforme).",
+        help="Désactive display_address et le géocodage inverse passerelle SIRENE (OSM / BAN locale).",
     )
     ap.add_argument(
         "--osm-parcel-intersection-min-m2",
@@ -1689,6 +1691,9 @@ def main() -> int:
                     "Table OSM landuse absente. Lancez import_osm_landuse.py --ensure-schema "
                     "(la table peut être vide ; le schéma doit exister)."
                 )
+            v5_log(
+                f"[v5] Jointure spatiale OSM×parcelle (commune {code_insee}) — requête en cours…"
+            )
             with profiler.phase("fetch_osm_pairs"):
                 pairs = fetch_osm_building_parcel_pairs(
                     cur,
@@ -1702,11 +1707,16 @@ def main() -> int:
                     osm_test_limit=int(args.osm_test_limit),
                     min_batiment_footprint_m2=float(args.min_batiment_footprint_m2),
                 )
+            v5_log(f"[v5] Jointure OSM×parcelle terminée : {len(pairs)} paire(s).")
+            v5_log(f"[v5] Chargement géométries parcelles ({code_insee})…")
             with profiler.phase("fetch_parcel_geometries"):
                 parcel_geom = fetch_parcel_geometries(cur, code_insee)
+            v5_log(f"[v5] Parcelles cadastre : {len(parcel_geom)} géométrie(s).")
             ppm: dict[tuple[str, str, str], dict[str, Any]] = {}
+            v5_log(f"[v5] Chargement passerelle PPM ({code_insee})…")
             with profiler.phase("load_ppm"):
                 ppm = load_ppm_by_parcel(cur, code_insee)
+            v5_log(f"[v5] Passerelle PPM : {len(ppm)} parcelle(s) avec données.")
             try:
                 cur.execute(f"SELECT 1 FROM {etab_q} LIMIT 1")
                 etab_available = True
@@ -1714,9 +1724,11 @@ def main() -> int:
                 etab_available = False
 
             if etab_available:
+                v5_log(f"[v5] Chargement établissements SIRENE ({code_insee})…")
                 with profiler.phase("fetch_etablissements"):
                     etab_rows = fetch_etablissements_for_commune(cur, etab_q, code_insee)
                     voie_index = build_voie_norm_index(etab_rows)
+                v5_log(f"[v5] Établissements : {len(etab_rows)} ligne(s).")
             else:
                 etab_rows = []
                 voie_index = {}
@@ -1760,11 +1772,21 @@ def main() -> int:
     profiler.set_metric("pairs_count", len(pairs))
     profiler.set_metric("parcels_with_pairs", len(by_parcel))
     profiler.set_metric("buildings_count", len(by_building))
+    v5_log(
+        f"[v5] Index bâtiment×parcelle : {len(by_building)} bâtiment(s), "
+        f"{len(by_parcel)} parcelle(s) avec empreinte OSM."
+    )
 
     parking_index: dict[tuple[str, int], dict[str, Any]] = {}
     parking_osm_status = "disabled" if args.no_osm_parking else "skipped"
     parking_enr_status = "disabled" if args.no_osm_parking else "skipped"
-    if not args.no_osm_parking:
+    if args.no_osm_parking:
+        v5_log("[v5] Parking : désactivé (--no-osm-parking).")
+    else:
+        v5_log(
+            f"[v5] Jointures parking×cadastre ({code_insee}, {len(parcel_geom)} parcelle(s) commune) — "
+            "requête OSM en cours…"
+        )
         conn_pk = psycopg2.connect(url)
         try:
             with conn_pk.cursor() as cur:
@@ -1776,10 +1798,18 @@ def main() -> int:
                         code_insee,
                         qualified_osm_parking_table(),
                     )
+                    v5_log(
+                        f"[v5] Parking OSM : {parking_osm_status}, {len(osm_rows)} intersection(s) — "
+                        "requête ENR en cours…"
+                    )
                     enr_rows, parking_enr_status = fetch_enr_parking_parcel_intersections(
                         cur,
                         code_insee,
                         qualified_enr_parking_table(),
+                    )
+                    v5_log(
+                        f"[v5] Parking ENR : {parking_enr_status}, {len(enr_rows)} intersection(s) — "
+                        "fusion OSM/ENR…"
                     )
                 else:
                     osm_rows, parking_osm_status = fetch_parking_parcel_intersections(
@@ -1810,6 +1840,7 @@ def main() -> int:
     )
     payload_for_etab: dict[str, dict[str, Any]] = {}
     if all_osm_ids_early:
+        v5_log(f"[v5] Chargement géométries OSM ({len(all_osm_ids_early)} empreinte(s))…")
         conn_geom = psycopg2.connect(url)
         try:
             with conn_geom.cursor() as cur_geom:
@@ -1820,8 +1851,29 @@ def main() -> int:
                 )
         finally:
             conn_geom.close()
+        v5_log(f"[v5] Géométries OSM chargées : {len(payload_for_etab)} payload(s).")
 
-    etab_geocoder = None if args.no_address_resolve else GeoplateformeGeocoder()
+    n_passerelle_fallback = sum(
+        1 for pk in by_parcel if ppm_needs_passerelle_fallback_for_etab(ppm.get(pk) or {})
+    )
+    ban_reverse_cache: dict[tuple[float, float, str], Any] = {}
+    ban_geocoder: LocalBanGeocoder | None = None
+    conn_ban = None
+    if not args.no_address_resolve:
+        conn_ban = psycopg2.connect(url)
+        ban_geocoder = LocalBanGeocoder(conn=conn_ban, code_insee=code_insee)
+        n_ban_rows = ban_geocoder.ensure_table()
+        v5_log(
+            f"[v5] Géocodage BAN local (Postgres, commune {code_insee}) : "
+            f"~{n_ban_rows:,} adresse(s) en base."
+        )
+    etab_geocoder = ban_geocoder
+    v5_log(
+        f"[v5] Enrichissement passerelle SIRENE : {n_passerelle_fallback}/{len(by_parcel)} parcelle(s) "
+        f"OSM à traiter"
+        + (" (BAN locale)" if etab_geocoder else " (--no-address-resolve, sans BAN)")
+        + "…"
+    )
     with profiler.phase("augment_ppm_passerelle"):
         augment_ppm_passerelle_for_etab(
             ppm,
@@ -1833,6 +1885,7 @@ def main() -> int:
             geocoder=etab_geocoder,
             build_synthetic_from_text=build_synthetic_ppm_from_google_anchor,
             log=v5_log,
+            reverse_cache=ban_reverse_cache,
         )
 
     etab_match_by_parcel: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1916,11 +1969,15 @@ def main() -> int:
     payload_by_bat = payload_for_etab
 
     address_resolver = DisplayAddressResolver(
-        geocoder=GeoplateformeGeocoder(),
+        geocoder=ban_geocoder,
         enabled=not bool(args.no_address_resolve),
+        code_insee=code_insee,
+        _reverse_cache=ban_reverse_cache,
     )
     if not args.no_address_resolve:
-        v5_log("[v5] Résolution display_address activée (Géoplateforme).")
+        v5_log(
+            f"[v5] Résolution display_address activée (BAN locale, cache={len(ban_reverse_cache)} point(s))."
+        )
 
     if args.include_building_grain:
         for bid in multi_ids:
@@ -2104,6 +2161,11 @@ def main() -> int:
     )
     n_comp = len({pk_to_gid[p] for p in exported_pks}) if exported_pks else 0
     v5_log(f"[v5] Composantes connexes (parcelles exportées reliées par un bâtiment) : {n_comp}")
+    v5_log(
+        f"[v5] Assemblage export : {len(exported_pks)} parcelle(s)"
+        + ("" if args.no_address_resolve else " (display_address, cache BAN réutilisé)")
+        + "…"
+    )
 
     written = 0
     for pk, bids in by_parcel.items():
@@ -2116,6 +2178,12 @@ def main() -> int:
         selected = ctx["selected"]
         bdetails = ctx["bdetails"]
         ppm_d = ppm_payload(pk)
+        etab_pk = etab_match_by_parcel.get(pk) or {}
+        parcel_matched_display = (
+            None
+            if args.no_address_resolve
+            else matched_passerelle_display_fields(ppm_d, etab_pk)
+        )
         bdetails_enriched: list[dict[str, Any]] = []
         for item in bdetails:
             payload_key = item.get("osm_building_id")
@@ -2132,10 +2200,11 @@ def main() -> int:
                 enriched,
                 payload=payload,
                 ppm_info=ppm_d,
-                etab_match=etab_match_by_parcel.get(pk) or {},
+                etab_match=etab_pk,
                 code_insee=pk[0],
                 resolver=address_resolver,
                 parcel_geom_geojson=parcel_geom.get(pk),
+                parcel_matched_display=parcel_matched_display,
             )
             bdetails_enriched.append(enriched)
         if not args.no_osm_parking and parking_index:
@@ -2258,6 +2327,9 @@ def main() -> int:
                 **parcel_display,
             }
         )
+
+    if conn_ban is not None:
+        conn_ban.close()
 
     if not args.no_osm_parking and parking_index:
         for r in out_rows:

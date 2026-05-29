@@ -45,13 +45,11 @@ import {
 import { resolveProspectBatteryRef } from "@/lib/prospect-battery-resolution";
 import type { Prospect, ProspectPipelineStatus, PanelReference, InverterReference, BatteryReference } from "@/types";
 import { cn } from "@/lib/utils";
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Cell, PieChart, Pie, Cell as PieCell } from "recharts";
 import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart";
+  PROSPECT_ACTIVITY_SECTOR_LABELS,
+  resolveProspectActivitySector,
+  type ProspectActivitySector,
+} from "@/lib/prospect-activity-sector";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -61,6 +59,7 @@ import {
 import { useDrawer } from "@/lib/drawer-context";
 import { ProspectDrawer } from "@/components/solar-scout/ProspectDrawer";
 import { ProspectContactAvatarStack } from "@/components/ProspectContactAvatarStack";
+import { ProspectShareOpensCell } from "@/components/solar-scout/ProspectShareOpensCell";
 import { loadMatchingV5DrawerContextForProspect } from "@/lib/pipeline-matching-v5-drawer-context";
 import { defaultDiscoveryComboBuildingSelectionIds } from "@/lib/discovery-combo-building-labels";
 
@@ -121,28 +120,12 @@ const STATUS_COLORS: Record<ProspectPipelineStatus, string> = {
   perdu: "hsl(0, 84%, 60%)",
 };
 
-const chartConfig = {
-  cree: {
-    label: "Créé",
-    color: STATUS_COLORS.cree,
-  },
-  envoye: {
-    label: "Envoyé",
-    color: STATUS_COLORS.envoye,
-  },
-  ouvert: {
-    label: "Ouvert",
-    color: STATUS_COLORS.ouvert,
-  },
-  converti: {
-    label: "Converti",
-    color: STATUS_COLORS.converti,
-  },
-  perdu: {
-    label: "Décliné",
-    color: STATUS_COLORS.perdu,
-  },
-} satisfies ChartConfig;
+const ACTIVITY_SECTOR_FILTER_OPTIONS: ProspectActivitySector[] = [
+  "industrial",
+  "retail",
+  "tertiary",
+  "other",
+];
 
 function HomePage() {
   const router = useRouter();
@@ -172,8 +155,7 @@ function HomePage() {
 
   const error = prospectsError ? (prospectsError.message || "Erreur lors du chargement") : null;
   const [filterStatus, setFilterStatus] = useState<string>("all");
-  /** Filtre source pipeline : `all` | `discovery_v5` | `legacy` (hors matching V5). */
-  const [filterPlaceType, setFilterPlaceType] = useState<string>("all");
+  const [filterActivitySector, setFilterActivitySector] = useState<string>("all");
   const [leadPeriod, setLeadPeriod] = useState<"daily" | "weekly" | "yearly" | "all">("weekly");
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
 
@@ -287,14 +269,12 @@ function HomePage() {
     return prospects.filter((prospect) => {
       const status = normalizeProspectPipelineStatus(prospect.pipelineStatus);
       const matchesStatus = filterStatus === "all" || status === filterStatus;
-      const isDiscovery = prospect.pipelineEntrySource === "discovery_v5";
-      const matchesSource =
-        filterPlaceType === "all" ||
-        (filterPlaceType === "discovery_v5" && isDiscovery) ||
-        (filterPlaceType === "legacy" && !isDiscovery);
-      return matchesStatus && matchesSource;
+      const sector = resolveProspectActivitySector(prospect);
+      const matchesSector =
+        filterActivitySector === "all" || sector === filterActivitySector;
+      return matchesStatus && matchesSector;
     });
-  }, [prospects, filterStatus, filterPlaceType]);
+  }, [prospects, filterStatus, filterActivitySector]);
 
   // Calcul des leads selon la période sélectionnée
   const leadsCount = useMemo(() => {
@@ -381,41 +361,6 @@ function HomePage() {
     return prospects.length;
   }, [prospects]);
 
-  // KPIs pipeline : Découverte (V5) vs hors découverte (données non canoniques pour ce produit)
-  const kpisByPlaceType = useMemo(() => {
-    let discovery = 0;
-    let legacy = 0;
-    prospects.forEach((prospect) => {
-      if (prospect.pipelineEntrySource === "discovery_v5") discovery += 1;
-      else legacy += 1;
-    });
-    return { discovery_v5: discovery, legacy } as Record<string, number>;
-  }, [prospects]);
-
-  const chartDataByPlaceType = useMemo(() => {
-    const colors = ["hsl(217, 91%, 60%)", "hsl(38, 92%, 50%)"];
-    const raw: Array<[string, number]> = [
-      ["discovery_v5", kpisByPlaceType.discovery_v5 ?? 0],
-      ["legacy", kpisByPlaceType.legacy ?? 0],
-    ];
-    const entries = raw.filter(([, c]) => c > 0);
-    return entries.map(([type, count], index) => ({
-      name: type === "discovery_v5" ? "Découverte (V5)" : "Hors découverte",
-      value: count,
-      typeKey: type,
-      color: colors[index % colors.length],
-    }));
-  }, [kpisByPlaceType]);
-
-  const sourceFilterOptions = useMemo(() => {
-    const hasD = prospects.some((p) => p.pipelineEntrySource === "discovery_v5");
-    const hasL = prospects.some((p) => p.pipelineEntrySource !== "discovery_v5");
-    const opts: { value: string; label: string }[] = [];
-    if (hasD) opts.push({ value: "discovery_v5", label: "Découverte (V5)" });
-    if (hasL) opts.push({ value: "legacy", label: "Hors découverte" });
-    return opts;
-  }, [prospects]);
-
   // Index Maps pour lookups O(1) du matériel par prospect (règle 7.2 Vercel React Best Practices)
   const panelById = useMemo(
     () => new Map((panelsData ?? []).map((p) => [p.id, p])),
@@ -475,7 +420,7 @@ function HomePage() {
 
   const resetFilters = () => {
     setFilterStatus("all");
-    setFilterPlaceType("all");
+    setFilterActivitySector("all");
   };
 
   const [generatingLinkId, setGeneratingLinkId] = useState<string | null>(null);
@@ -651,16 +596,16 @@ function HomePage() {
                   </Select>
                 </div>
                 <div className="flex-1 min-w-0 sm:min-w-[200px]">
-                  <label className="text-sm font-medium mb-2 block">Source</label>
-                  <Select value={filterPlaceType} onValueChange={setFilterPlaceType}>
+                  <label className="text-sm font-medium mb-2 block">Activité</label>
+                  <Select value={filterActivitySector} onValueChange={setFilterActivitySector}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Toutes les sources" />
+                      <SelectValue placeholder="Toutes les activités" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">Toutes les sources</SelectItem>
-                      {sourceFilterOptions.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
+                      <SelectItem value="all">Toutes les activités</SelectItem>
+                      {ACTIVITY_SECTOR_FILTER_OPTIONS.map((sector) => (
+                        <SelectItem key={sector} value={sector}>
+                          {PROSPECT_ACTIVITY_SECTOR_LABELS[sector]}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -670,14 +615,14 @@ function HomePage() {
                   <Button
                     variant="outline"
                     onClick={resetFilters}
-                    disabled={filterStatus === "all" && filterPlaceType === "all"}
+                    disabled={filterStatus === "all" && filterActivitySector === "all"}
                   >
                     <X className="h-4 w-4 mr-2" />
                     Réinitialiser
                   </Button>
                 </div>
               </div>
-              {(filterStatus !== "all" || filterPlaceType !== "all") && (
+              {(filterStatus !== "all" || filterActivitySector !== "all") && (
                 <div className="mt-4 text-sm text-muted-foreground">
                   {filteredProspects.length} prospect{filteredProspects.length > 1 ? "s" : ""} trouvé{filteredProspects.length > 1 ? "s" : ""}
                 </div>
@@ -707,7 +652,13 @@ function HomePage() {
                   <TableHead className="w-12 h-11 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40" />
                   <TableHead className="min-w-[100px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Nom</TableHead>
                   <TableHead className="min-w-[160px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Adresse</TableHead>
-                  <TableHead className="min-w-[80px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Type</TableHead>
+                  <TableHead
+                    className="min-w-[72px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40"
+                    title="Ouvertures de la page client partagée"
+                  >
+                    <Eye className="h-3.5 w-3.5 mx-auto" aria-hidden />
+                    <span className="sr-only">Ouvertures</span>
+                  </TableHead>
                   <TableHead className="min-w-[95px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Statut</TableHead>
                   <TableHead className="text-right w-14 px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40 shrink-0">kWp</TableHead>
                   <TableHead className="w-[100px] px-3 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/40">Score</TableHead>
@@ -825,13 +776,12 @@ function HomePage() {
                           {prospect.address}
                         </span>
                       </TableCell>
-                      <TableCell className="p-2.5 max-w-[80px]">
-                        <span
-                          className="truncate block text-muted-foreground"
-                          title={isDiscovery ? "Découverte (matching V5)" : "Donnée non Discovery"}
-                        >
-                          {isDiscovery ? "Découverte" : "—"}
-                        </span>
+                      <TableCell className="p-2.5 max-w-[72px]">
+                        <ProspectShareOpensCell
+                          shareToken={prospect.shareToken}
+                          shareSessionCount={prospect.shareSessionCount}
+                          shareLastSessionAt={prospect.shareLastSessionAt}
+                        />
                       </TableCell>
                       <TableCell
                         className="p-2.5 min-w-[120px]"

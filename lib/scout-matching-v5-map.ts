@@ -36,6 +36,7 @@ export type ScoutMatchingV5Row = {
   sirensJson: string;
   matchingConfidence: number;
   matchingReason: string;
+  matchStatus?: "matched" | "cadastre_only";
   passerelleAddress: string;
   passerelleAddressesJson: string;
   /** Adresse confirmée (cascade OSM / PPM / BAN / SIRENE). */
@@ -767,6 +768,177 @@ function matchingV5SourceRowsForPoiDiscovery(
   return out;
 }
 
+/** Référence cadastrale courte (`section numero`). */
+export function cadastreParcelleNumeroLabel(row: ScoutMatchingV5Row): string {
+  const section = String(row.section || "").trim();
+  const numero = String(row.numeroNorm || "").trim();
+  if (section && numero) return `${section} ${numero}`;
+  return "";
+}
+
+/** Clé stable pour rattacher les lignes PPM à une parcelle (aligné `passerelleFlat`). */
+export function cadastreParcellePasserelleKey(row: ScoutMatchingV5Row): string {
+  const section = String(row.section || "").trim();
+  const numero = String(row.numeroNorm || "").trim();
+  if (section && numero) {
+    return `${section} ${numero} · ${row.codeInsee || "—"}`;
+  }
+  return row.id;
+}
+
+/** `true` si le libellé interne Passerelle ressemble à `section numero · code_insee`. */
+export function isCadastreParcellePasserelleKey(label: string): boolean {
+  const parts = label.split("·").map((p) => p.trim());
+  if (parts.length < 2) return false;
+  const insee = parts[parts.length - 1] ?? "";
+  const head = parts.slice(0, -1).join("·").trim();
+  return /^\d{5}$/.test(insee) && /\s/.test(head);
+}
+
+/**
+ * Nom de site pour une parcelle (POI, bâtiment, PPM, SIRET, Google).
+ * Ne retombe pas sur le numéro cadastral.
+ */
+function displayNameFromV5BuildingEntry(b: V5BuildingsJsonEntry): string {
+  const osmName = strProp(b.osmName);
+  if (osmName) return osmName;
+  const tags = b.osmRawTags ?? {};
+  for (const key of ["name", "brand", "operator"] as const) {
+    const t = strProp(tags[key]);
+    if (t) return t;
+  }
+  return "";
+}
+
+function resolveParcelleSiteDisplayName(
+  row: ScoutMatchingV5Row,
+  googleSourceRows: ScoutMatchingV5Row[]
+): string {
+  for (const poi of mergeOsmPoisFromParcelleRows([row])) {
+    const name = strProp(poi.name);
+    if (name) return name;
+  }
+  for (const b of parseMatchingV5BuildingsJson(row.buildingsJson)) {
+    const name = displayNameFromV5BuildingEntry(b);
+    if (name) return name;
+  }
+  for (const ppm of parsePasserelleAddressesJson(row.passerelleAddressesJson)) {
+    const denom = strProp(ppm.denomination);
+    if (denom) return denom;
+  }
+  const siretDenom = collectSiretsForDiscoveryHero(row, [row])
+    .map((e) => strProp(e.denomination))
+    .find(Boolean);
+  if (siretDenom) return siretDenom;
+
+  const winnerIds = new Set(
+    googleSourceRows.map((r) => strProp(r.properties?.google_winner_place_id)).filter(Boolean)
+  );
+  const ranked: V5GoogleNearbyRankedEntry[] = [];
+  for (const r of googleSourceRows) {
+    ranked.push(...parseGoogleNearbyRankedJson(r.properties?.google_nearby_ranked_json));
+  }
+  ranked.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  if (winnerIds.size > 0) {
+    for (const e of ranked) {
+      const pid = strProp(e.place_id);
+      if (!pid || !winnerIds.has(pid)) continue;
+      const name = strProp(e.name);
+      if (name) return name;
+    }
+  }
+  for (const e of ranked) {
+    const name = strProp(e.name);
+    if (name) return name;
+  }
+
+  const label = strProp(row.label);
+  if (label && !/^Parcelle\s/i.test(label)) return label;
+  return "";
+}
+
+/**
+ * Libellé lisible d’une parcelle (aligné titre du tiroir, une parcelle).
+ * Ne retombe pas sur le numéro cadastral — utiliser `cadastreParcelleNumeroLabel` pour l’affichage technique.
+ */
+export function discoveryParcelleDisplayName(row: ScoutMatchingV5Row): string {
+  if (row.grain !== "parcelle") {
+    return strProp(row.label);
+  }
+  return resolveParcelleSiteDisplayName(row, [row]);
+}
+
+function parcelleRowsForDiscoveryHero(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): ScoutMatchingV5Row[] {
+  const fromCluster = parcelleCluster.filter((r) => r.grain === "parcelle");
+  if (fromCluster.length > 0) return fromCluster;
+  if (row.grain === "parcelle") return [row];
+  return [];
+}
+
+function collectSiretsForDiscoveryHero(
+  row: ScoutMatchingV5Row,
+  parcelleRows: ScoutMatchingV5Row[]
+): V5MatchedSiret[] {
+  const seen = new Set<string>();
+  const out: V5MatchedSiret[] = [];
+  const addFrom = (r: ScoutMatchingV5Row) => {
+    for (const e of parseSiretsMatchJson(r.siretsJson)) {
+      if (seen.has(e.siret)) continue;
+      seen.add(e.siret);
+      out.push(e);
+    }
+  };
+  for (const pr of parcelleRows) addFrom(pr);
+  if (row.grain === "building") addFrom(row);
+  if (out.length === 0 && row.grain === "parcelle" && parcelleRows.length === 0) addFrom(row);
+  return out;
+}
+
+/**
+ * Titre du tiroir Discovery : nom de site (POI, bâtiment, raison sociale), pas la référence cadastrale.
+ */
+export function formatDiscoveryDrawerHeroTitle(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): string {
+  const parcelleRows = parcelleRowsForDiscoveryHero(row, parcelleCluster);
+  const poiSources = matchingV5SourceRowsForPoiDiscovery(row, parcelleCluster);
+  const parcelleNames = uniqueTrimmedPropStrings(
+    parcelleRows.map((p) => resolveParcelleSiteDisplayName(p, poiSources))
+  );
+  if (parcelleNames.length === 1) return parcelleNames[0]!;
+  if (parcelleNames.length > 1) return parcelleNames.join(" · ");
+
+  if (row.grain === "building") {
+    for (const b of parseMatchingV5BuildingsJson(row.buildingsJson)) {
+      const name = displayNameFromV5BuildingEntry(b);
+      if (name) return name;
+    }
+    const label = strProp(row.label);
+    if (label && !/^Bât\.\s*multi-parcelles/i.test(label)) return label;
+  }
+
+  const label = strProp(row.label);
+  if (label && !/^Parcelle\s/i.test(label)) return label;
+
+  return "";
+}
+
+/** Infobulle du titre hero : référence cadastrale quand le titre visible est un nom de site. */
+export function formatDiscoveryDrawerHeroTitleHint(
+  row: ScoutMatchingV5Row,
+  parcelleCluster: ScoutMatchingV5Row[]
+): string {
+  const parcelleRows = parcelleRowsForDiscoveryHero(row, parcelleCluster);
+  const cad = cadastreParcelHeroLabels(parcelleRows);
+  if (cad) return cad;
+  const label = strProp(row.label);
+  return label || row.id;
+}
+
 function cadastreParcelHeroLabels(rows: ScoutMatchingV5Row[]): string {
   const parts = uniqueTrimmedPropStrings(
     rows
@@ -1434,6 +1606,9 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
     const siretCount = Number.isFinite(siretCountRaw) ? Math.max(0, Math.trunc(siretCountRaw)) : 0;
     const matchingConfidenceRaw = Number(strProp(p.matching_confidence));
     const matchingConfidence = Number.isFinite(matchingConfidenceRaw) ? Math.max(0, matchingConfidenceRaw) : 0;
+    const matchStatusRaw = strProp(p.match_status).toLowerCase();
+    const matchStatus: "matched" | "cadastre_only" =
+      matchStatusRaw === "cadastre_only" ? "cadastre_only" : "matched";
     const passerelleAddress = strProp(p.passerelle_address);
     const passerelleAddressesJson = strProp(p.passerelle_addresses_json);
     const displayAddress = strProp(p.display_address);
@@ -1484,6 +1659,7 @@ export function parseMatchingV5GeoJsonFeatureCollection(raw: unknown): {
       sirensJson: strProp(p.sirens_json),
       matchingConfidence,
       matchingReason: strProp(p.matching_reason),
+      matchStatus,
       passerelleAddress,
       passerelleAddressesJson,
       displayAddress: displayAddress || undefined,

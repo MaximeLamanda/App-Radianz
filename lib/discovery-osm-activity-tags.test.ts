@@ -4,6 +4,7 @@ import {
   countZoneTagsFromCombos,
   discoveryComboActivityHeroBadgeLabel,
   discoverySelectableZoneTag,
+  pickPrimaryDiscoveryZoneTag,
 } from "./discovery-osm-activity-tags";
 
 describe("discoverySelectableZoneTag", () => {
@@ -22,6 +23,16 @@ describe("comboMeetsDiscoveryActivityTag", () => {
   it("filtre par tag", () => {
     expect(comboMeetsDiscoveryActivityTag(["retail", "commercial"], "retail")).toBe(true);
     expect(comboMeetsDiscoveryActivityTag(["commercial"], "retail")).toBe(false);
+  });
+});
+
+describe("pickPrimaryDiscoveryZoneTag", () => {
+  it("retourne le tag prioritaire", () => {
+    expect(pickPrimaryDiscoveryZoneTag(["retail", "industrial"])).toBe("industrial");
+    expect(pickPrimaryDiscoveryZoneTag(["commercial"])).toBe("commercial");
+  });
+  it("retourne null sans tag connu", () => {
+    expect(pickPrimaryDiscoveryZoneTag([])).toBeNull();
   });
 });
 

@@ -8,8 +8,14 @@ import {
   findMatchingV5LinkedParcelleRowsTransitive,
   findMatchingV5ParcelleRowsForBuilding,
   findMatchingV5RowIdForBatimentFootprint,
+  cadastreParcelleNumeroLabel,
+  cadastreParcellePasserelleKey,
+  discoveryParcelleDisplayName,
   formatDiscoveryDrawerHeroAddress,
   formatDiscoveryDrawerHeroAddressSourceLabel,
+  formatDiscoveryDrawerHeroTitle,
+  formatDiscoveryDrawerHeroTitleHint,
+  isCadastreParcellePasserelleKey,
   resolveDiscoveryDrawerHeroAddressSource,
   formatV5ZoneTagLabel,
   formatV5OsmPoiTypeLabelForDisplay,
@@ -147,6 +153,127 @@ describe("formatV5OsmPoiTypeLabelForDisplay", () => {
 
   it("repli générique pour autres clé:valeur OSM", () => {
     expect(formatV5OsmPoiTypeLabelForDisplay("leisure: unknown_xyz")).toBe("Loisirs — Unknown Xyz");
+  });
+});
+
+describe("discoveryParcelleDisplayName", () => {
+  it("priorise le nom OSM puis le nom bâtiment", () => {
+    const osm = JSON.stringify([
+      {
+        osm_type: "n",
+        osm_id: 1,
+        name: "Entrepôt Nord",
+        address: "",
+        website: "",
+        phone: "",
+        poi_type_label: "Entrepôt",
+        osm_url: "",
+        lat: 44.8,
+        lng: -0.63,
+      },
+    ]);
+    const buildings = JSON.stringify([
+      {
+        batiment_construction_id: "bc1",
+        batiment_groupe_id: "g1",
+        osm_name: "Hangar B",
+        footprint_m2: 100,
+      },
+    ]);
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "CV",
+      numeroNorm: "0341",
+      osmPoisJson: osm,
+      buildingsJson: buildings,
+      passerelleAddressesJson: JSON.stringify([{ siren: "123456789", denomination: "SARL Test" }]),
+    });
+    expect(discoveryParcelleDisplayName(p)).toBe("Entrepôt Nord");
+    expect(cadastreParcelleNumeroLabel(p)).toBe("CV 0341");
+    expect(cadastreParcellePasserelleKey(p)).toBe("CV 0341 · 33318");
+  });
+
+  it("utilise la raison sociale PPM sans retomber sur le numéro cadastral", () => {
+    const p = parcelle({
+      id: "p2",
+      codeInsee: "33318",
+      section: "CV",
+      numeroNorm: "0342",
+      label: "Parcelle CV 0342",
+      passerelleAddressesJson: JSON.stringify([{ siren: "987654321", denomination: "Logistique Ouest" }]),
+    });
+    expect(discoveryParcelleDisplayName(p)).toBe("Logistique Ouest");
+  });
+});
+
+describe("isCadastreParcellePasserelleKey", () => {
+  it("détecte les clés section · insee", () => {
+    expect(isCadastreParcellePasserelleKey("CV 0341 · 33318")).toBe(true);
+    expect(isCadastreParcellePasserelleKey("Bât. multi-parcelles · bc-1")).toBe(false);
+  });
+});
+
+describe("formatDiscoveryDrawerHeroTitle", () => {
+  it("affiche le nom de site plutôt que Parcelle section numero", () => {
+    const p = parcelle({
+      id: "p1",
+      codeInsee: "33318",
+      section: "HN",
+      numeroNorm: "0011",
+      label: "Parcelle HN 0011",
+      passerelleAddressesJson: JSON.stringify([
+        { siren: "123456789", denomination: "Entrepôts Atlantique" },
+      ]),
+    });
+    expect(formatDiscoveryDrawerHeroTitle(p, [p])).toBe("Entrepôts Atlantique");
+    expect(formatDiscoveryDrawerHeroTitleHint(p, [p])).toBe("Parcelle HN 0011 · 33318");
+  });
+
+  it("utilise le nom OSM si pas de PPM", () => {
+    const osm = JSON.stringify([
+      {
+        osm_type: "n",
+        osm_id: 1,
+        name: "Zone logistique Nord",
+        address: "",
+        website: "",
+        phone: "",
+        poi_type_label: "Entrepôt",
+        osm_url: "",
+        lat: 44.8,
+        lng: -0.63,
+      },
+    ]);
+    const p = parcelle({
+      id: "p2",
+      codeInsee: "33318",
+      section: "HN",
+      numeroNorm: "0012",
+      label: "Parcelle HN 0012",
+      osmPoisJson: osm,
+    });
+    expect(formatDiscoveryDrawerHeroTitle(p, [p])).toBe("Zone logistique Nord");
+  });
+
+  it("utilise brand/name dans osm_raw_tags si osm_name est vide", () => {
+    const buildings = JSON.stringify([
+      {
+        batiment_construction_id: "r:328289664",
+        osm_building_id: "r:328289664",
+        osm_name: "",
+        osm_raw_tags: { brand: "Auchan", shop: "supermarket", building: "retail" },
+      },
+    ]);
+    const p = parcelle({
+      id: "p-auchan",
+      codeInsee: "33318",
+      section: "BL",
+      numeroNorm: "0001",
+      label: "Parcelle BL 0001",
+      buildingsJson: buildings,
+    });
+    expect(formatDiscoveryDrawerHeroTitle(p, [p])).toBe("Auchan");
   });
 });
 

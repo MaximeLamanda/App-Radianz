@@ -77,6 +77,10 @@ import { logPolygonDrawer } from "@/lib/debug-polygon-drawer";
 const DEBUG_AUTOCONSO = false;
 import { translatePlaceType } from "@/lib/place-types-translation";
 import { DiscoveryShareReadingTabPanel } from "./DiscoveryShareReadingTabPanel";
+import {
+  ProspectDisplayNameEditor,
+  resolveProspectDisplayNameForSave,
+} from "./ProspectDisplayNameEditor";
 import { ProspectEnergyChartsPanel } from "./ProspectEnergyChartsPanel";
 import { RadianzBillReductionCard, type RadianzBillReductionSegment } from "./RadianzBillReductionCard";
 import { RadianzCo2AvoidanceRadial } from "./RadianzCo2AvoidanceRadial";
@@ -102,6 +106,10 @@ import {
 import { runProductionSimulation, runSimulationOneDayForChart, scaleBatteryForCount } from "@/lib/battery-simulation";
 import { computeRecommendedBatteryTargetKwh } from "@/lib/recommended-battery-sizing";
 import { pickRecommendedBatteryComposition } from "@/lib/recommended-battery-composition";
+import {
+  MAX_RECOMMENDED_INVERTER_COUNT,
+  pickRecommendedInverterReference,
+} from "@/lib/recommended-inverter-sizing";
 import { usePanelReferences, useInverterReferences, useBatteryReferences } from "@/lib/swr-hooks";
 import {
   getPanelReferences,
@@ -134,11 +142,16 @@ import { getPlaceDetailsNew } from "@/lib/places-new-api";
 import type { ScoredCandidate } from "@/lib/find-local-siren";
 import { fetchWithAuth } from "@/lib/api-client";
 import {
+  cadastreParcelleNumeroLabel,
+  cadastreParcellePasserelleKey,
   centroidWeightedFromParcelleRowGeometries,
   collectSirensFromMatchingV5Row,
   collectSirensFromMatchingV5Rows,
+  isCadastreParcellePasserelleKey,
   formatDiscoveryDrawerHeroAddress,
   formatDiscoveryDrawerHeroAddressSourceLabel,
+  formatDiscoveryDrawerHeroTitle,
+  formatDiscoveryDrawerHeroTitleHint,
   resolveDiscoveryDrawerHeroAddressSource,
   mergeOsmBuildingContactsFromRows,
   mergeOsmPoisFromParcelleRows,
@@ -177,6 +190,7 @@ import {
 import {
   discoveryComboActivityHeroBadgeLabel,
   discoveryZoneTagsForDrawer,
+  pickPrimaryDiscoveryZoneTag,
 } from "@/lib/discovery-osm-activity-tags";
 import { DiscoverySolaireProjectCards } from "@/components/discovery/DiscoverySolaireProjectCards";
 import { DiscoveryDrawerEquipmentPanel } from "@/components/discovery/DiscoveryDrawerEquipmentPanel";
@@ -570,12 +584,6 @@ function DiscoveryComboEditFooterButtons({
   );
 }
 
-/** Même clé que `passerelleFlat[].parcelleLabel` pour rattacher les PPM à une ligne parcelle. */
-function discoveryParcellePasserelleLabel(pr: ScoutMatchingV5Row): string {
-  return pr.section && pr.numeroNorm
-    ? `${pr.section} ${pr.numeroNorm} · ${pr.codeInsee || "—"}`
-    : pr.id;
-}
 
 /** Contenu du drawer en mode découverte PostgreSQL (matching V5), même tiroir que Solar Scout. */
 function ProspectDrawerDiscoverySection({
@@ -614,6 +622,9 @@ function ProspectDrawerDiscoverySection({
   discoverySizingAnnualConsumptionKwh,
   discoveryMonthlyConsumptionKwh,
   onDiscoveryTargetAnnualKwhChange,
+  discoveryDisplayName,
+  onDiscoveryDisplayNameChange,
+  discoveryGeneratedNameHint,
 }: {
   row: ScoutMatchingV5Row;
   /** Parcelles du même groupe (transitif « partage » ou bâtiment multi-parcelles). */
@@ -662,6 +673,9 @@ function ProspectDrawerDiscoverySection({
   discoverySizingAnnualConsumptionKwh: number;
   discoveryMonthlyConsumptionKwh: number[];
   onDiscoveryTargetAnnualKwhChange: (kwh: number) => void;
+  discoveryDisplayName: string;
+  onDiscoveryDisplayNameChange: (value: string) => void;
+  discoveryGeneratedNameHint?: string;
 }) {
   const parcelleCluster = useMemo(() => {
     const filtered = linkedParcelleRows.filter((r) => r.grain === "parcelle");
@@ -969,10 +983,7 @@ function ProspectDrawerDiscoverySection({
     const rows =
       parcelleCluster.length > 0 ? parcelleCluster : row.grain === "parcelle" ? [row] : [];
     for (const pr of rows) {
-      const label =
-        pr.section && pr.numeroNorm
-          ? `${pr.section} ${pr.numeroNorm} · ${pr.codeInsee || "—"}`
-          : pr.id;
+      const label = cadastreParcellePasserelleKey(pr);
       for (const ppm of parsePasserelleAddressesJson(pr.passerelleAddressesJson)) {
         out.push({ parcelleLabel: label, ppm });
       }
@@ -1806,7 +1817,11 @@ function ProspectDrawerDiscoverySection({
       })),
       parcelles: informationParcellesRows.map((p) => ({
         ref: p.id,
-        label: discoveryParcellePasserelleLabel(p) || (p.label || "").trim() || p.id,
+        label:
+          formatDiscoveryDrawerHeroTitle(p, [p]) ||
+          cadastreParcellePasserelleKey(p) ||
+          (p.label || "").trim() ||
+          p.id,
       })),
       etablissements: discoverySiretRows.map(({ key, e }) => {
         const denom = (e.denomination || "").trim();
@@ -1842,7 +1857,10 @@ function ProspectDrawerDiscoverySection({
       companyName?: string;
     }> = [];
     for (const pr of informationParcellesRows) {
-      const parcelleLabel = discoveryParcellePasserelleLabel(pr);
+      const parcelleLabel =
+        formatDiscoveryDrawerHeroTitle(pr, [pr]) ||
+        formatDiscoveryDrawerHeroTitleHint(pr, [pr]) ||
+        cadastreParcellePasserelleKey(pr);
       const seenSiren = new Set<string>();
       for (const ppm of parsePasserelleAddressesJson(pr.passerelleAddressesJson)) {
         const siren = String(ppm.siren ?? "").trim();
@@ -1985,7 +2003,7 @@ function ProspectDrawerDiscoverySection({
   }, [isOpen, discoveryMainTab, discoveryDirigeantSirensKey]);
 
   const parcellePasserelleLabels = useMemo(
-    () => new Set(informationParcellesRows.map(discoveryParcellePasserelleLabel)),
+    () => new Set(informationParcellesRows.map(cadastreParcellePasserelleKey)),
     [informationParcellesRows]
   );
 
@@ -2016,6 +2034,14 @@ function ProspectDrawerDiscoverySection({
   }, [parcelleCluster, row.matchingConfidence]);
   const opScoreLetter = operationalScoreLetterFromMatching(opConfidenceForLetter);
 
+  const heroTitle = useMemo(
+    () => formatDiscoveryDrawerHeroTitle(row, parcelleCluster),
+    [row, parcelleCluster]
+  );
+  const heroTitleHint = useMemo(
+    () => formatDiscoveryDrawerHeroTitleHint(row, parcelleCluster),
+    [row, parcelleCluster]
+  );
   const heroAddress = useMemo(
     () => formatDiscoveryDrawerHeroAddress(row, parcelleCluster),
     [row, parcelleCluster]
@@ -2064,9 +2090,14 @@ function ProspectDrawerDiscoverySection({
       className="drawer-discovery"
     >
       <div className="drawer-discovery-hero">
-        <h3 className="drawer-discovery-title" title={row.label}>
-          {row.label}
-        </h3>
+        <ProspectDisplayNameEditor
+          variant="discovery-hero"
+          value={discoveryDisplayName}
+          onChange={onDiscoveryDisplayNameChange}
+          generatedHint={discoveryGeneratedNameHint ?? heroTitleHint}
+          placeholder={heroTitle || heroTitleHint || "Nom du site"}
+          aria-label="Nom du prospect"
+        />
         <p className="drawer-discovery-hero-address" title={heroAddress}>
           <span className="drawer-discovery-hero-address-text">{heroAddress}</span>
           {heroAddressSourceLabel ? (
@@ -2227,7 +2258,7 @@ function ProspectDrawerDiscoverySection({
           <DiscoveryProjectContactsList
             contacts={discoveryContacts}
             originLabelContext={discoveryContactOriginLabelContext}
-            allowManualActions={Boolean(pipelineProspectForShareKpis?.id)}
+            allowManualActions
             onEditManual={handleEditManualContact}
             onDeleteManual={(c) => void onDeleteDiscoveryManualContact(c)}
             emptyMessage="Aucun contact. Ajoutez-en un manuellement ou via Apollo depuis un POI."
@@ -2481,7 +2512,6 @@ function ProspectDrawerDiscoverySection({
                 <TableHeader>
                   <TableRow className="border-0 hover:bg-transparent">
                     <TableHead className="whitespace-nowrap">N°</TableHead>
-                    <TableHead className="whitespace-nowrap">Numéro</TableHead>
                     <TableHead className="whitespace-nowrap">Surface</TableHead>
                     <TableHead className="min-w-[11rem]">Nom</TableHead>
                     <TableHead className="whitespace-nowrap">SIREN</TableHead>
@@ -2497,9 +2527,9 @@ function ProspectDrawerDiscoverySection({
                 </TableHeader>
                 <TableBody>
                   {informationParcellesRows.flatMap((parcelle, parcelIdx) => {
-                    const plLabel = discoveryParcellePasserelleLabel(parcelle);
+                    const plLabel = cadastreParcellePasserelleKey(parcelle);
                     const ppmList = passerellePpmByLabel.get(plLabel) ?? [];
-                    const numero = `${parcelle.section || "—"} ${parcelle.numeroNorm || "—"}`.trim();
+                    const numeroCadastral = cadastreParcelleNumeroLabel(parcelle);
                     const surfaceM2 = polygonAreaM2ApproxWithPointFallback(
                       parcelle.geometry,
                       parcelle.footprintSumM2
@@ -2508,11 +2538,15 @@ function ProspectDrawerDiscoverySection({
                     const rowPpms = ppmList.length > 0 ? ppmList : [null];
                     return rowPpms.map((p, j) => (
                       <TableRow key={`${parcelle.id}-${parcelIdx}-${j}`} className="border-0">
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums align-top">
+                        <TableCell
+                          className="min-w-0 whitespace-nowrap font-mono tabular-nums align-top"
+                          title={
+                            numeroCadastral
+                              ? `Parcelle ${numeroCadastral}${parcelle.codeInsee ? ` · ${parcelle.codeInsee}` : ""}`
+                              : undefined
+                          }
+                        >
                           {parcelIdx + 1}
-                        </TableCell>
-                        <TableCell className="min-w-0 whitespace-nowrap font-mono align-top">
-                          {numero}
                         </TableCell>
                         <TableCell className="min-w-0 whitespace-nowrap font-mono tabular-nums text-muted-foreground align-top">
                           <span className="block min-w-0 text-foreground" title={surfaceLabel}>
@@ -2527,12 +2561,6 @@ function ProspectDrawerDiscoverySection({
                     ppms.map((p, j) => (
                       <TableRow key={`orphan-${label}-${j}`} className="border-0">
                         <TableCell className="align-top text-muted-foreground">—</TableCell>
-                        <TableCell
-                          className="min-w-0 max-w-[10rem] align-top font-mono text-muted-foreground"
-                          title={label}
-                        >
-                          <span className="block truncate">{label}</span>
-                        </TableCell>
                         <TableCell className="align-top text-muted-foreground">—</TableCell>
                         {renderDiscoveryPasserellePpmCells(p)}
                       </TableRow>
@@ -2900,10 +2928,16 @@ export function ProspectDrawer({
 
   /** Mis à true uniquement au clic sur Perfect fit / Highest production — resync batterie quand la cible kWh change. */
   const pendingBatteryResyncAfterModeChangeRef = useRef(false);
+  /** Idem pour l'onduleur dimensionné au kWp. */
+  const pendingInverterResyncAfterModeChangeRef = useRef(false);
   /** Batterie choisie manuellement (prospect pipeline) — ne pas réaligner au changement de mode. */
   const batteryManualRef = useRef(false);
+  /** Onduleur choisi manuellement (prospect pipeline). */
+  const inverterManualRef = useRef(false);
   /** Choix manuel batterie (discovery) avant enregistrement — ne pas écraser par la reco PVGIS. */
   const discoveryBatteryManualRef = useRef(false);
+  /** Choix manuel onduleur (discovery). */
+  const discoveryInverterManualRef = useRef(false);
   const discoveryBatteryScopeRef = useRef("");
 
   const handlePoiNavigate = useCallback(
@@ -3089,12 +3123,81 @@ export function ProspectDrawer({
   /** Prospect Firestore associé (mode classique ou déjà en pipeline depuis Découverte). */
   const pipelineProspect = prospect ?? discoveryExistingPipelineProspect ?? null;
 
+  const discoveryParcelleClusterForName = useMemo(() => {
+    if (!discoveryRow) return [] as ScoutMatchingV5Row[];
+    const linked =
+      discoveryLinkedParcelleRows ??
+      (discoveryRow.grain === "parcelle" ? [discoveryRow] : []);
+    const filtered = linked.filter((r) => r.grain === "parcelle");
+    if (filtered.length > 0) return filtered;
+    if (discoveryRow.grain === "parcelle") return [discoveryRow];
+    return [];
+  }, [discoveryRow, discoveryLinkedParcelleRows]);
+
+  const discoveryGeneratedName = useMemo(() => {
+    if (!discoveryRow) return "";
+    const title = formatDiscoveryDrawerHeroTitle(discoveryRow, discoveryParcelleClusterForName);
+    if (title.trim()) return title.trim();
+    return formatDiscoveryDrawerHeroTitleHint(discoveryRow, discoveryParcelleClusterForName).trim();
+  }, [discoveryRow, discoveryParcelleClusterForName]);
+
+  const [discoveryDisplayName, setDiscoveryDisplayName] = useState("");
+  const [prospectDisplayName, setProspectDisplayName] = useState("");
+  const lastAutoDiscoveryDisplayNameRef = useRef("");
+  const lastAutoDiscoverySyncKeyRef = useRef("");
+
+  useEffect(() => {
+    if (!discoveryRow) {
+      lastAutoDiscoverySyncKeyRef.current = "";
+      lastAutoDiscoveryDisplayNameRef.current = "";
+      return;
+    }
+    const syncKey = `${discoveryRow.id}:${discoveryComboId ?? ""}:${discoveryExistingPipelineProspect?.id ?? ""}`;
+    const rowChanged = lastAutoDiscoverySyncKeyRef.current !== syncKey;
+    if (rowChanged) {
+      lastAutoDiscoverySyncKeyRef.current = syncKey;
+    }
+
+    const fromPipeline = discoveryExistingPipelineProspect?.name?.trim();
+    if (fromPipeline) {
+      lastAutoDiscoveryDisplayNameRef.current = fromPipeline;
+      setDiscoveryDisplayName(fromPipeline);
+      return;
+    }
+
+    setDiscoveryDisplayName((prev) => {
+      if (rowChanged || !prev.trim() || prev.trim() === lastAutoDiscoveryDisplayNameRef.current) {
+        lastAutoDiscoveryDisplayNameRef.current = discoveryGeneratedName;
+        return discoveryGeneratedName;
+      }
+      return prev;
+    });
+  }, [
+    discoveryRow?.id,
+    discoveryComboId,
+    discoveryExistingPipelineProspect?.id,
+    discoveryExistingPipelineProspect?.name,
+    discoveryGeneratedName,
+  ]);
+
+  useEffect(() => {
+    if (discoveryRow || !prospect) return;
+    setProspectDisplayName(prospect.name?.trim() ?? "");
+  }, [
+    discoveryRow,
+    prospect?.id,
+    prospect?.placeId,
+    prospect?.poiCandidateIndex,
+    prospect?.name,
+  ]);
+
   const [discoveryContacts, setDiscoveryContacts] = useState<ProspectContact[]>(
     () => discoveryExistingPipelineProspect?.contacts ?? []
   );
   useEffect(() => {
+    if (!discoveryRow) return;
     setDiscoveryContacts(discoveryExistingPipelineProspect?.contacts ?? []);
-  }, [discoveryExistingPipelineProspect?.id]);
+  }, [discoveryRow?.id, discoveryExistingPipelineProspect?.id]);
   useEffect(() => {
     const fromPipeline = discoveryExistingPipelineProspect?.contacts;
     if (fromPipeline !== undefined) {
@@ -3102,21 +3205,30 @@ export function ProspectDrawer({
     }
   }, [discoveryExistingPipelineProspect?.contacts]);
 
+  useEffect(() => {
+    if (isOpen || !discoveryRow || discoveryExistingPipelineProspect?.id) return;
+    setDiscoveryContacts([]);
+  }, [isOpen, discoveryRow, discoveryExistingPipelineProspect?.id]);
+
   const handleDiscoveryContactsPersisted = useCallback(
     (contacts: ProspectContact[]) => {
       setDiscoveryContacts(contacts);
-      onDiscoveryPipelineAdded?.();
+      if (discoveryExistingPipelineProspect?.id) {
+        onDiscoveryPipelineAdded?.();
+      }
     },
-    [onDiscoveryPipelineAdded]
+    [discoveryExistingPipelineProspect?.id, onDiscoveryPipelineAdded]
   );
 
   const handleDeleteDiscoveryManualContact = useCallback(
     async (contact: ProspectContact) => {
+      if (contact.source !== "manual" || !contact.id) return;
       const prospectId = discoveryExistingPipelineProspect?.id;
-      if (!prospectId || contact.source !== "manual" || !contact.id) return;
       try {
         const next = discoveryContacts.filter((c) => c.id !== contact.id);
-        await updateProspect(prospectId, { contacts: next });
+        if (prospectId) {
+          await updateProspect(prospectId, { contacts: next });
+        }
         handleDiscoveryContactsPersisted(next);
         toast.success("Contact supprimé.");
       } catch (err) {
@@ -3152,9 +3264,18 @@ export function ProspectDrawer({
       if (!userFixedBattery) {
         pendingBatteryResyncAfterModeChangeRef.current = true;
       }
+      const userFixedInverter =
+        discoveryInverterManualRef.current ||
+        Boolean(discoveryExistingPipelineProspect?.inverterReferenceId);
+      if (!userFixedInverter) {
+        pendingInverterResyncAfterModeChangeRef.current = true;
+      }
       setDiscoveryConfigurationMode(mode);
     },
-    [discoveryExistingPipelineProspect?.batteryReferenceId]
+    [
+      discoveryExistingPipelineProspect?.batteryReferenceId,
+      discoveryExistingPipelineProspect?.inverterReferenceId,
+    ]
   );
 
   const discoveryRecommendedBatteryKwh = useMemo(() => {
@@ -3188,6 +3309,13 @@ export function ProspectDrawer({
     if (!visible.length || discoveryRecommendedBatteryKwh == null) return null;
     return pickRecommendedBatteryComposition(discoveryRecommendedBatteryKwh, visible);
   }, [batteriesData, discoveryRecommendedBatteryKwh]);
+
+  const discoveryRecommendedInverterRef = useMemo(() => {
+    const visible = (invertersData ?? []).filter((i) => i.visible !== false);
+    const kwp = discoveryPipelineFinanceInputs?.kwp ?? 0;
+    if (!visible.length || kwp <= 0) return null;
+    return pickRecommendedInverterReference(kwp, visible);
+  }, [invertersData, discoveryPipelineFinanceInputs?.kwp]);
 
   const discoverySimBattery = useMemo(() => {
     if (!discoveryRow || !discoveryPipelineFinanceInputs) return null;
@@ -3236,16 +3364,6 @@ export function ProspectDrawer({
   }, [isOpen, panelsData, pipelineProspect?.panelReferenceId]);
 
   useEffect(() => {
-    if (!invertersData) return;
-    const visibleInverters = invertersData.filter((r) => r.visible !== false);
-    const byId = pipelineProspect?.inverterReferenceId
-      ? visibleInverters.find((r) => r.id === pipelineProspect.inverterReferenceId)
-      : null;
-    const recommended = visibleInverters.find((r) => r.recommended === true);
-    setUsedInverterRef(byId ?? recommended ?? visibleInverters[0] ?? null);
-  }, [invertersData, pipelineProspect?.inverterReferenceId]);
-
-  useEffect(() => {
     discoveryBatteryManualRef.current = Boolean(
       discoveryExistingPipelineProspect?.batteryReferenceId
     );
@@ -3267,6 +3385,7 @@ export function ProspectDrawer({
     if (isNewScope) {
       discoveryBatteryScopeRef.current = scopeKey;
       discoveryBatteryManualRef.current = Boolean(saved?.batteryReferenceId);
+      discoveryInverterManualRef.current = Boolean(saved?.inverterReferenceId);
     }
 
     if (discoveryBatteryManualRef.current && !isNewScope) {
@@ -3315,6 +3434,64 @@ export function ProspectDrawer({
     discoveryExistingPipelineProspect?.batteryReferenceId,
     discoveryExistingPipelineProspect?.batteryCount,
     discoveryRecommendedBatteryComposition,
+    discoveryConfigurationMode,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen || prospect || !discoveryRow || !invertersData?.length) return;
+    const visibleInverters = invertersData.filter((i) => i.visible !== false);
+    if (!visibleInverters.length) {
+      setUsedInverterRef(null);
+      return;
+    }
+
+    const kwp = discoveryPipelineFinanceInputs?.kwp ?? 0;
+    const computed =
+      kwp > 0 ? pickRecommendedInverterReference(kwp, visibleInverters) : null;
+
+    const saved = discoveryExistingPipelineProspect;
+    const scopeKey = `${discoveryRow.id}|${saved?.id ?? "none"}`;
+    const isNewScope = discoveryBatteryScopeRef.current !== scopeKey;
+
+    if (discoveryInverterManualRef.current && !isNewScope) {
+      return;
+    }
+
+    if (
+      pendingInverterResyncAfterModeChangeRef.current &&
+      computed != null &&
+      !discoveryInverterManualRef.current
+    ) {
+      setUsedInverterRef(computed);
+      pendingInverterResyncAfterModeChangeRef.current = false;
+      return;
+    }
+
+    if (saved?.inverterReferenceId) {
+      const byId = visibleInverters.find((i) => i.id === saved.inverterReferenceId);
+      if (byId) {
+        setUsedInverterRef(byId);
+        return;
+      }
+    }
+
+    if (computed) {
+      setUsedInverterRef(computed);
+      return;
+    }
+
+    setUsedInverterRef(
+      visibleInverters.find((r) => r.recommended === true) ?? visibleInverters[0] ?? null
+    );
+  }, [
+    isOpen,
+    prospect,
+    discoveryRow,
+    invertersData,
+    discoveryExistingPipelineProspect?.id,
+    discoveryExistingPipelineProspect?.inverterReferenceId,
+    discoveryPipelineFinanceInputs?.kwp,
+    discoveryRecommendedInverterRef,
     discoveryConfigurationMode,
   ]);
 
@@ -3516,6 +3693,14 @@ export function ProspectDrawer({
       const buildingSelectionIds = discoverySelectedBuildingIds
         ? Array.from(discoverySelectedBuildingIds)
         : [];
+      const discoveryActivityZoneTag =
+        pickPrimaryDiscoveryZoneTag(
+          discoveryZoneTagsForDrawer(
+            discoveryRow,
+            discoveryLinkedParcelleRows ?? [],
+            discoveryComboZoneTags
+          )
+        ) ?? undefined;
       const footprintForPipeline = discoveryFootprintSumM2;
       const parcelContourForPipeline = discoveryHeroSurfaces?.parcelM2;
       const batteryRefForAdd = discoveryIncludeBattery ? usedBatteryRef : null;
@@ -3565,10 +3750,17 @@ export function ProspectDrawer({
         discoveryEffectiveAnnualConsumptionKwh,
         discoveryAnnualConsumptionKwhFromProfile("other", footprintForPipeline)
       );
+      const pipelineName = resolveProspectDisplayNameForSave(
+        discoveryDisplayName,
+        draft.name || discoveryGeneratedName
+      );
       const draftForPipeline =
         financialSummaryForAdd != null
           ? {
               ...draft,
+              ...(discoveryContacts.length > 0 ? { contacts: discoveryContacts } : {}),
+              ...(discoveryActivityZoneTag ? { discoveryActivityZoneTag } : {}),
+              name: pipelineName,
               configurationMode: discoveryConfigurationMode,
               ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
               ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
@@ -3585,6 +3777,9 @@ export function ProspectDrawer({
             }
           : {
               ...draft,
+              ...(discoveryContacts.length > 0 ? { contacts: discoveryContacts } : {}),
+              ...(discoveryActivityZoneTag ? { discoveryActivityZoneTag } : {}),
+              name: pipelineName,
               configurationMode: discoveryConfigurationMode,
               ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
               ...(usedInverterRef?.id && { inverterReferenceId: usedInverterRef.id }),
@@ -3673,9 +3868,15 @@ export function ProspectDrawer({
         }
       }
 
+      const pipelineName = resolveProspectDisplayNameForSave(
+        prospectDisplayName,
+        prospect.name || address || prospect.address
+      );
+
       const prospectId = await addProspectToPipeline(
         {
           ...prospect,
+          name: pipelineName,
           address: address || prospect.address,
           configurationMode,
         },
@@ -3686,7 +3887,7 @@ export function ProspectDrawer({
       // Créer un lead à partir du prospect
       await createLeadFromProspect(
         prospectId,
-        address || prospect.address,
+        pipelineName,
         prospect.contact?.websiteUri
       );
 
@@ -3695,7 +3896,7 @@ export function ProspectDrawer({
       onOpenChange(false);
 
       toast.success("Lead ajouté au pipeline", {
-        description: prospect.name || address || prospect.address,
+        description: pipelineName,
         action: {
           label: "Ouvrir le pipeline",
           onClick: () => router.push("/"),
@@ -3734,8 +3935,14 @@ export function ProspectDrawer({
         pipelineOptions.breakEvenMaxYears = financialSummary.breakEvenMax;
       }
 
+      const savedName = resolveProspectDisplayNameForSave(
+        prospectDisplayName,
+        prospect.name || address || prospect.address
+      );
+
       const updatedProspect: Prospect = {
         ...prospect,
+        name: savedName,
         address: address || prospect.address,
         configurationMode,
         ...(usedPanelRef?.id && { panelReferenceId: usedPanelRef.id }),
@@ -3817,8 +4024,14 @@ export function ProspectDrawer({
         discoveryAnnualConsumptionKwhFromProfile("other", footprintForPipeline)
       );
 
+      const savedDiscoveryName = resolveProspectDisplayNameForSave(
+        discoveryDisplayName,
+        existing.name || discoveryGeneratedName
+      );
+
       const updatedProspect: Prospect = {
         ...existing,
+        name: savedDiscoveryName,
         contacts: discoveryContacts,
         configurationMode: discoveryConfigurationMode,
         ...(discoveryConsumptionOverrideSave != null
@@ -4071,6 +4284,21 @@ export function ProspectDrawer({
     return config;
   }, [prospect, usedPanelRef, usedInverterRef]);
 
+  const recommendedInverterForProspect = useMemo(() => {
+    const visible = (invertersData ?? []).filter((i) => i.visible !== false);
+    const kwp =
+      configurationMode === "perfect_fit"
+        ? choiceCardsConfig.perfectFit.kwp
+        : choiceCardsConfig.highestProduction.kwp;
+    if (!visible.length) return null;
+    return pickRecommendedInverterReference(kwp, visible);
+  }, [
+    invertersData,
+    configurationMode,
+    choiceCardsConfig.perfectFit.kwp,
+    choiceCardsConfig.highestProduction.kwp,
+  ]);
+
   /**
    * Taille batterie recommandée (kWh) :
    * - Avec profils PVGIS (12 mois) : simulation sans batterie → surplus = injection réseau annuelle ;
@@ -4123,8 +4351,60 @@ export function ProspectDrawer({
 
   useEffect(() => {
     pendingBatteryResyncAfterModeChangeRef.current = false;
+    pendingInverterResyncAfterModeChangeRef.current = false;
     batteryManualRef.current = Boolean(prospect?.batteryReferenceId);
-  }, [prospect?.id, prospect?.batteryReferenceId]);
+    inverterManualRef.current = Boolean(prospect?.inverterReferenceId);
+  }, [prospect?.id, prospect?.batteryReferenceId, prospect?.inverterReferenceId]);
+
+  // Onduleur : choix prospect → dimensionné au kWp → premier de la liste (hors choix manuel).
+  useEffect(() => {
+    if (!isOpen || !invertersData || !prospect || discoveryRow) return;
+    const visibleInverters = invertersData.filter((r) => r.visible !== false);
+    if (!visibleInverters.length) {
+      setUsedInverterRef(null);
+      return;
+    }
+
+    const kwp =
+      configurationMode === "perfect_fit"
+        ? choiceCardsConfig.perfectFit.kwp
+        : choiceCardsConfig.highestProduction.kwp;
+    const computed = pickRecommendedInverterReference(kwp, visibleInverters);
+
+    if (
+      pendingInverterResyncAfterModeChangeRef.current &&
+      computed != null &&
+      !inverterManualRef.current
+    ) {
+      setUsedInverterRef(computed);
+      pendingInverterResyncAfterModeChangeRef.current = false;
+      onProspectUpdate?.({ inverterReferenceId: computed.id });
+      return;
+    }
+
+    if (inverterManualRef.current) {
+      const lockedById = prospect.inverterReferenceId
+        ? visibleInverters.find((r) => r.id === prospect.inverterReferenceId)
+        : null;
+      if (lockedById) setUsedInverterRef(lockedById);
+      return;
+    }
+
+    const byId = prospect.inverterReferenceId
+      ? visibleInverters.find((r) => r.id === prospect.inverterReferenceId)
+      : null;
+    setUsedInverterRef(byId ?? computed ?? visibleInverters[0] ?? null);
+  }, [
+    isOpen,
+    invertersData,
+    prospect,
+    discoveryRow,
+    configurationMode,
+    choiceCardsConfig.perfectFit.kwp,
+    choiceCardsConfig.highestProduction.kwp,
+    recommendedInverterForProspect,
+    onProspectUpdate,
+  ]);
 
   // Batterie : toujours une ref issue de batteriesData. Par défaut : choix prospect → composition recommandée → premier avec flag recommandé → premier de la liste.
   // Après clic Perfect fit / Highest production : réaligner modèle + nombre sur recommendedBatteryComposition (y compris quand PVGIS / composition arrive après le clic).
@@ -4176,7 +4456,7 @@ export function ProspectDrawer({
   }, [isOpen, batteriesData, prospect, recommendedBatteryComposition, configurationMode, onProspectUpdate]);
 
   /** Nombre max d'onduleurs recommandé ; au-delà, le modèle n'est pas adapté */
-  const MAX_INVERTER_COUNT = 8;
+  const MAX_INVERTER_COUNT = MAX_RECOMMENDED_INVERTER_COUNT;
   const effectiveInverterCount = configurationMode === "perfect_fit"
     ? choiceCardsConfig.perfectFit.inverterCount
     : choiceCardsConfig.highestProduction.inverterCount;
@@ -4500,7 +4780,11 @@ export function ProspectDrawer({
                     usedPanelRef={usedPanelRef}
                     onPanelChange={setUsedPanelRef}
                     usedInverterRef={usedInverterRef}
-                    onInverterChange={setUsedInverterRef}
+                    onInverterChange={(i) => {
+                      discoveryInverterManualRef.current = true;
+                      setUsedInverterRef(i);
+                    }}
+                    recommendedInverterRef={discoveryRecommendedInverterRef}
                     usedBatteryRef={usedBatteryRef}
                     onBatteryChange={(b) => {
                       discoveryBatteryManualRef.current = true;
@@ -4550,6 +4834,9 @@ export function ProspectDrawer({
               discoverySizingAnnualConsumptionKwh={discoverySizingAnnualConsumptionKwh}
               discoveryMonthlyConsumptionKwh={discoveryMonthlyConsumptionKwh}
               onDiscoveryTargetAnnualKwhChange={handleDiscoveryTargetAnnualKwhChange}
+              discoveryDisplayName={discoveryDisplayName}
+              onDiscoveryDisplayNameChange={setDiscoveryDisplayName}
+              discoveryGeneratedNameHint={discoveryGeneratedName}
             />
           ) : prospect ? (
             <>
@@ -4570,11 +4857,15 @@ export function ProspectDrawer({
                 <CardContent className="py-3 px-4">
                   <div className="flex flex-col gap-3 relative">
                     <div className="space-y-0 [&>p]:m-0 [&>p]:leading-tight">
-                    {prospect.name && (
-                      <div className="flex items-center gap-1 min-w-0">
-                        <p className="text-xl font-medium text-foreground truncate flex-1 min-w-0" title={prospect.name}>
-                          {prospect.name}
-                        </p>
+                    <div className="flex items-center gap-1 min-w-0">
+                        <ProspectDisplayNameEditor
+                          variant="prospect-card"
+                          value={prospectDisplayName}
+                          onChange={setProspectDisplayName}
+                          generatedHint={prospect.name}
+                          placeholder={prospect.address?.trim() || "Nom du prospect"}
+                          aria-label="Nom du prospect"
+                        />
                         {prospect.poiCandidates && prospect.poiCandidates.length > 1 && onProspectUpdate && (
                           <div className="flex shrink-0 items-center gap-0.5">
                             <Button
@@ -4609,7 +4900,6 @@ export function ProspectDrawer({
                           </div>
                         )}
                       </div>
-                    )}
                     {prospect.address && (
                       <p className="text-xs text-muted-foreground truncate" title={prospect.address}>
                         {prospect.address}
@@ -4863,6 +5153,9 @@ export function ProspectDrawer({
                       if (!batteryManualRef.current) {
                         pendingBatteryResyncAfterModeChangeRef.current = true;
                       }
+                      if (!inverterManualRef.current) {
+                        pendingInverterResyncAfterModeChangeRef.current = true;
+                      }
                       setConfigurationMode("perfect_fit");
                       if (prospect && onProspectUpdate) {
                         onProspectUpdate({ configurationMode: "perfect_fit" });
@@ -4894,6 +5187,9 @@ export function ProspectDrawer({
                     onClick={() => {
                       if (!batteryManualRef.current) {
                         pendingBatteryResyncAfterModeChangeRef.current = true;
+                      }
+                      if (!inverterManualRef.current) {
+                        pendingInverterResyncAfterModeChangeRef.current = true;
                       }
                       setConfigurationMode("highest_production");
                       if (prospect && onProspectUpdate) {
@@ -5148,9 +5444,16 @@ export function ProspectDrawer({
                             <EquipmentSelectCard<InverterReference>
                               value={usedInverterRef}
                               options={invertersData.filter((i) => i.visible !== false)}
-                              onChange={setUsedInverterRef}
+                              onChange={(i) => {
+                                inverterManualRef.current = true;
+                                setUsedInverterRef(i);
+                              }}
                               getItemId={(i) => i.id}
-                              showRecommendedBadge={!!usedInverterRef?.recommended && !inverterCountExceedsLimit}
+                              showRecommendedBadge={
+                                !!recommendedInverterForProspect &&
+                                usedInverterRef?.id === recommendedInverterForProspect.id &&
+                                !inverterCountExceedsLimit
+                              }
                               warningBadge={inverterCountExceedsLimit ? (
                                 <span className="inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800" title="Plus de 8 onduleurs : choisir un modèle plus puissant">
                                   Changer de modèle
@@ -5210,7 +5513,8 @@ export function ProspectDrawer({
                                       <span>€{i.costEur}</span>
                                       <span>·</span>
                                       <span>{i.powerW}W</span>
-                                      {i.recommended && (
+                                      {recommendedInverterForProspect != null &&
+                                        i.id === recommendedInverterForProspect.id && (
                                         <span className="inline-flex items-center rounded bg-gray-900 px-1 py-0.5 text-[10px] font-medium text-white">recommandé</span>
                                       )}
                                     </div>
