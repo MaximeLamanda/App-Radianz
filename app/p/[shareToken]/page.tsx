@@ -241,14 +241,15 @@ export default function ProspectSharePage() {
       const raw = sessionStorage.getItem(storageKey);
       if (raw) {
         const parsed = JSON.parse(raw) as { id?: string; active?: boolean; startedAt?: number };
+        const existingId =
+          typeof parsed.id === "string" && parsed.id.trim().length > 0 ? parsed.id.trim() : null;
         const keepExisting =
-          typeof parsed.id === "string" &&
-          parsed.id.trim().length > 0 &&
+          existingId != null &&
           parsed.active === true &&
           typeof parsed.startedAt === "number" &&
           now - parsed.startedAt < 30_000;
         if (keepExisting) {
-          sessionId = parsed.id;
+          sessionId = existingId;
         }
       }
       sessionStorage.setItem(storageKey, JSON.stringify({ id: sessionId, active: true, startedAt: now }));
@@ -293,14 +294,15 @@ export default function ProspectSharePage() {
       currentScrollDepthRef.current = depth;
       maxScrollDepthRef.current = Math.max(maxScrollDepthRef.current, depth);
     };
-    const onDocumentScroll = (event: Event) => {
+    const onScroll = (event: Event) => {
       updateMaxScroll(event.target);
     };
+    const onResize = () => updateMaxScroll();
 
     updateMaxScroll();
-    window.addEventListener("scroll", updateMaxScroll, { passive: true });
-    document.addEventListener("scroll", onDocumentScroll, { passive: true, capture: true });
-    window.addEventListener("resize", updateMaxScroll);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    window.addEventListener("resize", onResize);
 
     const sendEnd = () => {
       if (endedSentRef.current) return;
@@ -332,9 +334,9 @@ export default function ProspectSharePage() {
     window.addEventListener("pagehide", sendEnd);
 
     return () => {
-      window.removeEventListener("scroll", updateMaxScroll);
-      document.removeEventListener("scroll", onDocumentScroll, true);
-      window.removeEventListener("resize", updateMaxScroll);
+      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", sendEnd);
     };
