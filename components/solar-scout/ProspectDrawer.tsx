@@ -4097,7 +4097,7 @@ export function ProspectDrawer({
       ) {
         await updateProspect(existing.id, {
           annualConsumptionKwhOverride: null,
-        } as Partial<Prospect>);
+        } as unknown as Partial<Prospect>);
         onProspectUpdate?.({ ...updatedProspect, annualConsumptionKwhOverride: undefined });
       } else {
         onProspectUpdate?.(updatedProspect);

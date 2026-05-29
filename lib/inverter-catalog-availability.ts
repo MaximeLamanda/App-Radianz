@@ -19,7 +19,7 @@ export function getInvertersAddableFromCatalog(
       if (!user) return true;
       return user.visible !== true;
     })
-    .map((catalogRef) => ({
+    .map((catalogRef): InverterCatalogAddableItem => ({
       catalogRef,
       action: userById.has(catalogRef.id) ? "restore" : "add",
     }))

@@ -12,9 +12,11 @@ export type CombosOverviewSurfaceFilterInput = {
   sliderMaxM2?: number;
 };
 
+export type CombosOverviewSqlParam = string | number | string[];
+
 export type CombosOverviewSurfaceWhereResult = {
   sqlFragments: string[];
-  params: number[];
+  params: CombosOverviewSqlParam[];
   /** Prochain index `$n` Postgres après les fragments surface. */
   nextParamIndex: number;
 };

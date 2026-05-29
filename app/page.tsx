@@ -387,10 +387,13 @@ function HomePage() {
     for (const prospect of prospects) {
       if (prospect.pipelineEntrySource !== "discovery_v5" || !prospect.id) continue;
       const prospectPanelRef =
-        (prospect.panelReferenceId && panelById.get(prospect.panelReferenceId)) ?? panelRef;
+        (prospect.panelReferenceId
+          ? panelById.get(prospect.panelReferenceId) ?? null
+          : null) ?? panelRef;
       const prospectInverterRef =
-        (prospect.inverterReferenceId && inverterById.get(prospect.inverterReferenceId)) ??
-        inverterRef;
+        (prospect.inverterReferenceId
+          ? inverterById.get(prospect.inverterReferenceId) ?? null
+          : null) ?? inverterRef;
       const { ref: prospectBatteryRef, count: prospectBatteryCount } =
         prospectBatteryByProspectId.get(prospect.id) ?? { ref: null, count: 1 };
       const includeBatteryForProspect =
@@ -735,11 +738,17 @@ function HomePage() {
                       })
                     : "—";
                   const prospectPanelRef =
-                    (prospect.panelReferenceId && panelById.get(prospect.panelReferenceId)) ?? panelRef;
+                    (prospect.panelReferenceId
+                      ? panelById.get(prospect.panelReferenceId) ?? null
+                      : null) ?? panelRef;
                   const prospectInverterRef =
-                    (prospect.inverterReferenceId && inverterById.get(prospect.inverterReferenceId)) ?? inverterRef;
+                    (prospect.inverterReferenceId
+                      ? inverterById.get(prospect.inverterReferenceId) ?? null
+                      : null) ?? inverterRef;
                   const { ref: prospectBatteryRef } =
-                    (prospect.id && prospectBatteryByProspectId.get(prospect.id)) ?? { ref: null, count: 1 };
+                    (prospect.id
+                      ? prospectBatteryByProspectId.get(prospect.id)
+                      : undefined) ?? { ref: null, count: 1 };
                   const includeBatteryForProspect =
                     prospect.includeBatteryOverride ?? includeBatteryDefault;
 

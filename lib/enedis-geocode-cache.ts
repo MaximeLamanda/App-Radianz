@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { Client as PgClient } from "pg";
 import {
   DISCOVERY_ENEDIS_GEOCODE_MIN_SCORE,
   type DiscoveryEnedisPoint,
@@ -46,7 +46,7 @@ export function isValidEnedisGeocodeCoords(lat: unknown, lng: unknown): boolean 
 }
 
 export async function lookupEnedisGeocodeCache(
-  client: PoolClient,
+  client: PgClient,
   keys: readonly { addressKey: string; codeCommune: string }[]
 ): Promise<Map<string, EnedisGeocodeCacheRow>> {
   const out = new Map<string, EnedisGeocodeCacheRow>();
@@ -79,7 +79,7 @@ export async function lookupEnedisGeocodeCache(
 }
 
 export async function upsertEnedisGeocodeCache(
-  client: PoolClient,
+  client: PgClient,
   rows: readonly EnedisGeocodeCacheRow[]
 ): Promise<void> {
   if (rows.length === 0) return;
@@ -122,7 +122,7 @@ export type GeocodeEnedisRecordsResult = {
 };
 
 export async function geocodeEnedisRecordsToPoints(
-  client: PoolClient,
+  client: PgClient,
   records: readonly EnedisOpenDataRecord[],
   options: {
     maxNewGeocodes: number;

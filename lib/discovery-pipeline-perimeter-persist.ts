@@ -1,5 +1,6 @@
 import { comboIdFromParcelleIds } from "@/lib/discovery-combo-markers";
-import { getParcelleClusterForV5, type ScoutMatchingV5Row } from "@/lib/matching-v5-to-prospect";
+import { getParcelleClusterForV5 } from "@/lib/matching-v5-to-prospect";
+import type { ScoutMatchingV5Row } from "@/lib/scout-matching-v5-map";
 
 /** Champs Firebase à mettre à jour quand le périmètre parcelle/bâtiment change en Découverte. */
 export function discoveryPipelinePerimeterPersistFields(

@@ -309,6 +309,7 @@ export function buildDiscoveryComboMarkers(
         footprintSumM2,
         zoneTags: [],
         constructionYears: [],
+        nafDivisions: [],
       };
     });
   }
@@ -359,6 +360,7 @@ export function buildDiscoveryComboMarkers(
       footprintSumM2: 0,
       zoneTags: zoneTagsForParcelleRows(parcelleRowsForMarker),
       constructionYears: constructionYearsFromParcelleRows(parcelleRowsForMarker),
+      nafDivisions: [],
     };
     draft.footprintSumM2 = discoveryComboFootprintSumM2(draft, rows, buildingPoints);
     markers.push(draft);
