@@ -33,6 +33,7 @@ const SELECT_SQL = `
     siren_status,
     building_geometries_json::text AS building_geometries_json_text,
     properties_json::text AS properties_json_text,
+    match_status,
     source_run,
     imported_at
   FROM ${TABLE}
@@ -48,7 +49,7 @@ function buildBatchInsertValues(chunk) {
   let n = 1;
   for (const r of chunk) {
     parts.push(
-      `($${n++}, ST_GeomFromEWKT($${n++}::text), $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}::jsonb, $${n++}::jsonb, $${n++}, $${n++})`
+      `($${n++}, ST_GeomFromEWKT($${n++}::text), $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}, $${n++}::jsonb, $${n++}::jsonb, $${n++}, $${n++}, $${n++})`
     );
     params.push(
       r.scout_v5_id,
@@ -66,6 +67,7 @@ function buildBatchInsertValues(chunk) {
       r.siren_status,
       r.building_geometries_json_text,
       r.properties_json_text,
+      r.match_status,
       r.source_run,
       r.imported_at
     );
@@ -153,7 +155,7 @@ async function main() {
     const del = await neon.query(`DELETE FROM ${TABLE} WHERE code_insee = $1`, [codeInsee]);
     console.error(`[neon-transfer-v5] Neon DELETE code_insee=${codeInsee} : ${del.rowCount} ligne(s) supprimée(s).`);
 
-    const cols = `scout_v5_id, geom, grain, code_insee, section, numero_norm, nb_batiments, footprint_sum_m2, siret_count, status_technique, status_metier, matching_confidence, siren_status, building_geometries_json, properties_json, source_run, imported_at`;
+    const cols = `scout_v5_id, geom, grain, code_insee, section, numero_norm, nb_batiments, footprint_sum_m2, siret_count, status_technique, status_metier, matching_confidence, siren_status, building_geometries_json, properties_json, match_status, source_run, imported_at`;
     let inserted = 0;
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
       const chunk = rows.slice(i, i + BATCH_SIZE);

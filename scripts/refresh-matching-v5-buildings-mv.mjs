@@ -12,10 +12,26 @@ import { resolveDatabaseUrl } from "./lib/resolve-database-url.mjs";
 
 const MV_NAME = "public.scout_matching_v5_buildings_mv";
 
-const url = resolveDatabaseUrl(process.cwd());
+function parseArgs(argv) {
+  const out = { to: null };
+  for (const a of argv) {
+    if (a.startsWith("--to=")) out.to = a.slice("--to=".length).trim() || null;
+  }
+  return out;
+}
+
+function pickTargetUrl() {
+  const explicit = process.env.TARGET_DATABASE_URL?.trim();
+  if (explicit) return explicit;
+  const args = parseArgs(process.argv.slice(2));
+  if (args.to) return args.to;
+  return resolveDatabaseUrl(process.cwd());
+}
+
+const url = pickTargetUrl();
 if (!url) {
   console.error(
-    "[refresh-matching-v5-buildings-mv] Aucune URL Postgres (LOCAL_DATABASE_URL / Radianz_DATABASE_URL / .env.local)."
+    "[refresh-matching-v5-buildings-mv] Aucune URL Postgres (--to=, TARGET_DATABASE_URL, Radianz_* ou LOCAL)."
   );
   process.exit(1);
 }
