@@ -65,7 +65,7 @@ export async function GET(
         },
       });
     }
-    return new NextResponse(cached.body, {
+    return new NextResponse(Buffer.from(cached.body), {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.mapbox-vector-tile",
@@ -125,7 +125,7 @@ export async function GET(
       });
     }
 
-    return new NextResponse(body, {
+    return new NextResponse(Buffer.from(body), {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.mapbox-vector-tile",
